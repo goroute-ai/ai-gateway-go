@@ -425,7 +425,6 @@ func buildAuthSubsystem(cfg *config.Config, repo storage.Repository, redisFabric
 		Issuer:        cfg.Auth.JWTIssuer,
 		Audience:      cfg.Auth.JWTAudience,
 		OIDCJWKSURL:   cfg.Auth.OIDCJWKSURL,
-		DefaultOrgID:  cfg.Auth.DefaultOrgID,
 		Issuers:       buildOIDCIssuerConfigs(cfg.Auth.OIDCIssuers, netPolicy),
 		NetworkPolicy: netPolicy,
 	})

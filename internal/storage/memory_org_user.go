@@ -950,11 +950,20 @@ func (r *MemoryRepository) ResolveJWTKeyMappingForOrg(ctx context.Context, orgID
 		cp := *m
 		return &cp, nil
 	}
+	var matched *domain.JWTKeyMapping
 	for _, m := range r.jwtKeyMappings {
 		if m != nil && m.Issuer == issuer && m.ClaimName == claimName && m.ClaimValue == claimValue {
+			if matched != nil {
+				// Fail closed when multiple organizations share the same (issuer, claim_name, claim_value)
+				// and the caller did not establish an organization scope.
+				return nil, fmt.Errorf("ambiguous unscoped jwt key mapping %w", ErrNotFound)
+			}
 			cp := *m
-			return &cp, nil
+			matched = &cp
 		}
+	}
+	if matched != nil {
+		return matched, nil
 	}
 	return nil, fmt.Errorf("jwt key mapping %w", ErrNotFound)
 }

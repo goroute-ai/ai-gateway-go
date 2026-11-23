@@ -885,7 +885,7 @@ func (p *PostgresRepository) CreateBatch(ctx context.Context, batch *domain.Cano
 	countsJSON, _ := json.Marshal(batch.RequestCounts)
 	const q = `
 		INSERT INTO batches (id, org_id, team_id, input_file_id, output_file_id, error_file_id, endpoint, status, completion_window, created_at, completed_at, metadata, request_counts, estimated_tokens, reserved_cost_micros, upstream_provider, upstream_id)
-		VALUES ($1, $2, NULLIF($3, '')::uuid, $4, NULLIF($5, ''), NULLIF($6, ''), $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`
+		VALUES ($1, $2, NULLIF($3, ''), $4, NULLIF($5, ''), NULLIF($6, ''), $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`
 	_, err := p.pool.Exec(ctx, q, batch.ID, batch.OrgID, batch.TeamID, batch.InputFileID, batch.OutputFileID, batch.ErrorFileID, batch.Endpoint, batch.Status, batch.CompletionWindow, batch.CreatedAt, batch.CompletedAt, metaJSON, countsJSON, batch.EstimatedTokens, batch.ReservedCostMicros, batch.UpstreamProvider, batch.UpstreamID)
 	if err != nil {
 		return err
@@ -899,7 +899,7 @@ func (p *PostgresRepository) GetBatch(ctx context.Context, orgID, batchID string
 	}
 	const q = `
 		SELECT id, org_id, COALESCE(team_id::text, ''), input_file_id, COALESCE(output_file_id, ''), COALESCE(error_file_id, ''), endpoint, status, completion_window, created_at, completed_at, metadata, request_counts, estimated_tokens, reserved_cost_micros, COALESCE(upstream_provider, ''), COALESCE(upstream_id, '')
-		FROM batches WHERE id = $1 AND ($2 = '' OR org_id = $2::uuid)`
+		FROM batches WHERE id = $1 AND ($2 = '' OR org_id = $2)`
 	var b domain.CanonicalBatch
 	var metaJSON, countsJSON []byte
 	if err := p.pool.QueryRow(ctx, q, batchID, orgID).Scan(
@@ -919,7 +919,7 @@ func (p *PostgresRepository) ListBatches(ctx context.Context, orgID string, limi
 	}
 	const q = `
 		SELECT id, org_id, COALESCE(team_id::text, ''), input_file_id, COALESCE(output_file_id, ''), COALESCE(error_file_id, ''), endpoint, status, completion_window, created_at, completed_at, metadata, request_counts, estimated_tokens, reserved_cost_micros, COALESCE(upstream_provider, ''), COALESCE(upstream_id, '')
-		FROM batches WHERE ($1 = '' OR org_id = $1::uuid)
+		FROM batches WHERE ($1 = '' OR org_id = $1)
 		ORDER BY created_at DESC LIMIT $2`
 	rows, err := p.pool.Query(ctx, q, orgID, limit)
 	if err != nil {

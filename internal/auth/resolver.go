@@ -287,16 +287,13 @@ func (r *AuthResolver) resolveJWTBearer(ctx context.Context, rawToken string) (*
 			Message:    "JWT org_id claim does not match issuer organization scope",
 		}
 	}
-	orgID := pinnedOrgID
-	if orgID == "" {
-		orgID = claimOrgID
-	}
-	if orgID == "" {
-		orgID = r.defaultOrgID
+	explicitOrgID := pinnedOrgID
+	if explicitOrgID == "" {
+		explicitOrgID = claimOrgID
 	}
 
 	if mappingRepo, ok := r.repo.(storage.JWTMappingRepository); ok && mappingRepo != nil {
-		mapping, found, err := r.findJWTKeyMapping(ctx, mappingRepo, orgID, effectiveIssuer, claims)
+		mapping, found, err := r.findJWTKeyMapping(ctx, mappingRepo, explicitOrgID, effectiveIssuer, claims)
 		if err != nil {
 			return nil, &domain.GatewayError{
 				StatusCode: http.StatusServiceUnavailable,
@@ -314,7 +311,7 @@ func (r *AuthResolver) resolveJWTBearer(ctx context.Context, rawToken string) (*
 			if err != nil {
 				return nil, err
 			}
-			if vkCtx.OrgID != mapping.OrgID || (orgID != "" && mapping.OrgID != orgID) {
+			if vkCtx.OrgID != mapping.OrgID || (explicitOrgID != "" && mapping.OrgID != explicitOrgID) {
 				return nil, &domain.GatewayError{
 					StatusCode: http.StatusForbidden,
 					Type:       domain.ErrorTypePermission,
@@ -328,6 +325,11 @@ func (r *AuthResolver) resolveJWTBearer(ctx context.Context, rawToken string) (*
 			out.Principal = &mappedPrincipal
 			return &out, nil
 		}
+	}
+
+	orgID := explicitOrgID
+	if orgID == "" {
+		orgID = r.defaultOrgID
 	}
 
 	var claimTeamID string

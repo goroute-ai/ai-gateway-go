@@ -388,7 +388,12 @@ func TestLiveStack_A2AProtocolLiveOutboxAndStreaming(t *testing.T) {
 	agent := agentResp.Agent
 
 	// 4. Test Agent Card Discovery: GET /.well-known/agent-card.json
-	resp, cardRaw := client.doJSON(http.MethodGet, "/.well-known/agent-card.json?slug=code-reviewer", nil, nil, nil)
+	// Unauthenticated lookup of a specific tenant agent must fail closed (AUTH-10).
+	unauthResp, _ := client.doJSON(http.MethodGet, "/.well-known/agent-card.json?slug=code-reviewer", nil, nil, nil)
+	if unauthResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unauthenticated tenant agent card discovery, got %d", unauthResp.StatusCode)
+	}
+	resp, cardRaw := client.doJSON(http.MethodGet, "/.well-known/agent-card.json?slug=code-reviewer", vkHeaders, nil, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("agent card discovery failed (%d): %s", resp.StatusCode, string(cardRaw))
 	}

@@ -274,6 +274,27 @@ func TestAuthHardening_AUTH06_OrgScopedJWTKeyMappings(t *testing.T) {
 	if err != nil || gotBeta == nil || gotBeta.VirtualKeyID != "vk-beta-eng" {
 		t.Fatalf("ResolveJWTKeyMappingForOrg(org-beta): got %+v, err=%v", gotBeta, err)
 	}
+
+	// Ambiguous unscoped lookup across two orgs must fail closed.
+	if gotAmbig, ambigErr := repo.ResolveJWTKeyMappingForOrg(ctx, "", m1.Issuer, m1.ClaimName, m1.ClaimValue); ambigErr == nil || gotAmbig != nil {
+		t.Fatalf("expected ambiguous unscoped lookup to fail closed, got %+v, err=%v", gotAmbig, ambigErr)
+	}
+
+	// Unambiguous unscoped lookup for a claim owned by a single org succeeds.
+	mUnique := &domain.JWTKeyMapping{
+		OrgID:        "org-beta",
+		Issuer:       "https://idp.shared.example.com",
+		ClaimName:    "groups",
+		ClaimValue:   "ml-prod-only",
+		VirtualKeyID: "vk-beta-ml",
+	}
+	if err := repo.CreateJWTKeyMapping(ctx, mUnique); err != nil {
+		t.Fatalf("CreateJWTKeyMapping(org-beta unique): %v", err)
+	}
+	gotUnique, err := repo.ResolveJWTKeyMappingForOrg(ctx, "", mUnique.Issuer, mUnique.ClaimName, mUnique.ClaimValue)
+	if err != nil || gotUnique == nil || gotUnique.VirtualKeyID != "vk-beta-ml" {
+		t.Fatalf("ResolveJWTKeyMappingForOrg(unscoped unique): got %+v, err=%v", gotUnique, err)
+	}
 }
 
 // TestAuthHardening_AUTH07_MCPAndA2APrivateURLRequiresPlatformAdmin verifies that
