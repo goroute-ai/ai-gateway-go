@@ -497,13 +497,13 @@ Validates request structures before consuming upstream quota:
 ## 11. Storage Architecture: PostgreSQL Schema & Redis Keyspace Matrix
 
 ### 11.1 PostgreSQL Relational Hierarchy & Production Durability
-All entity operations across migrations `0001` through `0034` (`organizations`, `teams`, `team_memberships`, `projects`, `users`, `user_credentials`, `operator_sessions`, `virtual_keys`, `virtual_key_deprecated_hashes`, `jwt_key_mappings`, `access_group_rules`, `quota_policies`, `budget_window_limits`, `end_users`, `tags`, `model_access_groups`, `model_access_group_members`, `deployment_ptu_shares`, `priority_classes`, `spend_summaries`, `spend_logs`, `spend_event_outbox`, `budget_resets`, `guardrail_definitions`, `guardrail_bindings`, `tool_policies`, `daily_guardrail_metrics`, `daily_guardrail_usage_units`, `spend_log_guardrails`, and `audit_logs`) execute parameterized SQL queries against PostgreSQL using connection pooling via `jackc/pgx/v5`. Rollback of `0034` (`0034_auth_quota_reconciliation.down.sql`) acquires `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE` and blocks downgrades if duplicate nonempty `(org_id, oidc_subject)` bindings exist. High-throughput spend flushes execute via `pgx.Batch`, with comprehensive error checking per queued statement to guarantee that constraint violations and connection failures are captured and surfaced rather than silently dropped.
+All entity operations across migrations `0001` through `0041` (`organizations`, `teams`, `team_memberships`, `projects`, `users`, `operator_sessions` — with legacy `user_credentials` dropped in `0039`, `0040` OIDC session metadata, and `0041` authorization parity — `virtual_keys`, `virtual_key_deprecated_hashes`, `jwt_key_mappings`, `access_group_rules`, `quota_policies`, `budget_window_limits`, `end_users`, `tags`, `model_access_groups`, `model_access_group_members`, `deployment_ptu_shares`, `priority_classes`, `spend_summaries`, `spend_logs`, `spend_event_outbox`, `budget_resets`, `guardrail_definitions`, `guardrail_bindings`, `tool_policies`, `daily_guardrail_metrics`, `daily_guardrail_usage_units`, `spend_log_guardrails`, and `audit_logs`) execute parameterized SQL queries against PostgreSQL using connection pooling via `jackc/pgx/v5`. Rollback of `0034` (`0034_auth_quota_reconciliation.down.sql`) acquires `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE` and blocks downgrades if duplicate nonempty `(org_id, oidc_subject)` bindings exist. High-throughput spend flushes execute via `pgx.Batch`, with comprehensive error checking per queued statement to guarantee that constraint violations and connection failures are captured and surfaced rather than silently dropped.
 
 ```
 [organizations] (+ soft_budget/throttle/reset/windows, 0022-0034)
    |-- [teams] & [team_memberships] (0027) & [projects] (0027)
    |     |-- [users] (+ oidc_issuer, 0034; scim/impersonation, 0028)
-   |     |     |-- [user_credentials] & [operator_sessions] (0033)
+   |     |     |-- [operator_sessions] (0033, 0040; user_credentials dropped 0039)
    |     |-- [virtual_keys] ---> [virtual_key_deprecated_hashes] (0025)
    |     |                  ---> [jwt_key_mappings] (0024)
    |     |                  ---> [spend_logs] (+ rolling index, 0034) ---> [spend_log_guardrails]
@@ -786,7 +786,7 @@ Client Request (GET /ui/playground)
 - `fs.Sub(embeddedDist, "dist")` creates a sub-tree filesystem at server bootstrap time.
 - Requests never touch the host filesystem or shell out to Node.js.
 - Static assets are served from the embedded filesystem; this avoids host filesystem lookups and runtime Node.js processes.
-- The React 18 SPA uses route-based `React.lazy` + `Suspense` chunking so views load on demand within the `<= 560 KB` uncompressed / `<= 150 KB` gzipped total bundle budget (`<= 35 KB` CSS uncompressed / `<= 8 KB` gzipped) enforced by `web/scripts/check-budget.mjs`.
+- The React 18 SPA uses route-based `React.lazy` + `Suspense` chunking so views load on demand within the `<= 700 KB` uncompressed / `<= 185 KB` gzipped total bundle budget (`<= 35 KB` CSS uncompressed / `<= 8 KB` gzipped, single JS chunk `<= 150 KB` / `<= 45 KB` gzipped) enforced by `web/scripts/check-budget.mjs`.
 
 ---
 

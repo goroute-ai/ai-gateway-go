@@ -32,12 +32,12 @@ docs/
 ## Core Guides & Specifications
 
 1. **[Codebase Map (`CODEBASE_MAP.md`)](./CODEBASE_MAP.md)**  
-   *Implementation paths, tests, SQL migrations (`0001`–`0040`), change workflows, and authoritative source locations.*
+   *Implementation paths, tests, SQL migrations (`0001`–`0041`), change workflows, and authoritative source locations.*
 
 2. **[API Reference (`API_REFERENCE.md`)](./API_REFERENCE.md)**  
-   *Authoritative endpoint and protocol guide for data plane, auth/SSO, SCIM v2, admin control plane, and web interfaces (`123` OpenAPI paths: `27` `/v1`, `84` `/admin/v1`, `8` `/auth`, and `4` provider aliases):*
+   *Authoritative endpoint and protocol guide for data plane, auth/SSO, SCIM v2, admin control plane, and web interfaces (`127` OpenAPI paths: `27` `/v1`, `88` `/admin/v1`, `8` `/auth`, and `4` provider aliases):*
    - Unified Multi-Modal Data Plane (`27` `/v1` OpenAPI paths, self-service key APIs, virtual router aliases `auto` / `router/semantic` / `router/quality` / `router/adaptive`, routing hints & telemetry headers, chat, embeddings, audio, images, files, batches, responses, and realtime).
-   - Embedded Operator Web UI (`GET /ui/*`) with streaming chat playground, SSO/password/key login, virtual key rotation & temp budgets, multi-window quotas, KEK rotation, and Agentic Hub Gateway MCP spec switcher.
+   - Embedded Operator Web UI (`GET /ui/*`) with streaming chat playground, OIDC SSO / break-glass master key login, virtual key rotation & temp budgets, multi-window quotas, KEK rotation, and Agentic Hub Gateway MCP spec switcher.
    - Model Context Protocol (Spec-Generated Multi-Release `2024-11-05`–`2026-07-28` Virtual Hub, Scoped Servers, and Curated Toolsets).
    - Agent-to-Agent Protocol (A2A v1.0 JWS Agent Cards, Dual-Binding dispatch, Subscribe-First SSE).
    - Control Plane & Provisioning (`/auth/*`, `/scim/v2/*`, `/admin/v1/*`), including federated OIDC binding, SCIM 2.0 Users & Groups, multi-dimensional quotas, multi-window budgets (`rolling_24h`), PTU shares & priority classes, preflight credential validation, specialized fallback & budget fields on model groups/deployments, named guardrail registry, tool trust policies, guardrail simulation, and Prometheus Metrics scraping (`/metrics`).
@@ -61,11 +61,11 @@ docs/
    - Low-level design of embedded assets, zero-node container build, and bundle budget constraints.
    - Centralized outbound SSRF protection network engine and connect-time IP pinning.
    - 6-stage routing pipeline and Reliability Manager (`CLOSED` $\rightarrow$ `OPEN` $\rightarrow$ `HALF_OPEN`, priority tier step-downs, specialized fallback chains, and mid-stream recovery).
-   - Horizontal pod scalability, PostgreSQL schema (`migrations/0001`–`0040`), and distributed caching/Redis cluster keyspace.
+   - Horizontal pod scalability, PostgreSQL schema (`migrations/0001`–`0041`), and distributed caching/Redis cluster keyspace.
 
 5. **[Configuration & Developer Guide (`CONFIGURATION_GUIDE.md`)](./CONFIGURATION_GUIDE.md)**  
    *Step-by-step setup and operations guide:*
-   - Embedded Operator Web UI browser access (`http://localhost:8080/ui/`) and Admin Key / Password / OIDC SSO authentication.
+   - Embedded Operator Web UI browser access (`http://localhost:8080/ui/`) and Break-Glass Master Key / OIDC SSO authentication.
    - Declarative `model_list` setup via `configs/config.yaml`, `configs/config.example.yaml`, and environment variables.
    - In-process Go SDK (`pkg/gateway`, including `WithCustomAuthenticator`) integration and remote client usage.
    - Complete configuration parameters table with default values and security notes.

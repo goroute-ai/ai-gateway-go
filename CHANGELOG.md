@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### OIDC-Only Federation Migration, Authorization Parity & Hardening, and `goroute` CLI
+
+#### Added
+- **Authorization Hardening & Parity (`migrations/0041_authorization_parity`, `internal/auth/authorizer.go`, `internal/auth/role_mapping.go`, `pkg/gateway/authz.go`)**:
+  - Unified action-based authorization (`AuthAction`, `EvaluateAuthorization`), Fail-Closed `ExternalAuthorizer` (`auth.external_authorizer` HTTP webhook & `pkg/gateway.WithCustomAuthorizer` Go SDK hook), and group-to-role mapping (`group_role_mappings`, `GET/PUT/DELETE /admin/v1/organizations/{orgID}/group-role-mappings`, 4 new `/admin/v1` endpoints bringing OpenAPI total to `127` paths).
+  - Enterprise SIEM Audit Webhook Sink (`audit.siem_webhook` with SSRF-protected transport and HMAC signing) and keyset audit cursor pagination (`internal/storage/audit_cursor.go`).
+  - Tool trust/allowlist governance (`internal/auth/tool_authz.go`, 3-state allowlist controls and JSON diff viewer in Operator Web UI).
+- **Operator & Developer CLI (`cmd/goroute/`)**: Added `goroute` CLI supporting OIDC PKCE device login (`goroute login`), profile switching, token inspection (`goroute whoami`), and gateway API operations.
+- **Production-Like Docker Verification Harness (`tests/prod-docker/`, `deployments/prod-test/`)**: Added 2-replica HA Docker Compose stack with Keycloak 26, Caddy TLS 1.3, PostgreSQL 16 (TLS), Redis 7 (`--requirepass`), mock LLM fixtures (`Dockerfile.fixtures`), and Suites 1–10 + 99 covering security, federation, fail-closed authz parity, `cmd/goroute` CLI E2E, Playwright UI E2E, and opt-in live LLM checks.
+
+#### Changed & Removed
+- **OIDC-Only Operator Authentication (`migrations/0039_drop_user_credentials`, `migrations/0040_operator_sessions_oidc_metadata`)**: Removed local operator password authentication (`user_credentials` table, `/auth/login`, `/auth/password`), added `provider_id` / encrypted `id_token` session metadata for seamless RP-Initiated Logout (`id_token_hint`), and updated Operator Web UI `LoginView` to OIDC SSO + break-glass master key unlock (bundle budget `<= 700 KB` uncompressed / `<= 185 KB` gzipped).
+
 ---
 
 ## [1.24.0] - 2026-11-22

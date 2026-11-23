@@ -3,7 +3,7 @@
 > **Document Status**: Production Reference Architecture (`v1.24.0`)  
 > **Target Runtime**: Go version declared in `go.mod` (`net/http` + `go-chi/chi/v5`), PostgreSQL 16+, Redis 7+  
 > **Provider Integrations**: OpenAPI-first adapters under `internal/adapter/` (`openai`, `anthropic`, `groq`, `openrouter`); consult those packages for exact wire translation.  
-> **Contract Architecture**: Gateway and provider OpenAPI contracts are maintained under `docs/openapi/`. `make specgen` regenerates gateway/provider DTOs and multi-release MCP types (`cmd/mcpgen`), validates all contracts, and checks `/v1`, `/admin/v1`, `/auth`, and provider alias route parity (`123` OpenAPI paths). A2A protobuf generation is documented in `docs/specs/a2a/v1.0/generate.go`.
+> **Contract Architecture**: Gateway and provider OpenAPI contracts are maintained under `docs/openapi/`. `make specgen` regenerates gateway/provider DTOs and multi-release MCP types (`cmd/mcpgen`), validates all contracts, and checks `/v1`, `/admin/v1`, `/auth`, and provider alias route parity (`127` OpenAPI paths). A2A protobuf generation is documented in `docs/specs/a2a/v1.0/generate.go`.
 
 ---
 
@@ -94,7 +94,7 @@ The gateway is partitioned into nine foundational subsystems:
 
 | Subsystem | Core Responsibilities | Primary Go Packages |
 | :--- | :--- | :--- |
-| **1. AI Traffic Gateway** | Unified OpenAI-compatible API (`123` OpenAPI paths: `27` `/v1`, `84` `/admin/v1`, `8` `/auth`, `4` provider aliases, plus `/scim/v2/*`), 6-stage intelligent pre-routing & modality routing (`PreRouter`, `DeploymentFilterChain`, `Deployment.Priority` tiers, 7 LB strategies, hedged racing, `PriorityScheduler`, PTU priority capacity), retries, specialized fallbacks, mid-stream SSE continuation & translation, and uniform `X-RateLimit-*` headers. | `internal/server`, `internal/router`, `internal/adapter`, `internal/openapi` |
+| **1. AI Traffic Gateway** | Unified OpenAI-compatible API (`127` OpenAPI paths: `27` `/v1`, `88` `/admin/v1`, `8` `/auth`, `4` provider aliases, plus `/scim/v2/*`), 6-stage intelligent pre-routing & modality routing (`PreRouter`, `DeploymentFilterChain`, `Deployment.Priority` tiers, 7 LB strategies, hedged racing, `PriorityScheduler`, PTU priority capacity), retries, specialized fallbacks, mid-stream SSE continuation & translation, and uniform `X-RateLimit-*` headers. | `internal/server`, `internal/router`, `internal/adapter`, `internal/openapi` |
 | **2. AI Governance & Security** | Dual-boundary authentication, Virtual API Keys (`sk-gw-...` + grace-period rotation + `KeySecretSink`), Multi-tenant RBAC (Org $\rightarrow$ Team $\rightarrow$ Project $\rightarrow$ User $\rightarrow$ Key with `team_member_permissions` and self-service enforcement), `(org_id, oidc_issuer, oidc_subject)` federated OIDC/SSO/CLI login with PKCE `S256`, SCIM v2 provisioning, impersonation/delegation, `CustomAuthenticator`, 4-layer model access control, AES-256-GCM credential vault & transactional Master KEK rotation. | `internal/auth`, `internal/modelmgmt`, `pkg/gateway` |
 | **3. AI FinOps & Quotas** | Integer micro-dollar precision token cost calculation ($1 = 1,000,000\ \mu\$$), multi-dimensional & per-model quota descriptors, simultaneous multi-window budgets (`hourly`, `daily`, `weekly`, `monthly`, `rolling_24h`, `never`) with atomic PostgreSQL cold recovery, soft budget alerts/throttling, temporary key budget boosts, PTU team shares, and priority classes. | `internal/finops`, `internal/ratelimit`, `internal/router` |
 | **4. AI Model Lifecycle Automation** | Scheduled background discovery of new/deprecated models from provider APIs, capability & pricing registry enrichment, tenant subscription filtering. | `internal/modelmgmt` |
@@ -271,7 +271,7 @@ All official upstream and public gateway OpenAPI 3.0 / 3.1 YAML specifications a
 
 | Specification File | OpenAPI Version | Upstream Vendor | Key Operations Modeled |
 | :--- | :--- | :--- | :--- |
-| `docs/openapi/gateway.openapi.yaml` | `3.1.0` | **Public Unified Gateway** | `27` `/v1` paths, `84` `/admin/v1` paths, `8` `/auth` paths, `4` provider aliases (`123` total paths, verified via `cmd/specgen`) |
+| `docs/openapi/gateway.openapi.yaml` | `3.1.0` | **Public Unified Gateway** | `27` `/v1` paths, `88` `/admin/v1` paths, `8` `/auth` paths, `4` provider aliases (`127` total paths, verified via `cmd/specgen`) |
 | `docs/openapi/openai.openapi.yaml` | `3.0.0` | **OpenAI** | `createChatCompletion` (`/v1/chat/completions`), `createEmbedding` (`/v1/embeddings`), `listModels` (`/v1/models`) |
 | `docs/openapi/anthropic.openapi.yaml` | `3.0.0` | **Anthropic Claude** | `POST /v1/messages` (`MessageRequestBody`, `MessageResponse`), `POST /v1/messages/count_tokens`, `GET /v1/models` |
 | `docs/openapi/groq.openapi.yaml` | `3.0.3` | **Groq** | `POST /openai/v1/chat/completions`, `POST /openai/v1/completions`, `POST /openai/v1/audio/*`, `GET /openai/v1/models` |
@@ -477,7 +477,7 @@ The gateway embeds a modern, single-page application (SPA) operator console dire
    - Dynamic client-side routes (e.g. `/ui/playground`, `/ui/organizations`, `/ui/models`, `/ui/guardrails`) fall back to `index.html` with `Cache-Control: no-cache` using HTML5 History API semantics (`window.location.pathname` + `history.pushState`), enabling deep-linking and browser navigation.
 3. **Frontend Bundle Budget Enforcement**:
    - Strict size constraints are enforced by `web/scripts/check-budget.mjs` during `make ui-build`.
-   - Total uncompressed bundle size is constrained to `<= 560 KB` (gzipped `<= 150 KB`, CSS `<= 35 KB` / `<= 8 KB` gzipped), preventing binary bloat and keeping memory consumption under 2 MB inside the host process.
+   - Total uncompressed bundle size is constrained to `<= 700 KB` (gzipped `<= 185 KB`, CSS `<= 35 KB` / `<= 8 KB` gzipped, single JS chunk `<= 150 KB` / `<= 45 KB` gzipped), preventing binary bloat and keeping memory consumption compact inside the host process.
 4. **Reproducible Container Builds**:
    - The production container (`deployments/Dockerfile`) builds solely via `golang:alpine`. Compiled frontend assets are checked into `internal/ui/dist/`, eliminating Node.js toolchains from Docker builds and reducing build times from minutes to seconds.
 5. **Interactive Operator Capabilities**:
@@ -515,7 +515,7 @@ erDiagram
 
 ### 4.2 PostgreSQL Table Definitions
 
-The persistent relational schema is managed through ordered SQL migrations (`migrations/0001` through `0040`). Rollback of `0034` (`0034_auth_quota_reconciliation.down.sql`) runs inside a transaction with `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE` and aborts if duplicate nonempty `(org_id, oidc_subject)` bindings exist so operator identity resolution is never corrupted; `0035` (`0035_production_governance_hardening`) adds `teams.team_member_permissions`, `audit_logs.before_value`/`after_value`, and virtual key lifecycle columns; `0036` (`0036_production_routing_hardening`) adds deployment slot/capacity fields (`max_parallel_requests`, `itpm_capacity`, `otpm_capacity`), group saturation/cooldown/param flags, `rpd_limit`, team/key routing affinity bounds, and `sensitive_route_target`; `0037` (`0037_prune_unsupported_providers`) prunes removed legacy provider/rerank/cloud-guardrail rows and drops legacy Azure/rerank columns while seeding default Groq/OpenRouter models; `0038` (`0038_mcp_runtime_spec`) adds the `mcp_runtime_settings` table for UI-selectable MCP specification releases; `0039` (`0039_drop_user_credentials`) drops the legacy local `user_credentials` table in favor of OIDC-only authentication; and `0040` (`0040_operator_sessions_oidc_metadata`) adds `provider_id`, `encrypted_id_token`, and `encrypted_id_token_dek` to `operator_sessions` for seamless RP-Initiated Logout (`id_token_hint`).
+The persistent relational schema is managed through ordered SQL migrations (`migrations/0001` through `0041`). Rollback of `0034` (`0034_auth_quota_reconciliation.down.sql`) runs inside a transaction with `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE` and aborts if duplicate nonempty `(org_id, oidc_subject)` bindings exist so operator identity resolution is never corrupted; `0035` (`0035_production_governance_hardening`) adds `teams.team_member_permissions`, `audit_logs.before_value`/`after_value`, and virtual key lifecycle columns; `0036` (`0036_production_routing_hardening`) adds deployment slot/capacity fields (`max_parallel_requests`, `itpm_capacity`, `otpm_capacity`), group saturation/cooldown/param flags, `rpd_limit`, team/key routing affinity bounds, and `sensitive_route_target`; `0037` (`0037_prune_unsupported_providers`) prunes removed legacy provider/rerank/cloud-guardrail rows and drops legacy Azure/rerank columns while seeding default Groq/OpenRouter models; `0038` (`0038_mcp_runtime_spec`) adds the `mcp_runtime_settings` table for UI-selectable MCP specification releases; `0039` (`0039_drop_user_credentials`) drops the legacy local `user_credentials` table in favor of OIDC-only authentication; `0040` (`0040_operator_sessions_oidc_metadata`) adds `provider_id`, `encrypted_id_token`, and `encrypted_id_token_dek` to `operator_sessions` for seamless RP-Initiated Logout (`id_token_hint`); and `0041` (`0041_authorization_parity`) adds group-to-role mappings, authorization parity columns, and audit enhancements.
 
 #### 1. Multi-Tenant Identity, Federation, SSO & RBAC
 - **`organizations` & `teams`** (`0001`, `0015`, `0022`, `0023`, `0030`, `0031`): Root tenant and departmental boundaries with integer micro-dollar budgets (`max_budget_micros`, `spent_micros`, `soft_budget_micros`, `budget_duration_seconds`, `budget_reset_at`), RPM/TPM/TPD/concurrency limits, and default fallback models.
@@ -676,26 +676,28 @@ flowchart TD
 ai-gateway-go/
 ├── README.md                         # Project overview, Quickstart, Go SDK & Config reference
 ├── LICENSE                           # Apache-2.0 License
-├── CHANGELOG.md                      # Versioned release notes (through v1.21.0)
+├── CHANGELOG.md                      # Versioned release notes
 ├── cmd/
 │   ├── gateway/main.go               # Main AI Gateway server & background workers entry point
+│   ├── goroute/main.go               # Operator & developer CLI (PKCE login, profile/key management, chat)
 │   └── specgen/main.go               # Build-time OpenAPI/protocol contract validator
 ├── pkg/
-│   └── gateway/                      # Public Go SDK (gateway.New, gateway.NewClient, Chat, StreamChat, WithCustomAuthenticator)
+│   └── gateway/                      # Public Go SDK (gateway.New, gateway.NewClient, Chat, StreamChat, WithCustomAuthenticator, WithCustomAuthorizer)
 ├── docs/
 │   ├── API_REFERENCE.md              # Complete REST, /auth, SCIM v2, MCP, A2A, Admin & Metrics API reference
 │   ├── ARCHITECTURE.md               # This HLD & LLD reference architecture
 │   ├── INTERNALS.md                  # Subsystem internals, algorithms, and sequence diagrams
 │   ├── CONFIGURATION_GUIDE.md        # Comprehensive YAML, Go SDK & environment configuration guide
-│   ├── UPGRADING.md                  # Zero-downtime upgrade guide & migration 0034 rollback safety runbook
-│   ├── TESTING.md                    # 3-tier verification manual (static/contracts, unit & Postgres/Redis E2E, Chromium UI)
-│   ├── openapi/                      # Official OpenAPI 3.0/3.1 YAML contracts (Gateway 123 paths + MCP + A2A + 4 Providers)
+│   ├── UPGRADING.md                  # Zero-downtime upgrade guide & migration rollback safety runbook
+│   ├── TESTING.md                    # Multi-tier verification manual (static/contracts, unit & Postgres/Redis E2E, Chromium UI, prod Docker)
+│   ├── openapi/                      # Official OpenAPI 3.0/3.1 YAML contracts (Gateway 127 paths + MCP + A2A + 4 Providers)
 │   └── specs/                        # Pinned vendor specifications (MCP 2024-11-05..2026-07-28 & A2A v1.0 protobuf)
 ├── migrations/
-│   └── 0001..0040_*.{up,down}.sql    # Ordered PostgreSQL 16 schema migrations (through 0040_operator_sessions_oidc_metadata)
+│   └── 0001..0041_*.{up,down}.sql    # Ordered PostgreSQL 16 schema migrations (through 0041_authorization_parity)
 ├── tests/
 │   ├── e2e/                          # End-to-end live PostgreSQL + Redis, federation, SCIM, quota & cluster suites
 │   ├── guardrails/                   # Isolated guardrail unit/integration suite
+│   ├── prod-docker/                  # Production-like HA Docker OIDC, authz parity & CLI verification suites (Suites 1-10 + 99)
 │   └── ui-e2e/                       # Playwright headless Chromium Operator Web UI E2E suite
 ├── web/                              # React 18 + TypeScript + Vite Operator Console SPA source & bundle budget check
 ├── internal/

@@ -27,10 +27,10 @@ go vet ./...
 go build -o /dev/null ./cmd/gateway
 
 # OpenAPI 3.1/3.0, Multi-Release MCP YAML Schema (`cmd/mcpgen`) & A2A v1.0 Protobuf parity
-# Enforces /v1, /admin/v1, and /auth parity (123 total OpenAPI paths)
+# Enforces /v1, /admin/v1, and /auth parity (127 total OpenAPI paths)
 make specgen && git diff --exit-code -- internal/openapi/ internal/mcp/spec/
 
-# Embedded Operator Web UI asset sync & 500 KB bundle budget
+# Embedded Operator Web UI asset sync & 700 KB raw / 185 KB gzipped bundle budget
 make ui-check-dist
 node web/scripts/check-budget.mjs
 
@@ -54,7 +54,7 @@ go test -race -count=1 ./internal/... ./pkg/... ./cmd/... ./tests/guardrails/...
 # 1. Start isolated Postgres 16 (localhost:15432) and Redis 7 (localhost:16379)
 make test-live-up
 
-# 2. Verify forward/reverse migrations 0001..0040, preflight checks, and Pg repositories
+# 2. Verify forward/reverse migrations 0001..0041, preflight checks, and Pg repositories
 make test-postgres
 
 # 3. Run full dual-node cluster E2E suite under -race:
@@ -76,7 +76,7 @@ make test-live-down
 
 ## Tier 2 — Headless Chromium Operator Web UI E2E
 
-Playwright dependencies and specs live strictly isolated in [`tests/ui-e2e/`](../tests/ui-e2e) so [`web/`](../web) and its `510 KB` (`150 KB` gzipped) embedded bundle remain untouched:
+Playwright dependencies and specs live strictly isolated in [`tests/ui-e2e/`](../tests/ui-e2e) so [`web/`](../web) and its `700 KB` raw (`185 KB` gzipped) embedded bundle remain untouched:
 
 ```bash
 make test-live-up
@@ -107,4 +107,4 @@ Runs an isolated production-topology Docker Compose stack (`deployments/prod-tes
 make test-prod-docker
 ```
 
-Executes startup fail-closed container checks, migrations `0039`/`0040`, asymmetric JWT (`RS256`/`ES256`/`EdDSA`), RFC 7662 introspection + revocation, multi-replica SCIM/admin session revocation, CSRF/Host/SSRF/secret-scrubbing security checks, resilience (Keycloak outage stale-JWKS survival, Redis restart, live KEK rotation), and Playwright Chromium browser login + seamless Keycloak RP-Initiated Logout (`id_token_hint`).
+Executes Suites `1`–`9` (plus opt-in Suite `10` when ephemeral `PROD_LIVE_*_API_KEY` env vars are provided in CI/local shell — never committed) and Suite `99`, covering startup fail-closed container checks, migrations `0039`/`0040`/`0041`, asymmetric JWT (`RS256`/`ES256`/`EdDSA`), RFC 7662 introspection + revocation, multi-replica SCIM/admin session revocation, `group_role_mappings`, fail-closed `ExternalAuthorizer` (`auth.external_authorizer`), `audit.siem_webhook`, `Dockerfile.fixtures` deterministic mock LLM providers, `cmd/goroute` CLI E2E, CSRF/Host/SSRF/secret-scrubbing log scans, resilience (Keycloak outage stale-JWKS survival, Redis restart, live KEK rotation), and Playwright Chromium browser login + seamless Keycloak RP-Initiated Logout (`id_token_hint`).

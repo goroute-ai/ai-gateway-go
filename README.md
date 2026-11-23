@@ -406,7 +406,7 @@ Returns:
 
 ### 6. Unified Multi-Modal Data Plane (`27` `/v1` OpenAPI Paths)
 
-The gateway registers the following primary `/v1` operations. Contract parity across `/v1` (`27` paths), `/admin/v1` (`84` paths), `/auth` (`8` paths), and `4` provider aliases is enforced by `make specgen` (`123` Unified OpenAPI paths). Provider and model callability varies by operation, adapter/profile, configuration, and account access; catalogue presence alone does not guarantee a callable route.
+The gateway registers the following primary `/v1` operations. Contract parity across `/v1` (`27` paths), `/admin/v1` (`88` paths), `/auth` (`8` paths), and `4` provider aliases is enforced by `make specgen` (`127` Unified OpenAPI paths). Provider and model callability varies by operation, adapter/profile, configuration, and account access; catalogue presence alone does not guarantee a callable route.
 
 | Operation group | Routes |
 | :--- | :--- |
@@ -490,7 +490,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ### 8. Embedded Operator Web UI & Streaming Chat Playground
 
-GoRoute embeds a production React 18 + TypeScript + Tailwind single-page application directly inside the Go binary via `go:embed`. Launch the gateway and open **`http://localhost:8080/ui/`** (supporting OIDC SSO buttons, operator password sign-in, and emergency break-glass master key unlock):
+GoRoute embeds a production React 18 + TypeScript + Tailwind single-page application directly inside the Go binary via `go:embed`. Launch the gateway and open **`http://localhost:8080/ui/`** (supporting OIDC SSO login and emergency break-glass master key unlock):
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
@@ -509,7 +509,7 @@ GoRoute embeds a production React 18 + TypeScript + Tailwind single-page applica
 
 - **Zero Node.js Runtime Overhead**: Static bundles are compiled at build time and served directly from memory.
 - **Interactive Guardrail Studio & Simulator**: Configure baseline PII/secret/toxicity policies, manage named cloud/OSS/Starlark guardrails and tool trust policies, simulate requests via `/v1/guardrails/apply`, and track micro-dollar guardrail usage.
-- **Strict Bundle Budget**: The production frontend bundle is enforced within `<= 560 KB` uncompressed (`<= 150 KB` gzipped) via `web/scripts/check-budget.mjs`.
+- **Strict Bundle Budget**: The production frontend bundle is enforced within `<= 700 KB` uncompressed (`<= 185 KB` gzipped) via `web/scripts/check-budget.mjs`.
 
 ---
 
@@ -579,13 +579,13 @@ Explore the comprehensive technical specifications and operational runbooks:
 | Guide                                                                                           | What It Covers                                                                                  |
 | :---------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------- |
 | **[Documentation Hub (`docs/README.md`)](./docs/README.md)**                             | Master index for all guides, specs, and architectural overviews.                                |
-| **[API Reference (`docs/API_REFERENCE.md`)](./docs/API_REFERENCE.md)**                   | Unified REST (`/v1`), Operator SSO (`/auth`), SCIM v2 (`/scim/v2`), MCP, A2A, and Admin Control Plane reference (`123` OpenAPI paths). |
-| **[Configuration Guide (`docs/CONFIGURATION_GUIDE.md`)](./docs/CONFIGURATION_GUIDE.md)** | Complete reference table for all YAML options (`auth.*`, `router.*`, `rate_limit.*`, `finops.*`), `pkg/gateway` SDK options (`WithCustomAuthenticator`, `WithKeyRotationSecretSink`, routing hooks), and env vars. |
-| **[System Architecture (`docs/ARCHITECTURE.md`)](./docs/ARCHITECTURE.md)**               | High-Level (HLD) and Low-Level (LLD) enterprise architecture with SQL schemas (`0001`–`0040`) and Redis cluster keyspace. |
+| **[API Reference (`docs/API_REFERENCE.md`)](./docs/API_REFERENCE.md)**                   | Unified REST (`/v1`), Operator SSO (`/auth`), SCIM v2 (`/scim/v2`), MCP, A2A, and Admin Control Plane reference (`127` OpenAPI paths). |
+| **[Configuration Guide (`docs/CONFIGURATION_GUIDE.md`)](./docs/CONFIGURATION_GUIDE.md)** | Complete reference table for all YAML options (`auth.*`, `router.*`, `rate_limit.*`, `finops.*`), `pkg/gateway` SDK options (`WithCustomAuthenticator`, `WithCustomAuthorizer`, `WithKeyRotationSecretSink`, routing hooks), and env vars. |
+| **[System Architecture (`docs/ARCHITECTURE.md`)](./docs/ARCHITECTURE.md)**               | High-Level (HLD) and Low-Level (LLD) enterprise architecture with SQL schemas (`0001`–`0041`) and Redis cluster keyspace. |
 | **[Subsystem Internals (`docs/INTERNALS.md`)](./docs/INTERNALS.md)**                     | Deep-dive code tours, sequence diagrams, and mathematical specifications for identity federation, quota descriptors, and routing engines. |
-| **[Upgrade & Rollback Guide (`docs/UPGRADING.md`)](./docs/UPGRADING.md)**                | Safe upgrade procedures (`0022`–`0040`), issuer-binding rules, migration `0034` rollback preflight, and breaking/default behavior changes. |
-| **[Testing & Verification Guide (`docs/TESTING.md`)](./docs/TESTING.md)**                | 3-tier verification workflow: static/contract parity, race unit & guardrail tests + live Postgres/Redis E2E, Playwright Chromium Web UI E2E, and production Docker OIDC suites. |
-| **[OpenAPI Specifications (`docs/openapi/`)](./docs/openapi/README.md)**                 | Formal OpenAPI 3.0/3.1 contracts (`gateway.openapi.yaml` = `123` paths) and vendor protocol specifications. |
+| **[Upgrade & Rollback Guide (`docs/UPGRADING.md`)](./docs/UPGRADING.md)**                | Safe upgrade procedures (`0022`–`0041`), issuer-binding rules, migration `0034` / `0039`–`0041` notes, and breaking/default behavior changes. |
+| **[Testing & Verification Guide (`docs/TESTING.md`)](./docs/TESTING.md)**                | Multi-tier verification workflow: static/contract parity, race unit & guardrail tests + live Postgres/Redis E2E, Playwright Chromium Web UI E2E, and production Docker OIDC suites. |
+| **[OpenAPI Specifications (`docs/openapi/`)](./docs/openapi/README.md)**                 | Formal OpenAPI 3.0/3.1 contracts (`gateway.openapi.yaml` = `127` paths) and vendor protocol specifications. |
 | **[Codebase Map (`docs/CODEBASE_MAP.md`)](./docs/CODEBASE_MAP.md)**                      | Package locations, sources of truth, and developer change paths.                                |
 
 ---
