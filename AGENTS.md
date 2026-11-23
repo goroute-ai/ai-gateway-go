@@ -4,6 +4,7 @@ GoRoute AI Gateway is a Go service and embeddable SDK that routes inference requ
 
 ## Start Here
 
+- Browse [`.agents/`](.agents/README.md) for scoped coding-agent rules ([`.agents/rules/`](.agents/rules/)) and modular task runbooks ([`.agents/skills/`](.agents/skills/)).
 - Read [the codebase map](docs/CODEBASE_MAP.md) to locate behavior, contracts, configuration, persistence, and tests.
 - Read [the documentation index](docs/README.md) for API, architecture, internals, configuration, upgrading, and testing guides.
 - Read [the testing guide](docs/TESTING.md) before modifying or running E2E or Playwright UI E2E suites, and [the upgrade guide](docs/UPGRADING.md) when touching migrations or rolling budget recovery.

@@ -41,6 +41,7 @@ Use this page to find the implementation and the source of truth for a change. P
 - **Operator Web UI and static assets:** `web/` is the source of truth for the frontend application (React 18 + Vite + TypeScript with `React.lazy` route chunks). Compiled assets are copied to `internal/ui/dist/` via `make ui-build` and embedded into the Go binary. Total bundle budget must remain `<= 700 KB` uncompressed and `<= 185 KB` gzipped (with CSS `<= 35 KB` / `<= 8 KB` gzipped and single JS chunks `<= 150 KB` / `<= 45 KB` gzipped), enforced by `web/scripts/check-budget.mjs`.
 - **Runtime behavior:** implementation and focused tests in the corresponding package. Architecture and internals guides explain intent but can drift.
 - **Build and CI behavior:** `Makefile` and `.github/workflows/ci.yml`.
+- **Coding-agent rules & skills:** `.agents/rules/` (domain-scoped invariants) and `.agents/skills/` (task runbooks and validation scripts), linked from root `AGENTS.md` and `CLAUDE.md`.
 
 ## Change paths
 

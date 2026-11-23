@@ -34,7 +34,9 @@ web/dist/
 !internal/ui/dist/
 !internal/ui/dist/**
 
-# Local coding-agent rules & workspace memory (kept local only, not tracked on GitHub)
+# Local coding-agent overrides & workspace memory (shared .agents/ rules & skills are tracked)
 CLAUDE.local.md
 .claude/
-.agents/
+.agents/local/
+.agents/*.local.md
+.agents/rules/*.local.md

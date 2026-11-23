@@ -40,9 +40,9 @@ Use [the codebase map](docs/CODEBASE_MAP.md) to find implementation, tests, and 
 - Treat OpenAPI and protocol specs as contract sources. `make specgen` validates OpenAPI/MCP/A2A specs, runs `cmd/mcpgen`, and enforces `/v1`, `/admin/v1`, and `/auth` route parity (`127` OpenAPI paths: `27` `/v1`, `88` `/admin/v1`, `8` `/auth`, plus `4` provider aliases); it does not verify `/scim/v2/*`, MCP, or A2A routes automatically.
 - Keep `pkg/gateway` public SDK types self-contained (including `WithCustomAuthenticator`, `CustomAuthenticator`, `WithCustomAuthorizer`, `WithKeyRotationSecretSink`, `WithRoutingPlugin`, `WithPreRouter`, `WithRoutingHints`, `ConnectRealtime`, modality/spend helpers, and `WithHTTPClient`), model pricing history append-only, and `internal/ui/dist/` strictly synced with `web/dist/` within the `<= 700 KB` / `<= 185 KB` gzip bundle budget.
 
-## Scoped Rules
+## Scoped Rules & Skills
 
-Optional local path-scoped rules and skill overrides live in `.claude/` and `.agents/` (gitignored and kept local only, not tracked in this repository).
+Shared repository rules and progressive-disclosure agent skills live in [`.agents/`](./.agents/README.md) ([`.agents/rules/`](./.agents/rules/) and [`.agents/skills/`](./.agents/skills/)). Optional machine-local overrides live in `.agents/local/`, `.agents/*.local.md`, and `.claude/` (gitignored and kept local only).
 
 ## Verification
 
