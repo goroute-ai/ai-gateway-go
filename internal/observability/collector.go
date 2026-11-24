@@ -87,6 +87,19 @@ type DeploymentTelemetry struct {
 	AvgTTFTMs      float64 `json:"avg_ttft_ms"`
 }
 
+// CacheTelemetry summarizes live response-cache state from the active cache backend.
+type CacheTelemetry struct {
+	Enabled      bool
+	Type         string // "local", "redis", "redis-semantic"
+	Status       string // "ok", "degraded", "disabled"
+	Hits         int64
+	Misses       int64
+	SemanticHits int64
+	Errors       int64
+	Entries      int64
+	Evictions    int64
+}
+
 // TelemetrySnapshot provides a complete operational view of the gateway.
 type TelemetrySnapshot struct {
 	GeneratedAt                time.Time                      `json:"generated_at"`
@@ -104,8 +117,16 @@ type TelemetrySnapshot struct {
 	TotalFallbacks             int64                          `json:"total_fallbacks"`
 	FallbackRate               float64                        `json:"fallback_rate"`
 	TotalRetries               int64                          `json:"total_retries"`
+	CacheEnabled               bool                           `json:"cache_enabled"`
+	CacheType                  string                         `json:"cache_type,omitempty"`
+	CacheStatus                string                         `json:"cache_status,omitempty"`
 	CacheHits                  int64                          `json:"cache_hits"`
 	CacheMisses                int64                          `json:"cache_misses"`
+	CacheSemanticHits          int64                          `json:"cache_semantic_hits,omitempty"`
+	CacheErrors                int64                          `json:"cache_errors,omitempty"`
+	CacheEntries               int64                          `json:"cache_entries,omitempty"`
+	CacheEvictions             int64                          `json:"cache_evictions,omitempty"`
+	CacheHitRate               float64                        `json:"cache_hit_rate"`
 	RateLimitRejections        int64                          `json:"rate_limit_rejections"`
 	GuardrailBlocks            int64                          `json:"guardrail_blocks"`
 	GuardrailRedactions        int64                          `json:"guardrail_redactions"`
@@ -182,35 +203,37 @@ type RequestObservation struct {
 
 // Collector aggregates metrics, latency percentiles, TTFT, and routing overhead across the gateway.
 type Collector struct {
-	mu                    sync.RWMutex
-	totalRequests         int64
-	totalErrors           int64
-	totalFallbacks        int64
-	totalRetries          int64
-	cacheHits             int64
-	cacheMisses           int64
-	rateLimitRejections   int64
-	guardrailBlocks       int64
-	guardrailRedactions   int64
-	spendRedisDrift       int64
-	routingSignalDegraded int64
-	redisCBState          int
-	redisCBStateProvider  func() int
-	streamRequests        int64
-	streamErrors          int64
-	streamDuration        reservoir
-	streamTTFT            reservoir
-	globalLatency         reservoir
-	globalTTFT            reservoir
-	routingMicros         reservoir
-	providers             map[string]*providerInternal
-	maxProviders          int
-	deployments           map[string]*deploymentInternal
-	maxDeployments        int
-	guardrails            map[GuardrailMetricKey]*guardrailInternal
-	maxGuardrails         int
-	accessSeq             uint64
-	additionalMetrics     func() map[string]float64
+	mu                     sync.RWMutex
+	totalRequests          int64
+	totalErrors            int64
+	totalFallbacks         int64
+	totalRetries           int64
+	cacheHits              int64
+	cacheMisses            int64
+	rateLimitRejections    int64
+	guardrailBlocks        int64
+	guardrailRedactions    int64
+	spendRedisDrift        int64
+	routingSignalDegraded  int64
+	redisCBState           int
+	redisCBStateProvider   func() int
+	cacheMetricsProvider   func() (hits, misses int64)
+	cacheTelemetryProvider func() CacheTelemetry
+	streamRequests         int64
+	streamErrors           int64
+	streamDuration         reservoir
+	streamTTFT             reservoir
+	globalLatency          reservoir
+	globalTTFT             reservoir
+	routingMicros          reservoir
+	providers              map[string]*providerInternal
+	maxProviders           int
+	deployments            map[string]*deploymentInternal
+	maxDeployments         int
+	guardrails             map[GuardrailMetricKey]*guardrailInternal
+	maxGuardrails          int
+	accessSeq              uint64
+	additionalMetrics      func() map[string]float64
 }
 
 // NewCollector creates a bounded, concurrency-safe telemetry Collector.
@@ -278,6 +301,30 @@ func (c *Collector) SetRedisCBStateProvider(provider func() int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.redisCBStateProvider = provider
+}
+
+// SetCacheMetricsProvider attaches a dynamic callback returning authoritative
+// eligible response cache hits and misses from ResponseCache so Snapshot() and
+// Prometheus /metrics report identical cache counters and hit rate.
+func (c *Collector) SetCacheMetricsProvider(provider func() (hits, misses int64)) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cacheMetricsProvider = provider
+}
+
+// SetCacheTelemetryProvider attaches a dynamic callback returning full live
+// response-cache telemetry (backend type, status, hits, misses, semantic hits,
+// errors, entries, evictions) for Snapshot() and /admin/v1/observability/metrics.
+func (c *Collector) SetCacheTelemetryProvider(provider func() CacheTelemetry) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cacheTelemetryProvider = provider
 }
 
 // RecordStream adds low-cardinality timing and failure measurements for one
@@ -634,6 +681,15 @@ func (c *Collector) Snapshot() TelemetrySnapshot {
 
 	cbState := c.redisCBState
 	cbProvider := c.redisCBStateProvider
+	cacheProvider := c.cacheMetricsProvider
+	cacheTelemetryProvider := c.cacheTelemetryProvider
+
+	cacheHits := c.cacheHits
+	cacheMisses := c.cacheMisses
+	cacheHitRate := 0.0
+	if totalCache := cacheHits + cacheMisses; totalCache > 0 {
+		cacheHitRate = float64(cacheHits) / float64(totalCache)
+	}
 
 	snap := TelemetrySnapshot{
 		GeneratedAt:                time.Now().UTC(),
@@ -651,8 +707,9 @@ func (c *Collector) Snapshot() TelemetrySnapshot {
 		TotalFallbacks:             c.totalFallbacks,
 		FallbackRate:               fbRate,
 		TotalRetries:               c.totalRetries,
-		CacheHits:                  c.cacheHits,
-		CacheMisses:                c.cacheMisses,
+		CacheHits:                  cacheHits,
+		CacheMisses:                cacheMisses,
+		CacheHitRate:               cacheHitRate,
 		RateLimitRejections:        c.rateLimitRejections,
 		GuardrailBlocks:            c.guardrailBlocks,
 		GuardrailRedactions:        c.guardrailRedactions,
@@ -674,6 +731,32 @@ func (c *Collector) Snapshot() TelemetrySnapshot {
 	c.mu.RUnlock()
 	if cbProvider != nil {
 		snap.RedisCBState = cbProvider()
+	}
+	if cacheTelemetryProvider != nil {
+		ct := cacheTelemetryProvider()
+		snap.CacheEnabled = ct.Enabled
+		snap.CacheType = ct.Type
+		snap.CacheStatus = ct.Status
+		snap.CacheHits = ct.Hits
+		snap.CacheMisses = ct.Misses
+		snap.CacheSemanticHits = ct.SemanticHits
+		snap.CacheErrors = ct.Errors
+		snap.CacheEntries = ct.Entries
+		snap.CacheEvictions = ct.Evictions
+		if total := ct.Hits + ct.Misses; total > 0 {
+			snap.CacheHitRate = float64(ct.Hits) / float64(total)
+		} else {
+			snap.CacheHitRate = 0
+		}
+	} else if cacheProvider != nil {
+		h, m := cacheProvider()
+		snap.CacheHits = h
+		snap.CacheMisses = m
+		if total := h + m; total > 0 {
+			snap.CacheHitRate = float64(h) / float64(total)
+		} else {
+			snap.CacheHitRate = 0
+		}
 	}
 	return snap
 }
@@ -740,7 +823,7 @@ func (c *Collector) PrometheusHandler() http.HandlerFunc {
 		b.WriteString("# TYPE gateway_retries_total counter\n")
 		b.WriteString(fmt.Sprintf("gateway_retries_total %d\n", snap.TotalRetries))
 
-		b.WriteString("# HELP gateway_cache_hits_total Total exact-match response cache hits.\n")
+		b.WriteString("# HELP gateway_cache_hits_total Total response cache hits (exact and semantic).\n")
 		b.WriteString("# TYPE gateway_cache_hits_total counter\n")
 		b.WriteString(fmt.Sprintf("gateway_cache_hits_total %d\n", snap.CacheHits))
 

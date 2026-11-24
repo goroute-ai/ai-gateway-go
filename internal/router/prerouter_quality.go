@@ -16,11 +16,6 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
 
-// CacheHitCheckFn checks whether a request matches an exact response cache entry
-// or warm prompt-cache affinity for an organization, returning the target alias
-// when a hit is found.
-type CacheHitCheckFn func(ctx context.Context, orgID string, req *domain.CanonicalChatRequest) (targetAlias string, hit bool)
-
 type cachedQualityGroups struct {
 	groups    []*domain.ModelGroup
 	rev       uint64
@@ -43,9 +38,8 @@ type cachedQualityModel struct {
 // minimum model quality tier (1=economy, 2=standard, 3=frontier, 4=reasoning)
 // and selects the cheapest eligible active ModelGroup/Deployment meeting that tier.
 type QualityPreRouter struct {
-	repo       storage.Repository
-	cfg        config.RouterConfig
-	cacheCheck CacheHitCheckFn
+	repo storage.Repository
+	cfg  config.RouterConfig
 
 	cacheMu     sync.RWMutex
 	groupsCache map[string]cachedQualityGroups
@@ -74,12 +68,10 @@ func (q *QualityPreRouter) InvalidateCache(ev storage.InvalidationEvent) {
 }
 
 // NewQualityPreRouter constructs a QualityPreRouter backed by repo and RouterConfig.
-// cacheCheck is optional and consulted when cfg.CacheAwareRouting is true.
-func NewQualityPreRouter(repo storage.Repository, cfg config.RouterConfig, cacheCheck CacheHitCheckFn) *QualityPreRouter {
+func NewQualityPreRouter(repo storage.Repository, cfg config.RouterConfig) *QualityPreRouter {
 	return &QualityPreRouter{
-		repo:       repo,
-		cfg:        normalizeRouterConfigDefaults(cfg),
-		cacheCheck: cacheCheck,
+		repo: repo,
+		cfg:  normalizeRouterConfigDefaults(cfg),
 	}
 }
 
@@ -88,8 +80,7 @@ func (q *QualityPreRouter) Name() string {
 	return PreRouterModeQuality
 }
 
-// Route selects the target group alias for req. When CacheAwareRouting is enabled
-// and cacheCheck reports a hit, that alias is returned before tier escalation.
+// Route selects the target group alias for req based on complexity and quality tiering.
 func (q *QualityPreRouter) Route(ctx context.Context, orgID string, req *domain.CanonicalChatRequest) (string, string, float64, error) {
 	if q == nil {
 		return "fast", "quality:nil_router", 0, nil
@@ -102,13 +93,6 @@ func (q *QualityPreRouter) Route(ctx context.Context, orgID string, req *domain.
 	}
 
 	requiredTier, score, tierReason := DetermineRequiredQualityTier(q.cfg, req)
-
-	// Cache-aware mode short-circuits before escalating to higher-tier models.
-	if q.cfg.CacheAwareRouting && q.cacheCheck != nil {
-		if cachedAlias, hit := q.cacheCheck(ctx, orgID, req); hit && strings.TrimSpace(cachedAlias) != "" {
-			return strings.TrimSpace(cachedAlias), "quality:cache_hit", score, nil
-		}
-	}
 
 	if q.repo == nil {
 		return q.cfg.DefaultFastAlias, "quality:no_repo_fallback", score, nil

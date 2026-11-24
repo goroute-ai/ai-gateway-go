@@ -131,12 +131,12 @@ func (s *GatewayServer) handleLegacyCompletions(w http.ResponseWriter, r *http.R
 	}
 	defer s.settleQuotaOnReturn(quotaSettlement)
 
-	cacheHeader := r.Header.Get("X-Gateway-Cache-Control")
+	cacheOpts := requestCacheOptions(r)
 	var cacheKey string
-	if s.respCache != nil && s.respCache.IsCompletionCacheable(&req, cacheHeader) {
+	if s.respCache != nil && s.respCache.IsCompletionCacheable(&req, cacheOpts) {
 		cacheKey = s.respCache.ComputeCompletionKeyWithScope(idCtx.OrgID, idCtx.TeamID, cacheAllowedModelScope(idCtx), &req)
 		if cacheKey != "" {
-			if cachedResp, hit := s.respCache.GetCompletion(r.Context(), cacheKey); hit {
+			if cachedResp, hit := s.respCache.GetCompletion(r.Context(), idCtx.OrgID, cacheKey); hit {
 				for i := range cachedResp.Choices {
 					var sanitizeErr error
 					cachedResp.Choices[i].Text, sanitizeErr = s.sanitizeGuardrailText(r.Context(), idCtx.OrgID, cachedResp.Choices[i].Text)
@@ -163,11 +163,14 @@ func (s *GatewayServer) handleLegacyCompletions(w http.ResponseWriter, r *http.R
 					CostMicros:       0,
 					CacheHit:         true,
 				})
-				w.Header().Set("X-Gateway-Cache", "HIT")
+				setCacheHitHeaders(w, "exact", 0)
 				w.Header().Set("X-Gateway-Provider", string(cachedResp.Provider))
 				w.Header().Set("X-Gateway-Model", cachedResp.Model)
 				w.Header().Set("X-Gateway-Cost-Micros", "0")
 				w.Header().Set("Content-Type", "application/json")
+				if !s.recordCacheHitSpendAudit(w, r, idCtx, "/v1/completions", domain.ModalityCompletion, origRequestedModel, reqID, traceID, cachedResp.Provider, cachedResp.Model, cachedResp.Usage) {
+					return
+				}
 				_ = json.NewEncoder(w).Encode(cachedResp)
 				return
 			}
@@ -195,7 +198,7 @@ func (s *GatewayServer) handleLegacyCompletions(w http.ResponseWriter, r *http.R
 		}
 	}
 	if cacheKey != "" {
-		s.respCache.SetCompletionWithMeta(r.Context(), cacheKey, idCtx.OrgID, resp)
+		s.respCache.SetCompletionWithMeta(r.Context(), cacheKey, idCtx.OrgID, resp, origRequestedModel)
 	}
 
 	var gm *domain.GlobalModel
@@ -321,19 +324,6 @@ func (s *GatewayServer) handleLegacyCompletionsStream(
 		return
 	}
 
-	streamCacheHeader := streamCacheControlHeader(r)
-	var streamCacheKey string
-	if s.respCache != nil && s.respCache.IsCompletionStreamCacheable(req, streamCacheHeader) {
-		streamCacheKey = s.respCache.ComputeCompletionKeyWithScope(idCtx.OrgID, idCtx.TeamID, cacheAllowedModelScope(idCtx), req)
-	}
-	if streamCacheKey != "" {
-		if cachedChunks, hit := s.respCache.GetStreamChunks(r.Context(), streamCacheKey); hit {
-			s.replayCachedLegacyCompletionStream(w, r, idCtx, req, reqID, traceID, estTokens, releaseQuota, streamSession, sseWriter, cachedChunks)
-			return
-		}
-		w.Header().Set("X-Gateway-Cache", "MISS")
-	}
-
 	streamStarted := time.Now()
 	onSelected := func(dep *domain.Deployment) {
 		setPreStreamSelectedHeaders(w, dep, sseWriter.Started())
@@ -349,17 +339,12 @@ func (s *GatewayServer) handleLegacyCompletionsStream(
 	var usage *domain.TokenUsage
 	var guardrailRedacted, guardrailBlocked bool
 	var writeErr error
-	var sanitizedChunks []domain.CanonicalStreamChunk
-	sawTerminalChunk := false
 	for chunk := range ch {
-		if isTerminalStreamChunk(&chunk) {
-			sawTerminalChunk = true
-		}
 		if chunk.Usage != nil {
 			u := *chunk.Usage
 			usage = &u
 		}
-		emitted, blocked, redacted, cerr := writeFilteredLegacyStreamChunk(r.Context(), streamSession, sseWriter, chunk)
+		_, blocked, redacted, cerr := writeFilteredLegacyStreamChunk(r.Context(), streamSession, sseWriter, chunk)
 		if redacted {
 			guardrailRedacted = true
 		}
@@ -370,9 +355,6 @@ func (s *GatewayServer) handleLegacyCompletionsStream(
 		if cerr != nil {
 			writeErr = cerr
 			break
-		}
-		if emitted != nil && streamCacheKey != "" {
-			sanitizedChunks = appendStreamChunkBeforeTerminal(sanitizedChunks, *emitted)
 		}
 	}
 	if writeErr != nil {
@@ -409,15 +391,11 @@ func (s *GatewayServer) handleLegacyCompletionsStream(
 			_ = sseWriter.WriteError(flushWriteErr)
 			return
 		}
-		if streamCacheKey != "" {
-			sanitizedChunks = appendStreamChunkBeforeTerminal(sanitizedChunks, flushChunk)
-		}
 	}
 
 	s.finalizeLegacyStreamSuccess(
 		r, idCtx, req, reqID, traceID, estTokens,
 		streamStarted, meta, usage, guardrailRedacted,
-		streamCacheKey, sawTerminalChunk, sanitizedChunks,
 		sseWriter, releaseUsage,
 	)
 }
@@ -457,149 +435,6 @@ func writeLegacyStreamTransportError(w http.ResponseWriter, sseWriter *sse.Write
 	} else {
 		_ = sseWriter.WriteError(writeErr)
 	}
-}
-
-func (s *GatewayServer) replayCachedLegacyCompletionStream(
-	w http.ResponseWriter,
-	r *http.Request,
-	idCtx *domain.IdentityContext,
-	req *domain.CanonicalCompletionRequest,
-	reqID string,
-	traceID string,
-	estTokens int,
-	releaseQuota func(int),
-	streamSession *streamGuardrailSession,
-	sseWriter *sse.Writer,
-	cachedChunks []domain.CanonicalStreamChunk,
-) {
-	resolvedModel, provider, cachedGM := s.resolveCachedStreamModelMeta(r.Context(), idCtx.OrgID, req.Model, cachedChunks)
-	cachePricingStatus := domain.ResolvePricingStatus(cachedGM)
-	w.Header().Set("X-Gateway-Cache", "HIT")
-	if provider != "" {
-		w.Header().Set("X-Gateway-Provider", string(provider))
-	}
-	if resolvedModel != "" {
-		w.Header().Set("X-Gateway-Model", resolvedModel)
-	}
-	w.Header().Set("X-Gateway-Cost-Micros", "0")
-	w.Header().Set("X-Gateway-Pricing-Status", string(cachePricingStatus))
-
-	replayStarted := time.Now()
-	var guardrailRedacted, guardrailBlocked bool
-	var writeErr error
-	for i := range cachedChunks {
-		_, blocked, redacted, cerr := writeFilteredLegacyStreamChunk(r.Context(), streamSession, sseWriter, cachedChunks[i])
-		if redacted {
-			guardrailRedacted = true
-		}
-		if blocked {
-			guardrailBlocked = true
-			break
-		}
-		if cerr != nil {
-			writeErr = cerr
-			break
-		}
-	}
-	if writeErr != nil {
-		releaseQuota(0)
-		s.collector.RecordStream(time.Since(replayStarted), 0, true)
-		writeLegacyStreamTransportError(w, sseWriter, writeErr)
-		return
-	}
-	rem, flushErr := streamSession.Flush(r.Context(), nil)
-	if streamSession.Redacted() {
-		guardrailRedacted = true
-	}
-	if flushErr != nil || streamSession.Blocked() {
-		guardrailBlocked = true
-	}
-	if guardrailBlocked {
-		releaseQuota(0)
-		s.collector.RecordStream(time.Since(replayStarted), 0, true)
-		s.collector.Record(observability.RequestObservation{
-			Provider:          string(provider),
-			Model:             resolvedModel,
-			StatusCode:        http.StatusBadGateway,
-			GuardrailBlocked:  true,
-			GuardrailRedacted: guardrailRedacted,
-		})
-		errOut := flushErr
-		if errOut == nil {
-			errOut = guardrailStreamBlockedError()
-		}
-		_ = sseWriter.WriteError(errOut)
-		return
-	}
-	if rem != "" {
-		if flushWriteErr := sseWriter.WriteChunk(&domain.CanonicalStreamChunk{
-			ID:      "cmpl-" + reqID,
-			Object:  "text_completion",
-			Created: time.Now().Unix(),
-			Model:   resolvedModel,
-			Choices: []domain.CanonicalStreamChoice{{
-				Index: 0,
-				Delta: domain.CanonicalStreamDelta{Content: rem},
-			}},
-		}); flushWriteErr != nil {
-			releaseQuota(0)
-			_ = sseWriter.WriteError(flushWriteErr)
-			return
-		}
-	}
-	releaseQuota(0)
-	usageVal := extractStreamChunksUsage(cachedChunks, estTokens)
-	s.collector.RecordStream(time.Since(replayStarted), 0, false)
-	s.collector.Record(observability.RequestObservation{
-		Provider:          string(provider),
-		Model:             resolvedModel,
-		StatusCode:        http.StatusOK,
-		CacheHit:          true,
-		GuardrailRedacted: guardrailRedacted,
-	})
-	logger.SetInferenceMeta(r.Context(), logger.InferenceMeta{
-		Model:            resolvedModel,
-		Provider:         string(provider),
-		PromptTokens:     usageVal.PromptTokens,
-		CompletionTokens: usageVal.CompletionTokens,
-		CostMicros:       0,
-		CacheHit:         true,
-	})
-	var cacheProvenance string
-	if cachedGM != nil {
-		cacheProvenance = cachedGM.PricingProvenanceSource
-	}
-	if s.spendWorker != nil {
-		if err := s.spendWorker.Record(r.Context(), enrichSpendEventFromContext(r.Context(), domain.SpendEvent{
-			RequestID:               reqID,
-			TraceID:                 traceID,
-			OrgID:                   idCtx.OrgID,
-			TeamID:                  idCtx.TeamID,
-			UserID:                  idCtx.UserID,
-			VirtualKeyID:            idCtx.VirtualKeyID,
-			Endpoint:                r.URL.Path,
-			RequestedModel:          req.Model,
-			ResolvedModel:           resolvedModel,
-			Provider:                provider,
-			PricingStatus:           cachePricingStatus,
-			PricingProvenanceSource: cacheProvenance,
-			Usage:                   usageVal,
-			CostMicros:              0,
-			StatusCode:              http.StatusOK,
-			CacheHit:                true,
-			IsStream:                true,
-			CreatedAt:               time.Now().UTC(),
-		})); err != nil {
-			_ = sseWriter.WriteError(&domain.GatewayError{
-				StatusCode: http.StatusServiceUnavailable,
-				Type:       domain.ErrorTypeServer,
-				Code:       "spend_persistence_unavailable",
-				Message:    "unable to persist request accounting",
-			})
-			return
-		}
-	}
-	_ = sseWriter.WriteDone()
 }
 
 type legacyStreamMetaSnapshot struct {
@@ -717,9 +552,6 @@ func (s *GatewayServer) finalizeLegacyStreamSuccess(
 	meta *router.ExecutionMeta,
 	usage *domain.TokenUsage,
 	guardrailRedacted bool,
-	streamCacheKey string,
-	sawTerminalChunk bool,
-	sanitizedChunks []domain.CanonicalStreamChunk,
 	sseWriter *sse.Writer,
 	releaseUsage func(actualInput, actualOutput int, overrideCostMicros int64),
 ) {
@@ -736,10 +568,6 @@ func (s *GatewayServer) finalizeLegacyStreamSuccess(
 	}
 
 	snap := extractLegacyStreamMeta(req.Model, meta)
-	if streamCacheKey != "" && sawTerminalChunk && len(sanitizedChunks) > 0 {
-		finalizeStreamChunksForCache(sanitizedChunks, snap.resolvedModel, usageVal)
-		s.respCache.SetStreamChunks(r.Context(), streamCacheKey, idCtx.OrgID, snap.resolvedModel, sanitizedChunks)
-	}
 	costMicros := finops.CalculateCostMicros(snap.gm, usageVal)
 	releaseUsage(usageVal.PromptTokens, usageVal.CompletionTokens, costMicros)
 

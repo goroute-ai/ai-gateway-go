@@ -473,8 +473,15 @@ export interface TelemetrySnapshot {
   total_fallbacks: number;
   fallback_rate: number;
   total_retries: number;
+  cache_enabled?: boolean;
+  cache_type?: string;
+  cache_status?: 'ok' | 'degraded' | 'disabled' | string;
   cache_hits: number;
   cache_misses: number;
+  cache_semantic_hits?: number;
+  cache_errors?: number;
+  cache_entries?: number;
+  cache_evictions?: number;
   cache_hit_rate: number;
   providers?: Record<string, ProviderTelemetry>;
 }
@@ -511,7 +518,10 @@ export interface SpendEvent {
   usage?: TokenUsage;
   cost_micros: number;
   cost_usd: number;
+  endpoint?: string;
   modality?: string;
+  cache_hit?: boolean;
+  pricing_status?: string;
   latency_ms: number;
   created_at: string;
 }

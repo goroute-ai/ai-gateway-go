@@ -414,7 +414,7 @@ func TestRouter_L1CachingAndInvalidateCache(t *testing.T) {
 	// 2. QualityPreRouter
 	counting.listGroupsCalls.Store(0)
 	counting.listDepsCalls.Store(0)
-	qr := NewQualityPreRouter(counting, cfg, nil)
+	qr := NewQualityPreRouter(counting, cfg)
 	qReq := &domain.CanonicalChatRequest{Model: "auto", Messages: []domain.CanonicalMessage{{Role: "user", Content: "hi"}}}
 	_, _, _, err = qr.Route(ctx, org.ID, qReq)
 	require.NoError(t, err)

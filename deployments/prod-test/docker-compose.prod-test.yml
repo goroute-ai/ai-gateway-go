@@ -27,7 +27,7 @@ services:
       retries: 20
 
   redis:
-    image: redis:7-alpine
+    image: redis:8-alpine
     networks:
       - data_net
     command: ["redis-server", "--requirepass", "prod-test-redis-pass-2026", "--appendonly", "yes"]

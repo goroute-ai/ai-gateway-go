@@ -23,6 +23,8 @@ export interface ChatStreamHeaders {
   provider?: string;
   model?: string;
   cache?: string;
+  cacheType?: string;
+  cacheSimilarity?: string;
   costMicros?: number;
   tokenEstimate?: number;
   guardrailAction?: string;
@@ -33,19 +35,94 @@ export interface ChatStreamHeaders {
   tierStepdowns?: number;
 }
 
+export interface ChatCompletionResult {
+  content: string;
+  reasoning_content?: string;
+  tool_calls?: ChatStreamChunk['tool_calls'];
+  usage?: ChatStreamChunk['usage'];
+  headers: ChatStreamHeaders;
+}
+
+function extractGatewayHeaders(response: Response): ChatStreamHeaders {
+  const rawCost = response.headers.get('x-gateway-cost-micros');
+  const rawEst = response.headers.get('x-gateway-token-estimate');
+  const rawRoutingMicros = response.headers.get('x-gateway-routing-micros');
+  const rawStepdowns = response.headers.get('x-gateway-tier-stepdowns');
+  return {
+    requestId: response.headers.get('x-gateway-request-id') || undefined,
+    provider: response.headers.get('x-gateway-provider') || undefined,
+    model: response.headers.get('x-gateway-model') || undefined,
+    cache: response.headers.get('x-gateway-cache') || undefined,
+    cacheType: response.headers.get('x-gateway-cache-type') || undefined,
+    cacheSimilarity: response.headers.get('x-gateway-cache-similarity') || undefined,
+    costMicros: rawCost ? parseInt(rawCost, 10) : undefined,
+    tokenEstimate: rawEst ? parseInt(rawEst, 10) : undefined,
+    guardrailAction: response.headers.get('x-gateway-guardrail-action') || undefined,
+    routeReason: response.headers.get('x-gateway-route-reason') || undefined,
+    fallbackAttempted: response.headers.get('x-gateway-fallback-attempted') || undefined,
+    routingMicros: rawRoutingMicros ? parseInt(rawRoutingMicros, 10) : undefined,
+    streamContinued: response.headers.get('x-gateway-stream-continued') || undefined,
+    tierStepdowns: rawStepdowns ? parseInt(rawStepdowns, 10) : undefined,
+  };
+}
+
+export async function sendChatCompletion(
+  endpoint: string,
+  apiKey: string,
+  payload: Record<string, any>,
+  signal: AbortSignal,
+  extraHeaders?: Record<string, string>
+): Promise<ChatCompletionResult> {
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+      ...(extraHeaders || {}),
+    },
+    body: JSON.stringify({ ...payload, stream: false }),
+    signal,
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.json().catch(() => ({}));
+    const message =
+      errorBody.error?.message ||
+      errorBody.message ||
+      `HTTP ${response.status}: ${response.statusText}`;
+    const err = new Error(message);
+    (err as any).status = response.status;
+    (err as any).details = errorBody.error;
+    throw err;
+  }
+
+  const headers = extractGatewayHeaders(response);
+  const parsed = await response.json();
+  const msg = parsed?.choices?.[0]?.message || {};
+  return {
+    content: typeof msg.content === 'string' ? msg.content : '',
+    reasoning_content: msg.reasoning_content || msg.reasoning || undefined,
+    tool_calls: Array.isArray(msg.tool_calls) ? msg.tool_calls : undefined,
+    usage: parsed?.usage,
+    headers,
+  };
+}
+
 export async function streamChatCompletion(
   endpoint: string,
   apiKey: string,
   payload: Record<string, any>,
   onChunk: (chunk: ChatStreamChunk) => void,
   signal: AbortSignal,
-  onHeaders?: (headers: ChatStreamHeaders) => void
+  onHeaders?: (headers: ChatStreamHeaders) => void,
+  extraHeaders?: Record<string, string>
 ): Promise<void> {
   const response = await fetch(endpoint, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`,
+      ...(extraHeaders || {}),
     },
     body: JSON.stringify({ ...payload, stream: true }),
     signal,
@@ -65,24 +142,7 @@ export async function streamChatCompletion(
 
   // Extract real gateway telemetry headers
   if (onHeaders) {
-    const rawCost = response.headers.get('x-gateway-cost-micros');
-    const rawEst = response.headers.get('x-gateway-token-estimate');
-    const rawRoutingMicros = response.headers.get('x-gateway-routing-micros');
-    const rawStepdowns = response.headers.get('x-gateway-tier-stepdowns');
-    onHeaders({
-      requestId: response.headers.get('x-gateway-request-id') || undefined,
-      provider: response.headers.get('x-gateway-provider') || undefined,
-      model: response.headers.get('x-gateway-model') || undefined,
-      cache: response.headers.get('x-gateway-cache') || undefined,
-      costMicros: rawCost ? parseInt(rawCost, 10) : undefined,
-      tokenEstimate: rawEst ? parseInt(rawEst, 10) : undefined,
-      guardrailAction: response.headers.get('x-gateway-guardrail-action') || undefined,
-      routeReason: response.headers.get('x-gateway-route-reason') || undefined,
-      fallbackAttempted: response.headers.get('x-gateway-fallback-attempted') || undefined,
-      routingMicros: rawRoutingMicros ? parseInt(rawRoutingMicros, 10) : undefined,
-      streamContinued: response.headers.get('x-gateway-stream-continued') || undefined,
-      tierStepdowns: rawStepdowns ? parseInt(rawStepdowns, 10) : undefined,
-    });
+    onHeaders(extractGatewayHeaders(response));
   }
 
   const reader = response.body?.getReader();

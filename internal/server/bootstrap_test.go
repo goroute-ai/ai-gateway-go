@@ -154,7 +154,17 @@ func TestMetricsRequiresMasterAdminCredential(t *testing.T) {
 	if authenticatedRecorder.Code != http.StatusOK || !strings.Contains(metricsBody, "gateway_requests_total") {
 		t.Fatalf("expected 200 with metrics for admin credential, got %d: %s", authenticatedRecorder.Code, authenticatedRecorder.Body.String())
 	}
-	for _, metric := range []string{"gateway_go_heap_alloc_bytes", "gateway_go_gc_cycles_total", "gateway_model_catalog_size", "gateway_response_cache_epoch_lookup_seconds_sum"} {
+	for _, metric := range []string{
+		"gateway_go_heap_alloc_bytes",
+		"gateway_go_gc_cycles_total",
+		"gateway_model_catalog_size",
+		"gateway_cache_hits_total",
+		"gateway_cache_misses_total",
+		"gateway_cache_errors_total",
+		"gateway_cache_semantic_hits_total",
+		"gateway_cache_entries",
+		"gateway_cache_evictions_total",
+	} {
 		if !strings.Contains(metricsBody, metric) {
 			t.Fatalf("expected runtime metric %q, got: %s", metric, metricsBody)
 		}

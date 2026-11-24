@@ -503,7 +503,7 @@ func TestPreRouterQualityTierSelectionAndCacheAwareMode(t *testing.T) {
 	addGroup("cooldown-group", true, domain.DeploymentStatusCooldown, disabledCheapModel.ID)
 
 	cfg := config.Default().Router
-	qr := router.NewQualityPreRouter(repo, cfg, nil)
+	qr := router.NewQualityPreRouter(repo, cfg)
 	if qr.Name() != "quality" {
 		t.Fatalf("Name() = %q, want quality", qr.Name())
 	}
@@ -551,42 +551,6 @@ func TestPreRouterQualityTierSelectionAndCacheAwareMode(t *testing.T) {
 	if err != nil || alias != "reasoning-o3-mini" {
 		t.Fatalf("tier 4 reasoning got alias=%q reason=%q err=%v, want reasoning-o3-mini", alias, reason, err)
 	}
-
-	// 5. Cache-aware mode short-circuits BEFORE escalating to Tier 4 reasoning!
-	cacheCfg := cfg
-	cacheCfg.CacheAwareRouting = true
-	var cacheChecks atomic.Int32
-	cacheQR := router.NewQualityPreRouter(repo, cacheCfg, func(_ context.Context, gotOrg string, _ *domain.CanonicalChatRequest) (string, bool) {
-		cacheChecks.Add(1)
-		if gotOrg == org.ID {
-			return "economy-fast", true
-		}
-		return "", false
-	})
-	aliasCached, reasonCached, _, err := cacheQR.Route(ctx, org.ID, &domain.CanonicalChatRequest{
-		Model:           "router/quality",
-		ReasoningEffort: "high",
-		Messages:        []domain.CanonicalMessage{{Role: "user", Content: "Use reasoning to prove Fermat's theorem"}},
-	})
-	if err != nil || aliasCached != "economy-fast" || reasonCached != "quality:cache_hit" || cacheChecks.Load() != 1 {
-		t.Fatalf("cache-aware mode got alias=%q reason=%q checks=%d err=%v, want economy-fast", aliasCached, reasonCached, cacheChecks.Load(), err)
-	}
-
-	// When CacheAwareRouting is false, CacheHitCheckFn must not be consulted.
-	noCacheCfg := cfg
-	noCacheCfg.CacheAwareRouting = false
-	var skippedChecks atomic.Int32
-	noCacheQR := router.NewQualityPreRouter(repo, noCacheCfg, func(_ context.Context, _ string, _ *domain.CanonicalChatRequest) (string, bool) {
-		skippedChecks.Add(1)
-		return "economy-fast", true
-	})
-	aliasNoCache, _, _, err := noCacheQR.Route(ctx, org.ID, &domain.CanonicalChatRequest{
-		Model:    "router/quality",
-		Messages: []domain.CanonicalMessage{{Role: "user", Content: "Apply reasoning to prove this"}},
-	})
-	if err != nil || aliasNoCache != "reasoning-o3-mini" || skippedChecks.Load() != 0 {
-		t.Fatalf("disabled cache-aware mode got alias=%q skippedChecks=%d err=%v", aliasNoCache, skippedChecks.Load(), err)
-	}
 }
 
 func TestPreRouterQualityTierFallbackAndCapabilityFiltering(t *testing.T) {
@@ -632,7 +596,7 @@ func TestPreRouterQualityTierFallbackAndCapabilityFiltering(t *testing.T) {
 	_ = repo.CreateDeployment(ctx, &domain.Deployment{ModelGroupID: g1.ID, GlobalModelID: noToolsEco.ID, DeploymentName: "d1", Status: domain.DeploymentStatusActive})
 	_ = repo.CreateDeployment(ctx, &domain.Deployment{ModelGroupID: g2.ID, GlobalModelID: toolsStd.ID, DeploymentName: "d2", Status: domain.DeploymentStatusActive})
 
-	qr := router.NewQualityPreRouter(repo, config.Default().Router, nil)
+	qr := router.NewQualityPreRouter(repo, config.Default().Router)
 
 	// Request requires Tier 3 (tools) and Tier 4 (reasoning_effort); no Tier 3/4 exists,
 	// so it must gracefully degrade to the highest available eligible tier ("std-tools", Tier 2),

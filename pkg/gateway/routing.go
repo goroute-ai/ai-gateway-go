@@ -79,7 +79,6 @@ type RouterOptions struct {
 	SessionAffinityTTL             time.Duration
 	SessionAffinityRepinOnFailover bool
 	PromptCacheAffinity            bool
-	CacheAwareRouting              bool
 	HedgeDelayMs                   int
 	MaxHedgeConcurrency            int
 	LatencyTolerancePct            float64
@@ -219,9 +218,6 @@ func WithRouterConfig(rc RouterOptions) Option {
 			}
 			if rc.PromptCacheAffinity {
 				r.PromptCacheAffinity = true
-			}
-			if rc.CacheAwareRouting {
-				r.CacheAwareRouting = true
 			}
 			if rc.HedgeDelayMs > 0 {
 				r.HedgeDelayMs = rc.HedgeDelayMs

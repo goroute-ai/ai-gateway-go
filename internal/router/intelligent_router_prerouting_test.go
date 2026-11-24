@@ -239,21 +239,6 @@ func TestIntelligentRouter_PreRouterWiringAutoAndVirtualAliases(t *testing.T) {
 		t.Fatalf("router/quality tools got %+v err=%v", decQualTools, err)
 	}
 
-	// SetQualityPreRouter with CacheAwareRouting=true short-circuits on cache hit.
-	cacheCfg := cfg
-	cacheCfg.CacheAwareRouting = true
-	ir.SetQualityPreRouter(router.NewQualityPreRouter(repo, cacheCfg, func(_ context.Context, _ string, _ *domain.CanonicalChatRequest) (string, bool) {
-		return "fast", true
-	}))
-	decQualCache, err := ir.ResolveGroup(ctx, org.ID, &domain.CanonicalChatRequest{
-		Model:           "router/quality",
-		ReasoningEffort: "high",
-		Messages:        []domain.CanonicalMessage{{Role: "user", Content: "Prove theorem"}},
-	})
-	if err != nil || decQualCache.TargetGroupAlias != "fast" || decQualCache.Reason != "quality:cache_hit" {
-		t.Fatalf("router/quality cache hit got %+v err=%v", decQualCache, err)
-	}
-
 	// 5. "router/adaptive" invokes BanditPreRouter and sets BanditBucket + PreRouterName.
 	bandit := router.NewBanditPreRouter(cfg, nil, router.WithBanditRNG(rand.New(rand.NewPCG(1, 2))))
 	for i := 0; i < 40; i++ {
@@ -458,7 +443,7 @@ func TestIntelligentRouter_ConcurrentSettersAndResolveGroup(t *testing.T) {
 			case 0:
 				ir.SetSemanticPreRouter(sr)
 			case 1:
-				ir.SetQualityPreRouter(router.NewQualityPreRouter(repo, cfg, nil))
+				ir.SetQualityPreRouter(router.NewQualityPreRouter(repo, cfg))
 			case 2:
 				ir.SetBanditPreRouter(router.NewBanditPreRouter(cfg, nil))
 			case 3:

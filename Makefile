@@ -1,4 +1,4 @@
-.PHONY: all build fmt vet lint deadcode test test-unit test-guardrails test-e2e test-live-up test-live-down test-keycloak-up test-keycloak-down test-postgres test-e2e-strict test-ui-e2e test-security specgen catalog-sync run docker-build docker-up docker-down clean release-assets release-check ui-install ui-build ui-check-dist ui-dev
+.PHONY: all build fmt vet lint deadcode test test-unit test-guardrails test-e2e test-live-up test-live-down test-keycloak-up test-keycloak-down test-postgres test-e2e-strict test-ui-e2e test-prod-docker test-cache-prod-docker test-security specgen catalog-sync run docker-build docker-up docker-down clean release-assets release-check ui-install ui-build ui-check-dist ui-dev
 
 VERSION ?= v0.1.0
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
@@ -87,7 +87,7 @@ test-e2e:
 	go test -race -v -count=1 ./tests/e2e
 
 test-live-up:
-	@echo "==> Starting isolated PostgreSQL 16 + Redis 7 test stack..."
+	@echo "==> Starting isolated PostgreSQL 16 + Redis 8 test stack..."
 	docker compose -f deployments/docker-compose.test.yml up -d --wait
 
 test-live-down:
@@ -123,6 +123,10 @@ test-ui-e2e:
 test-prod-docker:
 	@echo "==> Running production-like 2-replica Docker OIDC verification (Suites 1-6)..."
 	bash tests/prod-docker/run_prod_tests.sh
+
+test-cache-prod-docker:
+	@echo "==> Running production-grade 2-replica Docker Caching verification (local, redis KV, redis-semantic HNSW & FLAT + chaos)..."
+	bash tests/cache-prod-docker/run_cache_prod_tests.sh
 
 test-security:
 	@echo "==> Running security & vulnerability checks..."

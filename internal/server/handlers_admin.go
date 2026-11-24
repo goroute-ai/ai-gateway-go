@@ -1966,6 +1966,13 @@ func (s *GatewayServer) handleAdminInvalidateCache(w http.ResponseWriter, r *htt
 		EntityID:   req.Model,
 		OrgID:      req.OrgID,
 	})
+	if s.respCache != nil && s.respCache.Type() == config.CacheTypeLocal && s.redisFabric != nil {
+		s.redisFabric.PublishInvalidation(r.Context(), storage.InvalidationEvent{
+			EntityType: "response_cache",
+			EntityID:   req.Model,
+			OrgID:      req.OrgID,
+		})
+	}
 	s.audit(r.Context(), req.OrgID, "cache.invalidated", "response_cache", "global", map[string]any{
 		"org_id":            req.OrgID,
 		"model":             req.Model,
@@ -2449,7 +2456,6 @@ func sanitizeRuntimeConfig(cfg *config.Config) map[string]any {
 				"timeout":              cfg.Router.SemanticRouter.Timeout.String(),
 				"routes":               cfg.Router.SemanticRouter.Routes,
 			},
-			"cache_aware_routing": cfg.Router.CacheAwareRouting,
 			"bandit": map[string]any{
 				"enabled":          cfg.Router.Bandit.Enabled,
 				"default_alpha":    cfg.Router.Bandit.DefaultAlpha,
@@ -2510,9 +2516,28 @@ func sanitizeRuntimeConfig(cfg *config.Config) map[string]any {
 			"auto_approve":  cfg.Discovery.AutoApprove,
 		},
 		"cache": map[string]any{
-			"enabled":        cfg.Cache.Enabled,
-			"default_ttl":    cfg.Cache.DefaultTTL.String(),
-			"max_l1_entries": cfg.Cache.MaxL1Entries,
+			"enabled":             cfg.Cache.Enabled,
+			"type":                cfg.Cache.Type,
+			"default_ttl":         cfg.Cache.DefaultTTL.String(),
+			"namespace":           cfg.Cache.Namespace,
+			"max_entries":         cfg.Cache.MaxEntries,
+			"max_item_bytes":      cfg.Cache.MaxItemBytes,
+			"excluded_call_types": cfg.Cache.ExcludedCallTypes,
+			"redis_addr":          cfg.Cache.RedisAddr,
+			"redis_addrs":         cfg.Cache.RedisAddrs,
+			"redis_master_name":   cfg.Cache.RedisMasterName,
+			"redis_pass":          redactSecret(cfg.Cache.RedisPass),
+			"redis_db":            cfg.Cache.RedisDB,
+			"redis_tls":           cfg.Cache.RedisTLS,
+			"semantic": map[string]any{
+				"embedding_model":      cfg.Cache.Semantic.EmbeddingModel,
+				"similarity_threshold": cfg.Cache.Semantic.SimilarityThreshold,
+				"index_name":           cfg.Cache.Semantic.IndexName,
+				"vector_algorithm":     cfg.Cache.Semantic.VectorAlgorithm,
+				"embedding_timeout":    cfg.Cache.Semantic.EmbeddingTimeout.String(),
+				"max_messages":         cfg.Cache.Semantic.MaxMessages,
+				"max_input_chars":      cfg.Cache.Semantic.MaxInputChars,
+			},
 		},
 		"guardrails": map[string]any{
 			"scanners": scanners,

@@ -1,0 +1,70 @@
+server:
+  environment: "production"
+  host: "0.0.0.0"
+  port: 8080
+  public_base_url: "https://gateway.prod.test:19443"
+  enable_hsts: true
+  cors_allowed_origins:
+    - "https://gateway.prod.test:19443"
+  cors_allow_credentials: true
+
+logging:
+  level: "info"
+  format: "json"
+
+storage:
+  mode: "postgres"
+  postgres_dsn: "os.environ/GATEWAY_POSTGRES_DSN"
+  redis_addr: "redis-primary:6379"
+  redis_pass: "os.environ/GATEWAY_REDIS_PASS"
+  redis_db: 0
+
+auth:
+  master_admin_key: "os.environ/GATEWAY_MASTER_ADMIN_KEY"
+  master_encryption_key: "os.environ/GATEWAY_MASTER_ENCRYPTION_KEY"
+  session_secret: "os.environ/GATEWAY_SESSION_SECRET"
+  allow_master_key_data_plane: false
+  default_org_id: "org_default"
+
+rate_limit:
+  enabled: true
+  fallback_to_local_on_outage: false
+  window_seconds: 60
+  redis_timeout: 500ms
+
+cache:
+  enabled: true
+  type: "local"
+  default_ttl: 10m
+  namespace: "gw:cache"
+  max_entries: 4096
+  max_item_bytes: 1048576
+  excluded_call_types: ["embedding"]
+  redis_addr: "redis-cache:6379"
+  redis_pass: "os.environ/GATEWAY_CACHE_REDIS_PASS"
+  redis_db: 0
+  semantic:
+    similarity_threshold: 0.85
+    index_name: "gw_semantic_cache_idx"
+    vector_algorithm: "HNSW"
+    embedding_timeout: 15s
+    max_messages: 4
+    max_input_chars: 8000
+
+finops:
+  flush_interval: 100ms
+  batch_size: 10
+  worker_count: 2
+
+security:
+  network:
+    inbound_caller:
+      expose_on_public_internet: true
+      trusted_proxy_cidrs:
+        - "172.31.10.200/32"
+    outbound_ssrf:
+      allow_private_networks: false
+      allow_insecure_http: false
+      allow_loopback_http: false
+      allowed_schemes:
+        - "https"

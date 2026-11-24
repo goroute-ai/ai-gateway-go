@@ -81,7 +81,7 @@ func NewIntelligentRouter(repo storage.Repository, cfg config.RouterConfig) *Int
 	reg := NewPreRouterRegistry(cfg.PreRouterMode)
 	reg.Register(NewHeuristicPreRouterWithRouter(ir))
 
-	qual := NewQualityPreRouter(repo, cfg, nil)
+	qual := NewQualityPreRouter(repo, cfg)
 	reg.Register(qual)
 
 	var bandit *BanditPreRouter

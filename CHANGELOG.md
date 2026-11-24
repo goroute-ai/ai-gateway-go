@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Single-Backend Response Caching (`local` | `redis` | `redis-semantic`), Hardening & Operator Web UI Wiring
+
+#### Added
+- **Single-Backend Response Caching (`internal/cache/`)**:
+  - Clean `Backend` / `SemanticBackend` abstraction selected via `cache.type`: `local` (bounded in-memory LRU with multi-replica Redis Pub/Sub admin invalidation broadcast), `redis` (direct Redis KV with mutex-safe Redis Cluster `SCAN`, batched `MGET`/pipeline model invalidation, and `UNLINK`), and `redis-semantic` (Redis 8+ RediSearch `FLOAT32` `COSINE` `HNSW`/`FLAT` vector similarity search with atomic `TxPipeline` `HSET`+`EXPIRE`, `FT.INFO` vector dimension validation, single-embed-per-miss vector reuse, and automatic self-healing index recreation after ephemeral Redis restarts).
+  - Strict tenant, multi-turn, and parameter isolation: hex-hashed RediSearch `TAG` filters (`scope`, `org_id`, `model` including both resolved upstream model and requested `ModelGroup` alias), multimodal (`image_url`/`document`) and tool-call semantic bypass, prior-turn + `user` + `extra_params` semantic scope binding, `seed` cache eligibility (`temperature > 0`), `cache.semantic.max_messages: -1` unlimited mode, and rune-safe UTF-8 prompt truncation.
+  - Optional dedicated cache Redis (`cache.redis_addr`/`redis_addrs`/`redis_master_name`/`redis_pass`/`redis_db`/`redis_tls` with TLS 1.2+ and `500ms` fail-open timeouts), fail-open `/readyz` `"cache_status": "ok" | "degraded"` reporting, default `cache.excluded_call_types: ["embedding"]`, and `max_l1_entries` preserved as a silent deprecated YAML alias for `max_entries`.
+  - Unified `$0` (`cache_hit: true`) FinOps `spend_logs` audit records across all 5 cached endpoints (`/v1/chat/completions`, `/v1/messages`, `/v1/responses`, `/v1/completions`, `/v1/embeddings`) plus async internal semantic-cache embedding spend logging under `endpoint: "_internal/semantic_cache"`.
+  - Backend-agnostic Prometheus cache metrics (`gateway_cache_hits_total`, `gateway_cache_misses_total`, `gateway_cache_errors_total`, `gateway_cache_semantic_hits_total`, `gateway_cache_entries`, `gateway_cache_evictions_total`) and authoritative `Collector.SetCacheTelemetryProvider` parity on `GET /admin/v1/observability/metrics`.
+  - Documented `X-Gateway-Cache`, `X-Gateway-Cache-Type`, and `X-Gateway-Cache-Similarity` headers in OpenAPI 3.1 (`docs/openapi/gateway.openapi.yaml`) and CORS `Access-Control-Expose-Headers`.
+- **Operator Web UI Caching Wiring (`web/src/`, `internal/ui/dist/`)**:
+  - `PlaygroundView`: `Stream SSE | JSON (Cacheable)` response mode toggle, collapsible **Cache Controls** (`Cache Mode`, `Seed`, `Semantic Similarity` override), token usage & cache telemetry display, and updated `curl`/Python/TypeScript/Go code exports.
+  - `OverviewView`: Rich Response Cache KPI card showing active backend badge, semantic hits, local entry count, and degraded/error warnings; safe **Purge Cache** modal defaulting to `Current Organization` with `platform_admin`-gated Global scope and updated `"Invalidation revision"` copy.
+  - `FinOpsView`: `All` / `Cache Hits` / `Semantic Cache` filter pills, `CACHE HIT` (`$0`) and `semantic cache` (`_internal/semantic_cache`) badges, endpoint search, and Inspector modal metadata.
+- **Redis 8 & Production Docker Caching Verification (`deployments/cache-prod-test/`, `tests/cache-prod-docker/`)**:
+  - Upgraded Docker Compose, Kubernetes, and CI Redis images to `redis:8-alpine`.
+  - Added Tier 3b `make test-cache-prod-docker` 2-replica HA production Docker caching suite (`Suites C0–C6 + FLAT` + chaos fail-open & auto-recovery) and live Redis 8 integration tests (`tests/e2e/cache_semantic_test.go`).
+
+#### Removed
+- Removed dual-tier L1+L2 Redis Lua epoch response caching (`internal/cache/cache_epochs.go`, `internal/cache/response_cache_redis_test.go`).
+- Removed raw SSE chunk-array streaming response caching (`internal/server/stream_cache_test.go` and per-handler chunk buffering; deferred to `v0.2` via canonical assembled-response replay).
+- Removed `router.cache_aware_routing` (`QualityPreRouter` ↔ `ResponseCache` coupling; independent `router.prompt_cache_affinity` preserved) and the dead MCP `tools/call` cache hook.
+
+---
+
 ## [0.1.0] - 2026-11-23
 
 ### Initial Baseline — OpenAPI-First AI Gateway, OIDC Federation, Multi-Release MCP Hub & A2A v1.0 Router

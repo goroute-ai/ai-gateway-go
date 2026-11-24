@@ -1,0 +1,212 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    networks:
+      - data_net
+    environment:
+      POSTGRES_USER: gateway
+      POSTGRES_PASSWORD: prod-cache-pg-password-2026
+      POSTGRES_DB: aigateway
+    volumes:
+      - ../../.tmp/cache-prod-certs:/certs:ro
+    tmpfs:
+      - /var/lib/postgresql/data
+    command:
+      - sh
+      - -c
+      - |
+        mkdir -p /tmp/pg-ssl &&
+        cp /certs/server.crt /tmp/pg-ssl/server.crt &&
+        cp /certs/server.key /tmp/pg-ssl/server.key &&
+        chown -R postgres:postgres /tmp/pg-ssl &&
+        chmod 600 /tmp/pg-ssl/server.key &&
+        exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/tmp/pg-ssl/server.crt -c ssl_key_file=/tmp/pg-ssl/server.key
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gateway -d aigateway"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  redis-primary:
+    image: redis:8-alpine
+    networks:
+      - data_net
+    command: ["redis-server", "--requirepass", "prod-cache-primary-pass-2026", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "prod-cache-primary-pass-2026", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  redis-cache:
+    image: redis:8-alpine
+    networks:
+      - data_net
+    command:
+      - redis-server
+      - --requirepass
+      - prod-cache-dedicated-pass-2026
+      - --maxmemory
+      - 128mb
+      - --maxmemory-policy
+      - volatile-lru
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "prod-cache-dedicated-pass-2026", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  caddy:
+    image: caddy:2-alpine
+    networks:
+      edge_net:
+        ipv4_address: 172.31.10.200
+    ports:
+      - "127.0.0.1:19443:19443"
+      - "127.0.0.1:19444:19444"
+      - "127.0.0.1:19445:19445"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../../.tmp/cache-prod-certs:/certs:ro
+
+  gateway-migrate:
+    build:
+      context: ../..
+      dockerfile: deployments/Dockerfile
+    image: goroute-ai-gateway:cache-prod-test
+    networks:
+      - data_net
+    user: "65532:65532"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    command: ["-config", "/etc/goroute/config.yaml", "-migrate-only"]
+    environment:
+      SSL_CERT_FILE: /certs/ca-bundle.crt
+      GATEWAY_POSTGRES_DSN: "postgres://gateway:prod-cache-pg-password-2026@postgres:5432/aigateway?sslmode=verify-full"
+      GATEWAY_REDIS_PASS: "prod-cache-primary-pass-2026"
+      GATEWAY_CACHE_REDIS_PASS: "prod-cache-dedicated-pass-2026"
+      GATEWAY_MASTER_ADMIN_KEY: "sk-gw-cache-prod-master-admin-key-2026-secure"
+      GATEWAY_MASTER_ENCRYPTION_KEY: "b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1"
+      GATEWAY_SESSION_SECRET: "prod-cache-hmac-session-secret-0123456789abcdef0123456789abcdef"
+    volumes:
+      - ./config.cache-prod.yaml:/etc/goroute/config.yaml:ro
+      - ../../.tmp/cache-prod-certs:/certs:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  ai-gateway-1:
+    image: goroute-ai-gateway:cache-prod-test
+    networks:
+      - edge_net
+      - data_net
+    user: "65532:65532"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    command: ["-config", "/etc/goroute/config.yaml"]
+    environment:
+      SSL_CERT_FILE: /certs/ca-bundle.crt
+      GATEWAY_POSTGRES_DSN: "postgres://gateway:prod-cache-pg-password-2026@postgres:5432/aigateway?sslmode=verify-full"
+      GATEWAY_REDIS_PASS: "prod-cache-primary-pass-2026"
+      GATEWAY_CACHE_REDIS_PASS: "prod-cache-dedicated-pass-2026"
+      GATEWAY_MASTER_ADMIN_KEY: "sk-gw-cache-prod-master-admin-key-2026-secure"
+      GATEWAY_MASTER_ENCRYPTION_KEY: "b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1"
+      GATEWAY_SESSION_SECRET: "prod-cache-hmac-session-secret-0123456789abcdef0123456789abcdef"
+      GATEWAY_CACHE_ENABLED: "${GATEWAY_CACHE_ENABLED:-true}"
+      GATEWAY_CACHE_TYPE: "${GATEWAY_CACHE_TYPE:-local}"
+      GATEWAY_CACHE_DEFAULT_TTL: "${GATEWAY_CACHE_DEFAULT_TTL:-10m}"
+      GATEWAY_CACHE_NAMESPACE: "${GATEWAY_CACHE_NAMESPACE:-gw:cache}"
+      GATEWAY_CACHE_MAX_ENTRIES: "${GATEWAY_CACHE_MAX_ENTRIES:-4096}"
+      GATEWAY_CACHE_MAX_ITEM_BYTES: "${GATEWAY_CACHE_MAX_ITEM_BYTES:-1048576}"
+      GATEWAY_CACHE_EXCLUDED_CALL_TYPES: "${GATEWAY_CACHE_EXCLUDED_CALL_TYPES-embedding}"
+      GATEWAY_CACHE_SEMANTIC_EMBEDDING_MODEL: "${GATEWAY_CACHE_SEMANTIC_EMBEDDING_MODEL:-}"
+      GATEWAY_CACHE_SEMANTIC_SIMILARITY_THRESHOLD: "${GATEWAY_CACHE_SEMANTIC_SIMILARITY_THRESHOLD:-0.85}"
+      GATEWAY_CACHE_SEMANTIC_INDEX_NAME: "${GATEWAY_CACHE_SEMANTIC_INDEX_NAME:-gw_semantic_cache_idx}"
+      GATEWAY_CACHE_SEMANTIC_VECTOR_ALGORITHM: "${GATEWAY_CACHE_SEMANTIC_VECTOR_ALGORITHM:-HNSW}"
+      GATEWAY_CACHE_SEMANTIC_EMBEDDING_TIMEOUT: "${GATEWAY_CACHE_SEMANTIC_EMBEDDING_TIMEOUT:-15s}"
+      GATEWAY_CACHE_SEMANTIC_MAX_MESSAGES: "${GATEWAY_CACHE_SEMANTIC_MAX_MESSAGES:-4}"
+    volumes:
+      - ./config.cache-prod.yaml:/etc/goroute/config.yaml:ro
+      - ../../.tmp/cache-prod-certs:/certs:ro
+    depends_on:
+      gateway-migrate:
+        condition: service_completed_successfully
+      redis-primary:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      caddy:
+        condition: service_started
+
+  ai-gateway-2:
+    image: goroute-ai-gateway:cache-prod-test
+    networks:
+      - edge_net
+      - data_net
+    user: "65532:65532"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    command: ["-config", "/etc/goroute/config.yaml"]
+    environment:
+      SSL_CERT_FILE: /certs/ca-bundle.crt
+      GATEWAY_POSTGRES_DSN: "postgres://gateway:prod-cache-pg-password-2026@postgres:5432/aigateway?sslmode=verify-full"
+      GATEWAY_REDIS_PASS: "prod-cache-primary-pass-2026"
+      GATEWAY_CACHE_REDIS_PASS: "prod-cache-dedicated-pass-2026"
+      GATEWAY_MASTER_ADMIN_KEY: "sk-gw-cache-prod-master-admin-key-2026-secure"
+      GATEWAY_MASTER_ENCRYPTION_KEY: "b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1"
+      GATEWAY_SESSION_SECRET: "prod-cache-hmac-session-secret-0123456789abcdef0123456789abcdef"
+      GATEWAY_CACHE_ENABLED: "${GATEWAY_CACHE_ENABLED:-true}"
+      GATEWAY_CACHE_TYPE: "${GATEWAY_CACHE_TYPE:-local}"
+      GATEWAY_CACHE_DEFAULT_TTL: "${GATEWAY_CACHE_DEFAULT_TTL:-10m}"
+      GATEWAY_CACHE_NAMESPACE: "${GATEWAY_CACHE_NAMESPACE:-gw:cache}"
+      GATEWAY_CACHE_MAX_ENTRIES: "${GATEWAY_CACHE_MAX_ENTRIES:-4096}"
+      GATEWAY_CACHE_MAX_ITEM_BYTES: "${GATEWAY_CACHE_MAX_ITEM_BYTES:-1048576}"
+      GATEWAY_CACHE_EXCLUDED_CALL_TYPES: "${GATEWAY_CACHE_EXCLUDED_CALL_TYPES-embedding}"
+      GATEWAY_CACHE_SEMANTIC_EMBEDDING_MODEL: "${GATEWAY_CACHE_SEMANTIC_EMBEDDING_MODEL:-}"
+      GATEWAY_CACHE_SEMANTIC_SIMILARITY_THRESHOLD: "${GATEWAY_CACHE_SEMANTIC_SIMILARITY_THRESHOLD:-0.85}"
+      GATEWAY_CACHE_SEMANTIC_INDEX_NAME: "${GATEWAY_CACHE_SEMANTIC_INDEX_NAME:-gw_semantic_cache_idx}"
+      GATEWAY_CACHE_SEMANTIC_VECTOR_ALGORITHM: "${GATEWAY_CACHE_SEMANTIC_VECTOR_ALGORITHM:-HNSW}"
+      GATEWAY_CACHE_SEMANTIC_EMBEDDING_TIMEOUT: "${GATEWAY_CACHE_SEMANTIC_EMBEDDING_TIMEOUT:-15s}"
+      GATEWAY_CACHE_SEMANTIC_MAX_MESSAGES: "${GATEWAY_CACHE_SEMANTIC_MAX_MESSAGES:-4}"
+    volumes:
+      - ./config.cache-prod.yaml:/etc/goroute/config.yaml:ro
+      - ../../.tmp/cache-prod-certs:/certs:ro
+    depends_on:
+      gateway-migrate:
+        condition: service_completed_successfully
+      redis-primary:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      caddy:
+        condition: service_started
+
+networks:
+  edge_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.10.0/24
+  data_net:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.31.20.0/24

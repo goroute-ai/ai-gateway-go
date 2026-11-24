@@ -475,6 +475,40 @@ async function run() {
     assert.equal(await fieldControl(regSrvModal, 'Transport').inputValue(), 'streamable_http');
     await regSrvModal.getByRole('button', { name: 'Cancel' }).click();
 
+    // Check 5d: Caching UI wiring across OverviewView (rich cache card + safe scoped Purge modal),
+    // PlaygroundView (JSON Cacheable mode + Cache Controls), and FinOpsView (cache filter pills)
+    await page.locator('aside button', { hasText: /Overview|Telemetry/i }).click();
+    await page.getByRole('heading', { name: 'Telemetry & Upstream Health' }).waitFor({ state: 'visible' });
+    await page.getByText('Response Cache').waitFor({ state: 'visible' });
+    await page.getByRole('button', { name: /Purge Cache/i }).click();
+    const purgeModal = modalByTitle(page, /Invalidate Response Cache/i);
+    await purgeModal.waitFor({ state: 'visible' });
+    assert.equal(
+      await purgeModal.getByLabel('Invalidation Scope').inputValue(),
+      'org',
+      'Purge Cache modal must default to Current Organization scope'
+    );
+    await purgeModal.getByRole('button', { name: 'Confirm Purge' }).click();
+    await purgeModal.getByText(/Invalidation revision:/i).waitFor({ state: 'visible' });
+    assert.equal(
+      await purgeModal.getByText(/epoch/i).count(),
+      0,
+      'Purge Cache modal must not reference legacy epoch wording'
+    );
+    await purgeModal.getByRole('button', { name: 'Cancel' }).click();
+
+    await page.locator('aside button', { hasText: 'Playground' }).click();
+    await page.getByRole('button', { name: 'JSON (Cacheable)' }).click();
+    await page.getByRole('button', { name: 'Cache Controls' }).click();
+    await page.getByLabel('Cache Mode').waitFor({ state: 'visible' });
+    await page.getByLabel('Seed').fill('42');
+    await page.getByLabel('Semantic Similarity').fill('0.90');
+
+    await page.locator('aside button', { hasText: 'FinOps & Spend' }).click();
+    await page.getByRole('button', { name: 'Cache Hits', exact: true }).click();
+    await page.getByRole('button', { name: 'Semantic Cache', exact: true }).click();
+    await page.getByRole('button', { name: 'All', exact: true }).click();
+
     // Check 6: Sign Out & Session Revocation
     await page.locator('button[title*="Click to sign out"]').click();
     await page.getByRole('heading', { name: 'Control Plane Sign In' }).waitFor({ state: 'visible' });

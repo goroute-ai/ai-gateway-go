@@ -286,7 +286,6 @@ router:
   session_affinity_ttl: 30m
   session_affinity_repin_on_failover: true
   prompt_cache_affinity: true
-  cache_aware_routing: true
   hedge_delay_ms: 150
   max_hedge_concurrency: 2
   scheduler:
@@ -458,10 +457,13 @@ curl -X POST http://localhost:8080/admin/v1/catalogue/pricing \
 3. **`rolling_24h` Windows & Cold Recovery Boundary**: In `rolling_24h` windows, settled spend expires 24 hours after its spend timestamp (`gw:dq:{org:<org_id>}:r24h:<entity>`). On cold or evicted Redis state, `AcquireDescriptors` loads timestamped PostgreSQL `spend_logs` (plus any unexpired migration hold) and initializes Redis atomically with admission (`503 quota_policy_unavailable` if PostgreSQL history cannot load). Note the recovery boundary: PostgreSQL restores persisted spend after complete Redis state loss; Redis-only in-flight reservations and settlements not yet persisted to PostgreSQL cannot be reconstructed from that history.
 4. **Fail-Closed Redis Availability**: Requests with configured limits require shared Redis counters by default (`fallback_to_local_on_outage: false`). If Redis is unavailable, the gateway returns `HTTP 503 rate_limiter_unavailable`.
 
-### Part B: Tenant-Isolated Deterministic Response Cache (`0ms`, `$0.00`)
-- **Eligibility**: Caches non-streaming requests where `temperature <= 0` or `seed != nil` (unless `X-Gateway-Cache-Control: no-cache` is sent).
-- **Collision-Proof SHA-256 Key**: `gw:cache:v2:{nsVer}:org:{orgID}:{sha256(canonical_payload)}`. The payload hash strictly binds `ResolvedModel`, `Messages`, `Tools`, `ResponseFormat`, `Temperature`, `TopP`, `ReasoningEffort`, and `User` identifier to prevent collisions across varying models or user sessions.
-- **Cache Hit Behavior**: Returns `X-Gateway-Cache: HIT` in `0ms` with `X-Gateway-Cost-Micros: 0` without calling the upstream provider.
+### Part B: Tenant-Isolated Single-Backend Response Cache (`local` | `redis` | `redis-semantic`)
+- **Single-Backend Strategy (`cache.type`)**:
+  - `local` *(default)*: Process-local bounded LRU map (`max_entries`, `max_item_bytes`) with TTL expiration and multi-replica admin invalidation broadcast over Redis Pub/Sub.
+  - `redis`: Direct Redis KV exact-match cache (`{namespace}:kv:{org_tag}:{sha256}`) using `GET` / `SET EX` and cursor `SCAN` + batched `MGET` + `UNLINK` invalidation.
+  - `redis-semantic`: Redis 8+ RediSearch vector similarity search (`{namespace}:sem:{org_tag}:{sha256}`) using `FLOAT32` `COSINE` `HNSW` (or `FLAT`) KNN search with strict `TAG` tenant/model isolation, multimodal and tool-call bypass, multi-turn prior-turn hashing, `FT.INFO` vector dimension validation, atomic `MULTI`/`EXEC` `HSET`+`EXPIRE`, single-embed-per-miss reuse, internal `_internal/semantic_cache` spend logging, and automatic fail-open degradation.
+- **Eligibility**: Caches non-streaming requests where `temperature <= 0`, `seed != nil`, or `Cache-Control` / `X-Gateway-Cache-Control: enabled` is sent (unless `no-cache`, `no-store`, or `bypass` is sent). Embeddings caching is disabled by default (`excluded_call_types: ["embedding"]`) to prevent batched embeddings from evicting rate-limit and budget keys on shared Redis instances; set `excluded_call_types: []` (and optionally a dedicated `cache.redis_addr`) to opt in.
+- **Cache Hit Behavior**: Returns `X-Gateway-Cache: HIT`, `X-Gateway-Cache-Type: exact|semantic`, `X-Gateway-Cache-Similarity` (on semantic hits), and `X-Gateway-Cost-Micros: 0` without calling the upstream provider, and records a `$0` `cache_hit: true` audit event in `spend_logs`.
 
 ### YAML & SDK Usage
 ```yaml
@@ -473,8 +475,20 @@ rate_limit:
 
 cache:
   enabled: true
+  type: "local"                  # "local" | "redis" | "redis-semantic"
   default_ttl: 1h
-  max_l1_entries: 4096
+  namespace: "gw:cache"
+  max_entries: 4096              # deprecated alias: max_l1_entries
+  max_item_bytes: 1048576        # 1 MiB per cached entry
+  excluded_call_types: ["embedding"]
+  # Optional dedicated Redis for cache isolation:
+  # redis_addr: "localhost:6380"
+  # redis_tls: false
+  # semantic:
+  #   embedding_model: "text-embedding-3-small"
+  #   similarity_threshold: 0.90
+  #   vector_algorithm: "HNSW"   # "HNSW" | "FLAT"
+  #   max_messages: 4            # -1 = unlimited
 ```
 
 ```go
@@ -569,7 +583,7 @@ For lower-level internal embedding, `GatewayServer.ConfigureGuardrailScanners` c
 Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model capabilities (`supports_tools`, `supports_reasoning`), and context window limits (`estPromptTokens + maxTokens <= GlobalModel.MaxInputTokens`) before consuming upstream quota.
 
 ### Module C: Observability, W3C Tracing & Active Health Monitor
-- **Prometheus Metrics (`GET /metrics`)**: Requires the Master Admin Key in the `Authorization: Bearer` header. Scrape from a trusted monitoring network. The endpoint exposes gateway/provider aggregates, stream duration/errors/TTFT, Go heap and GC counters, response-cache L1/L2 hits and epoch lookup latency, budget reservation checks and their share of recorded requests, catalog size, and Postgres read-through misses. Upstream HTTP protocol, connection reuse, dials, TLS handshakes, first-byte timing, and idle-timeout counters are included when the gateway creates its default outbound client; an injected `http.Client` owns its own transport and metrics. Per-deployment identifiers are omitted to keep metric cardinality bounded.
+- **Prometheus Metrics (`GET /metrics`)**: Requires the Master Admin Key in the `Authorization: Bearer` header. Scrape from a trusted monitoring network. The endpoint exposes gateway/provider aggregates, stream duration/errors/TTFT, Go heap and GC counters, response-cache hits, misses, semantic hits, fail-open errors, local entries, and LRU evictions, budget reservation checks and their share of recorded requests, catalog size, and Postgres read-through misses. Upstream HTTP protocol, connection reuse, dials, TLS handshakes, first-byte timing, and idle-timeout counters are included when the gateway creates its default outbound client; an injected `http.Client` owns its own transport and metrics. Per-deployment identifiers are omitted to keep metric cardinality bounded.
 - **Distributed Tracing**: Set `tracing.otlp_endpoint` to an OTLP/HTTP traces URL such as `https://collector.example:4318/v1/traces`. Tracing is disabled when the endpoint is empty. The exporter uses the outbound SSRF/network policy and supports optional `tracing.headers` for collector authentication.
 - **JSON Telemetry Snapshot (`GET /admin/v1/observability/metrics`)**: Real-time P50/P95/P99 latency and per-provider/per-deployment health breakdown.
 - **Active Health Monitor (`GET /admin/v1/health/deployments` & `POST /admin/v1/health/probe`)**: Periodically probes upstream credentials and preemptively marks failing deployments unhealthy before user traffic hits them.
@@ -667,7 +681,6 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 | `router.semantic_router.similarity_threshold` | — | `0` | Minimum cosine similarity required to match a semantic route. |
 | `router.semantic_router.timeout` | — | `0s` | Maximum timeout for semantic embedding calls before falling back. |
 | `router.semantic_router.routes[]` | — | `[]` | Intent routes (`name`, `target_model`, `utterances[]`, `description`). |
-| `router.cache_aware_routing` | `GATEWAY_ROUTER_CACHE_AWARE_ROUTING` | `false` | Enables prompt-cache-prefix-aware candidate affinity scoring. |
 | `router.bandit.enabled` | — | `false` | Enables Thompson-sampling contextual bandit routing (`router/adaptive`). |
 | `router.bandit.default_alpha` / `default_beta` | — | `0` | Prior Beta distribution parameters for new bandit arms. |
 | `router.bandit.exploration_rate` | — | `0` | Exploration factor controlling random arm sampling. |
@@ -709,9 +722,21 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 | `discovery.enabled` | — | `true` | Enables background upstream model catalogue discovery. |
 | `discovery.sync_interval` | — | `6h` | Polling interval for model catalogue synchronization worker. |
 | `discovery.auto_approve` | — | `false` | When true, auto-enables newly discovered upstream models. |
-| `cache.enabled` | — | `true` | Enables deterministic exact-match response caching. |
-| `cache.default_ttl` | — | `1h` | Default TTL for exact-match response cache entries. |
-| `cache.max_l1_entries` | — | `4096` | Maximum process-local response cache entries. LRU eviction bounds memory use. |
+| `cache.enabled` | `GATEWAY_CACHE_ENABLED` | `true` | Enables response caching. |
+| `cache.type` | `GATEWAY_CACHE_TYPE` | `"local"` | Single-backend cache type: `"local"`, `"redis"`, or `"redis-semantic"`. |
+| `cache.default_ttl` | `GATEWAY_CACHE_DEFAULT_TTL` | `1h` | Default TTL for cached responses. |
+| `cache.namespace` | `GATEWAY_CACHE_NAMESPACE` | `"gw:cache"` | Redis key prefix for KV (`:kv:`) and semantic (`:sem:`) entries. |
+| `cache.max_entries` | `GATEWAY_CACHE_MAX_ENTRIES` | `4096` | Maximum process-local LRU entries for `local` mode (`max_l1_entries` kept as silent deprecated YAML alias). |
+| `cache.max_item_bytes` | `GATEWAY_CACHE_MAX_ITEM_BYTES` | `1048576` | Maximum serialized entry size in bytes (1 MiB default). |
+| `cache.excluded_call_types` | `GATEWAY_CACHE_EXCLUDED_CALL_TYPES` | `["embedding"]` | Call types excluded from caching (`chat`, `completion`, `embedding`). Set `[]` to opt into embeddings caching. |
+| `cache.redis_addr` / `redis_addrs` / `redis_pass` / `redis_db` / `redis_tls` | `GATEWAY_CACHE_REDIS_*` | `""` / `false` (inherits `storage.redis_*`) | Optional dedicated Redis connection (with optional TLS 1.2+ via `redis_tls`) for response caching so cache eviction never impacts rate-limit/budget keys. |
+| `cache.semantic.embedding_model` | `GATEWAY_CACHE_SEMANTIC_EMBEDDING_MODEL` | `""` | Required when `cache.type=redis-semantic`; configured model alias used to embed prompts. |
+| `cache.semantic.similarity_threshold` | `GATEWAY_CACHE_SEMANTIC_SIMILARITY_THRESHOLD` | `0.90` | Minimum cosine similarity `(0, 1]` required for a semantic cache hit (overridable per request via `X-Gateway-Cache-Similarity`). |
+| `cache.semantic.index_name` | `GATEWAY_CACHE_SEMANTIC_INDEX_NAME` | `"gw_semantic_cache_idx"` | RediSearch index name created lazily on Redis 8+. |
+| `cache.semantic.vector_algorithm` | `GATEWAY_CACHE_SEMANTIC_VECTOR_ALGORITHM` | `"HNSW"` | RediSearch vector index algorithm (`"HNSW"` or `"FLAT"`). |
+| `cache.semantic.embedding_timeout` | `GATEWAY_CACHE_SEMANTIC_EMBEDDING_TIMEOUT` | `2s` | Timeout for semantic embedding/search before failing open as a cache miss. |
+| `cache.semantic.max_messages` | `GATEWAY_CACHE_SEMANTIC_MAX_MESSAGES` | `4` | Maximum non-system message count eligible for semantic lookup/storage (`-1` = unlimited; `0` defaults to `4`). |
+| `cache.semantic.max_input_chars` | `GATEWAY_CACHE_SEMANTIC_MAX_INPUT_CHARS` | `8000` | Maximum extracted prompt characters eligible for semantic embedding. |
 | `guardrails.scanners[]` | — | `[]` | Legacy external webhook scanner list (`name`, `url`, `timeout_ms`, `fail_open`, `headers`). |
 | `guardrails.definitions[]` | — | `[]` | Declarative named guardrail definitions seeded into the registry on startup (encrypts `secrets` via Vault). |
 | `guardrails.tool_policies[]` | — | `[]` | Declarative per-tool `input_policy` / `output_policy` trust rules seeded on startup. |

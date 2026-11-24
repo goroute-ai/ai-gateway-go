@@ -1,7 +1,7 @@
 # GoRoute AI Gateway — Complete Subsystem Internals & Engineering Guide
 
 > **Target Audience**: Platform Engineers, Distributed Systems Architects, and Core Contributors.  
-> **Runtime Target**: 100% Pure Go (Go version declared in `go.mod`), PostgreSQL 16+, Redis 7+.  
+> **Runtime Target**: 100% Pure Go (Go version declared in `go.mod`), PostgreSQL 16+, Redis 8+.  
 > **Key Metric**: Sub-millisecond data plane routing overhead (< 0.5 ms), zero synchronous database queries on the inference hot path, and zero Cgo/external runtime dependencies.
 
 ---
@@ -16,7 +16,7 @@
 6. [Reliability Manager: RetryPolicy, Adaptive Circuit Breakers, Specialized Fallbacks & SSE Continuation](#6-reliability-manager-retrypolicy-adaptive-circuit-breakers-specialized-fallbacks--sse-continuation)
 7. [FinOps Micro-Dollar Accounting & Asynchronous Batch Pipeline](#7-finops-micro-dollar-accounting--asynchronous-batch-pipeline)
 8. [Distributed Rate Limiting, Descriptor Quotas, PTU Sharing & Pre-Flight Tokenizer](#8-distributed-rate-limiting-descriptor-quotas-ptu-sharing--pre-flight-tokenizer)
-9. [Deterministic Exact-Match Response Caching](#9-deterministic-exact-match-response-caching)
+9. [Single-Backend Response Caching (`local`, `redis`, `redis-semantic`)](#9-single-backend-response-caching-local-redis-redis-semantic)
 10. [Cross-Cutting Platform Modules](#10-cross-cutting-platform-modules)
 11. [Storage Architecture: PostgreSQL Schema & Redis Keyspace Matrix](#11-storage-architecture-postgresql-schema--redis-keyspace-matrix)
 12. [Model Context Protocol (MCP Multi-Release Spec-Generated) Subsystem Internals](#12-model-context-protocol-mcp-multi-release-spec-generated-subsystem-internals)
@@ -60,7 +60,7 @@ flowchart TB
             ValidMW["3. Pre-Flight Validator & Token Estimator"]
             GuardMW["4. Security Guardrails\n(Injection, Secret & PII Redaction)"]
             RateMW["5. Quota & Budget Guard\n(Single Atomic Redis Lua Roundtrip)"]
-            CacheMW["6. Exact-Match Response Cache\n(Deterministic SHA-256 Bypass)"]
+            CacheMW["6. Response Cache\n(local · redis · redis-semantic)"]
             Stage1["7. Stage 0-1: PreRouter & Intelligent Router\n(Heuristic / Semantic / Quality / Bandit + Affinity)"]
             Stage2["8. Stage 2-4: FilterChain, Tiers & Load Balancer\n(Plugins, Region/Tags, Budgets, 7 LB Strategies)"]
             RelMgr["9. Stage 5: PriorityScheduler & Reliability Manager\n(RetryPolicy, Adaptive CB, Specialized Fallbacks, SSE Continuation)"]
@@ -77,7 +77,7 @@ flowchart TB
     end
 
     subgraph BackingStores["Distributed State & Durable Persistence"]
-        Redis[("Redis 7+ Cluster\n- Atomic Rate Limit Counters (RPM/TPM/Conc)\n- Real-Time Spend Accumulators\n- Deployment Cooldowns & Latency EWMA\n- L2 Auth & Exact-Match Response Cache\n- Distributed Mutexes & Pub/Sub Bus")]
+        Redis[("Redis 8+ Cluster\n- Atomic Rate Limit Counters (RPM/TPM/Conc)\n- Real-Time Spend Accumulators\n- Deployment Cooldowns & Latency EWMA\n- L2 Auth & KV/Semantic Response Cache\n- Distributed Mutexes & Pub/Sub Bus")]
         Postgres[("PostgreSQL 16+\n- 4-Layer Model Catalogue & Policies\n- Multi-Tenant Orgs, Teams, Users, Keys\n- AES-256-GCM Encrypted Credentials\n- Partitioned Spend & Governance Audit Logs")]
     end
 
@@ -120,7 +120,7 @@ sequenceDiagram
     participant GW as Gateway Ingress (Chi)
     participant Auth as Auth & RBAC (L1/L2)
     participant Rate as Quota Guard (Redis Lua)
-    participant Cache as Response Cache (L1/Redis)
+    participant Cache as Response Cache (local / redis / redis-semantic)
     participant Router as 2-Stage Routing Engine
     participant Rel as Reliability Manager
     participant Adapter as Provider Adapter
@@ -446,22 +446,24 @@ For `rolling_24h` budget windows, each settled charge expires 24 hours after its
 
 ---
 
-## 9. Deterministic Exact-Match Response Caching
+## 9. Single-Backend Response Caching (`local`, `redis`, `redis-semantic`)
 
-For deterministic requests, the gateway provides exact-match response caching with **0 ms latency** and **$0.00 cost**.
+GoRoute implements a single-backend response cache (`internal/cache/`) selected by `cache.type`, avoiding multi-tier L1+L2 coherence complexity and Lua epoch lookups:
 
-### Cache Eligibility Criteria
-A request is cached if:
-1. `request.Stream == false` (non-streaming).
-2. `request.Temperature == 0.0` OR `request.Seed != nil` OR header `X-Gateway-Cache-Control: enabled`.
-3. Client did NOT specify `X-Gateway-Cache-Control: no-cache`.
+- **`local` (`LocalBackend`, default)**: Process-local bounded LRU map (`cache.max_entries`, `cache.max_item_bytes`) with TTL expiration, strict AND-semantics invalidation (`orgID` + `model`), and multi-replica invalidation broadcast over Redis Pub/Sub (`EntityType: "response_cache"`).
+- **`redis` (`RedisBackend`)**: Direct Redis KV storage (`{namespace}:kv:{org_tag}:{sha256}`) via `GET` / `SET EX` and cursor `SCAN` + batched `MGET`/`Pipeline` + `UNLINK` invalidation.
+- **`redis-semantic` (`RedisSemanticBackend`)**: Redis 8+ RediSearch vector similarity search over Hash documents (`{namespace}:sem:{org_tag}:{sha256}`, written atomically via `TxPipeline` `HSET` + `EXPIRE`) indexed with `FT.CREATE ... SCHEMA scope TAG org_id TAG model TAG response TEXT embedding VECTOR HNSW|FLAT ... FLOAT32 DISTANCE_METRIC COSINE`.
+  - **Strict Tenant, Multi-Turn & Parameter Isolation**: TAG fields (`scope`, `org_id`, `model`) are stored as hex-encoded SHA-256 prefixes to prevent RediSearch tokenizer/punctuation injection; `scope` binds `(org_id, team_id, virtual_alias, model, system_prompt, prior_turns, response_format, tool_definitions, reasoning_effort, temperature, top_p, user, extra_params)`. Requests containing non-text multimodal parts (`image_url`, `document`) or tool-call messages bypass semantic embedding safely.
+  - **Single-Embed-Per-Miss Reuse & FinOps Visibility**: On a semantic miss, `LookupChat` returns the computed embedding vector in `LookupResult.Embedding` so `StoreChat` reuses it directly without a second embedding API call. Internal embedding calls are logged to `spend_logs` under `endpoint: "_internal/semantic_cache"`.
+  - **Safe Degradation & Schema Verification**: `ensureIndex` validates existing RediSearch vector dimensions via `FT.INFO` and returns an actionable error on mismatch. Missing RediSearch (`unknown command`) or embedding timeouts degrade fail-open to a cache miss and increment `gateway_cache_errors_total`; `/readyz` remains HTTP `200` with `"cache_status": "degraded"` if a dedicated cache Redis is unreachable.
 
-### Cache Key Computation
-`ComputeKey` hashes canonical JSON containing the organization and the complete `CanonicalChatRequest`. It omits only `RequestID` (per-call observability metadata) and `Stream` (streaming requests are not cacheable). This includes extra provider parameters, metadata, multimodal message parts, response format, tool settings, and gateway extensions, so a newly added canonical field participates automatically. If a request contains a value that cannot be encoded as JSON, the cache key is empty and the request bypasses lookup and storage.
+### Cache Eligibility & Headers
+A non-streaming request is eligible when:
+1. Its call type (`chat`, `completion`, `embedding`) is not listed in `cache.excluded_call_types` (defaults to `["embedding"]` so bulk embeddings do not evict rate-limit/budget keys in shared Redis).
+2. `request.Temperature == 0.0` OR `request.Seed != nil` OR `Cache-Control` / `X-Gateway-Cache-Control` contains `enabled` or `force` (case-insensitive).
+3. Client did not send `no-cache`, `no-store`, or `bypass`.
 
-On cache hit, the gateway returns `X-Gateway-Cache: HIT` and the cached response body without calling an upstream API. Entries in both L1 and Redis include the organization, model, and the shared invalidation epochs at write time. Before returning any hit, each replica reads the global, organization, and model epoch values from Redis and compares them with the entry. A mismatch is a miss.
-
-Invalidation increments the relevant shared epoch(s) and a monotonic revision in one Redis Lua script. Global invalidation increments the global epoch; organization and model invalidation increment their respective epoch(s). Because epochs are shared state, another replica's L1 entry becomes unusable on its next lookup without depending on Pub/Sub delivery. If Redis cannot validate the epochs, the cache returns a miss and does not serve a potentially stale L1 or L2 value. Once Redis recovers, the next lookup checks the current shared epochs before using any retained L1 entry. Redis keys used by the script share a Redis Cluster hash tag (`{epochs}`) so the atomic update runs in one slot.
+On cache hit, the gateway emits `X-Gateway-Cache: HIT`, `X-Gateway-Cache-Type: exact|semantic`, `X-Gateway-Cache-Similarity` (for semantic hits), and `X-Gateway-Cost-Micros: 0` without calling an upstream provider. Streaming SSE responses are not cached in `v0.1`.
 
 ---
 
@@ -488,7 +490,7 @@ Validates request structures before consuming upstream quota:
 
 ### 10.4 Observability & Distributed Tracing (`internal/observability`)
 - **Prometheus Metrics (`GET /metrics`)**: Exposes request counts, token counters, micro-dollar spend counters, cache hit rates, rate-limit trips, routing/failover counters (`gateway_routing_overhead_micros`, `gateway_fallbacks_total`, `gateway_retries_total`, `gw_redis_cb_state`, `gw_routing_signal_degraded_total`), guardrail counters/timers (`gateway_guardrail_blocks_total`, `gateway_guardrail_evaluations_total`, `gateway_guardrail_errors_total`, `gateway_guardrail_duration_ms_sum`, `gateway_guardrail_duration_ms_count`), and latency quantiles (`p50`, `p95`, `p99`).
-- **Runtime performance metrics**: Also exposes bounded response-cache L1 occupancy/evictions, upstream HTTP/1.1 vs HTTP/2 responses, fresh/reused connections, first-byte wait, idle-body timeouts, budgeted-model indexed lookups/catalog scans, and Postgres subscription/guardrail fallback query counts. Use these measurements before further pool or cache-consistency tuning.
+- **Runtime performance metrics**: Also exposes bounded local response-cache occupancy/evictions, exact/semantic hits, misses, and fail-open errors, upstream HTTP/1.1 vs HTTP/2 responses, fresh/reused connections, first-byte wait, idle-body timeouts, budgeted-model indexed lookups/catalog scans, and Postgres subscription/guardrail fallback query counts. Use these measurements before further pool or cache-consistency tuning.
 - **JSON Telemetry Snapshot (`GET /admin/v1/observability/metrics`)**: Provides real-time stats computed via 1024-reservoir sampling.
 - **W3C Distributed Tracing & Guardrail Child Spans**: Generates or propagates standard `traceparent` and `X-Trace-Id` headers across log entries, spend records, and audit events, and emits scrubbed `guardrail.evaluate` OTEL child spans (guardrail name, hook, verdict, violation category labels, latency — without raw prompt/response payloads).
 
@@ -551,7 +553,8 @@ All entity operations across migrations `0001` through `0041` (`organizations`, 
 | `gw:affinity:{org:<org_id>}:{session,resp,pcache}:*` | `STRING` | `1800s` | Sticky deployment affinity pins across sessions, Responses API, and prompt prefixes. |
 | `gw:router:semantic:{org:<org_id>}:centroids` | `HASH` / `STRING` | Cached | Normalized centroid vectors for `SemanticPreRouter`. |
 | `gw:router:bandit:{org:<org_id>}:{bucket}` | `HASH` | Persistent | Thompson-sampling Beta distribution parameters for `BanditPreRouter`. |
-| `gw:cache:{resp,cmpl,emb,stream}:{key}` | `STRING` (JSON) | `3600s` | Exact-match response cache entries (validated against `gw:cache:{epochs}:*`). |
+| `gw:cache:kv:{org_tag}:{sha256}` | `STRING` (JSON) | `3600s` | Direct Redis KV cached inference response (`cache.type: redis`). |
+| `gw:cache:sem:{org_tag}:{sha256}` | `HASH` (+ Vector) | `3600s` | RediSearch KNN cosine-similarity cached chat response (`cache.type: redis-semantic`). |
 | `gw:lock:discovery` | `STRING` (UUID) | `60s` | Distributed mutex for model discovery synchronization. |
 | `gw:events:invalidation` | `PUBSUB` | — | Broadcast channel for instant multi-pod L1 cache eviction (propagates `KeyHash`, `KeyID`, and `OrgID`). |
 | `gw:mcp25:sess:{sessionID}` | `STRING` (JSON) | `3600s` | MCP 2025 stateful session mapping isolated by principal digest. |

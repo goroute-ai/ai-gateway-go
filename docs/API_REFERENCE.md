@@ -57,13 +57,15 @@ Every response from GoRoute AI Gateway includes tracing, attribution, and lifecy
 | `X-Gateway-Tier-Stepdowns` | Number of `Deployment.Priority` tier step-downs attempted | `1` |
 | `X-Gateway-Stream-Continued` | Indicates whether mid-stream SSE continuation seamlessly stitched output | `true` or `false` |
 | `X-Gateway-Cache` | Cache evaluation result | `HIT` or `MISS` |
+| `X-Gateway-Cache-Type` | Cache match kind on hits | `exact` or `semantic` |
+| `X-Gateway-Cache-Similarity` | Cosine similarity score on semantic cache hits (also accepted as a per-request threshold override header) | `0.9642` |
 | `X-Gateway-Guardrail-Action` | Guardrail action applied during request/stream processing | `none`, `redact`, `block` |
 | `X-Gateway-Pricing-Status` | Billing pricing verification status (`verified` vs `unverified`) | `verified` |
 | `X-Gateway-Key-Deprecated` | Emitted as `true` when authenticating with a rotated key still inside its grace period | `true` |
 | `X-Gateway-Key-Revoke-At` | RFC 3339 expiration timestamp of a deprecated key grace window | `2026-11-20T12:00:00Z` |
 | `Retry-After` | Cooldown period sent on HTTP 429 rate limit | `45` (seconds) |
 
-When CORS is configured (`server.cors_allowed_origins`), `Access-Control-Expose-Headers` exposes `X-Gateway-Request-Id`, `X-Gateway-Provider`, `X-Gateway-Model`, `X-Gateway-Cost-Micros`, `X-Gateway-Cache`, `X-Gateway-Guardrail-Action`, `X-Gateway-Pricing-Status`, `X-Gateway-Latency-Ms`, `X-Gateway-Route-Reason`, `X-Gateway-Fallback-Attempted`, `X-Gateway-Routing-Micros`, `X-Gateway-Stream-Continued`, `X-Gateway-Tier-Stepdowns`, `X-Gateway-Key-Deprecated`, `X-Gateway-Key-Revoke-At`, `X-Gateway-Budget-Throttled`, `X-Gateway-Budget-Fallback`, and `X-Gateway-Original-Model` to browser clients.
+When CORS is configured (`server.cors_allowed_origins`), `Access-Control-Expose-Headers` exposes `X-Gateway-Request-Id`, `X-Gateway-Provider`, `X-Gateway-Model`, `X-Gateway-Cost-Micros`, `X-Gateway-Cache`, `X-Gateway-Cache-Type`, `X-Gateway-Cache-Similarity`, `X-Gateway-Guardrail-Action`, `X-Gateway-Pricing-Status`, `X-Gateway-Latency-Ms`, `X-Gateway-Route-Reason`, `X-Gateway-Fallback-Attempted`, `X-Gateway-Routing-Micros`, `X-Gateway-Stream-Continued`, `X-Gateway-Tier-Stepdowns`, `X-Gateway-Key-Deprecated`, `X-Gateway-Key-Revoke-At`, `X-Gateway-Budget-Throttled`, `X-Gateway-Budget-Fallback`, and `X-Gateway-Original-Model` to browser clients.
 
 ### 1.4 Operator OIDC Sessions & CLI SSO (`/auth/*`)
 1. **Session Lifecycle**:
@@ -947,10 +949,10 @@ Admin APIs authenticate via `Authorization: Bearer <MASTER_ADMIN_KEY>`, an organ
 ### 5.11 Health Probing, Telemetry & Cache Invalidation
 - `GET /admin/v1/health/deployments`: Health state machine status (`CLOSED`, `HALF_OPEN`, `OPEN`), failure counts, and latency EWMA for all deployments.
 - `POST /admin/v1/health/probe`: Triggers an immediate synthetic health probe across all configured deployments.
-- `GET /admin/v1/observability/metrics`: Real-time JSON telemetry snapshot (P50, P95, P99 latencies, cache hit ratios, and route counters).
-- `POST /admin/v1/cache/invalidate`: Purges cached virtual keys, rate limits, or exact-match responses.
+- `GET /admin/v1/observability/metrics`: Real-time JSON telemetry snapshot (P50, P95, P99 latencies, authoritative response cache metrics including `cache_enabled`, `cache_type`, `cache_status`, `cache_hits`, `cache_misses`, `cache_semantic_hits`, `cache_errors`, `cache_entries`, `cache_evictions`, `cache_hit_rate`, and route counters).
+- `POST /admin/v1/cache/invalidate`: Purges cached responses from the active cache backend (`local` LRU with multi-replica Redis Pub/Sub broadcast, `redis` KV via batched `MGET`+`UNLINK`, or `redis-semantic` RediSearch vector documents) using global, organization, model/alias, or strict `(org_id AND model)` semantics.
   ```json
-  { "org_id": "org_default", "key_id": "vk_abc123" }
+  { "org_id": "org_default", "model": "fast" }
   ```
 
 ### 5.12 MCP & A2A Administration
@@ -989,15 +991,24 @@ gateway_latency_ms{quantile="0.5"} 1.50
 gateway_latency_ms{quantile="0.95"} 3.27
 gateway_latency_ms{quantile="0.99"} 4.53
 
-# HELP gateway_cache_hits_total Total exact-match response cache hits.
+# HELP gateway_cache_hits_total Total response cache hits (exact and semantic).
 # TYPE gateway_cache_hits_total counter
 gateway_cache_hits_total 8675
 
-# TYPE gateway_response_cache_l1_entries gauge
-gateway_response_cache_l1_entries 234
+# TYPE gateway_cache_misses_total counter
+gateway_cache_misses_total 1240
 
-# TYPE gateway_response_cache_l1_evictions_total counter
-gateway_response_cache_l1_evictions_total 12
+# TYPE gateway_cache_errors_total counter
+gateway_cache_errors_total 0
+
+# TYPE gateway_cache_semantic_hits_total counter
+gateway_cache_semantic_hits_total 312
+
+# TYPE gateway_cache_entries gauge
+gateway_cache_entries 234
+
+# TYPE gateway_cache_evictions_total counter
+gateway_cache_evictions_total 12
 
 # TYPE gateway_upstream_connections_reused_total counter
 gateway_upstream_connections_reused_total 891
@@ -1013,7 +1024,6 @@ gateway_guardrail_evaluations_total{guardrail="prod-pii-shield",hook="pre_call"}
 gateway_guardrail_errors_total{guardrail="prod-pii-shield",hook="pre_call"} 0
 gateway_guardrail_duration_ms_sum{guardrail="prod-pii-shield",hook="pre_call"} 1850
 gateway_guardrail_duration_ms_count{guardrail="prod-pii-shield",hook="pre_call"} 412
-gateway_response_cache_epoch_lookups_total 340
 gateway_go_heap_alloc_bytes 41943040
 gateway_model_catalog_size 5493
 ```
@@ -1021,7 +1031,7 @@ gateway_model_catalog_size 5493
 ### 6.2 Administrative Metrics Snapshot
 `GET /admin/v1/observability/metrics`
 
-Returns comprehensive JSON snapshot with P50/P95/P99 latencies, cache hit ratios, per-provider error rates, and routing overhead.
+Returns comprehensive JSON snapshot with P50/P95/P99 latencies, authoritative response cache metrics (`cache_enabled`, `cache_type`, `cache_status`, `cache_hits`, `cache_misses`, `cache_semantic_hits`, `cache_errors`, `cache_entries`, `cache_evictions`, `cache_hit_rate`), per-provider error rates, and routing overhead.
 
 ### 6.3 Health & Readiness Probes
 GoRoute exposes production-grade Kubernetes health check probes:
@@ -1034,14 +1044,14 @@ Fast, in-memory process health check returning `HTTP 200 {"status":"ok"}`. Indic
 #### Deep Readiness Probe
 `GET /readyz`
 
-Performs active, deep dependency health verification. Executes a live `Ping(ctx)` against the underlying storage engine (PostgreSQL or Memory) and Redis cache:
-- **HTTP 200 OK**: Both storage repository and Redis respond healthy within timeout.
+Performs active, deep dependency health verification. Executes a live `Ping(ctx)` against the primary storage engine (PostgreSQL or Memory) and primary Redis fabric; when a dedicated response-cache Redis (`cache.redis_addr` / `cache.redis_addrs`) is configured, it also checks cache connectivity fail-open without failing pod readiness:
+- **HTTP 200 OK**: Primary storage repository and primary Redis respond healthy within timeout (`cache_status` is `"ok"` or `"degraded"` when a dedicated cache Redis is configured).
   ```json
-  {"status":"ready"}
+  {"status":"ready","cache_status":"ok"}
   ```
-- **HTTP 503 Service Unavailable**: One or more dependencies failed to respond.
+- **HTTP 503 Service Unavailable**: Primary storage or primary Redis failed to respond.
   ```json
-  {"status":"not_ready","reason":"storage unreachable: connection refused"}
+  {"status":"unready","error":"storage unavailable: connection refused"}
   ```
 
 ---
