@@ -5,10 +5,12 @@ import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const distDir = path.resolve(__dirname, '../dist');
+const distDir = process.argv[2]
+  ? path.resolve(process.cwd(), process.argv[2])
+  : path.resolve(__dirname, '../dist');
 
-if (!fs.existsSync(distDir)) {
-  console.error(`❌ Dist directory not found at ${distDir}. Run 'npm run build' first.`);
+if (!fs.existsSync(distDir) || !fs.existsSync(path.join(distDir, 'index.html'))) {
+  console.error(`❌ Dist directory or index.html not found at ${distDir}. Run 'make ui-build' first.`);
   process.exit(1);
 }
 

@@ -3,7 +3,7 @@ title = "GoRoute AI Gateway Gitleaks Configuration"
 [extend]
 useDefault = true
 
-[allowlist]
+[[allowlists]]
 description = "Narrow allowlist for synthetic test fixtures, dev defaults, and guardrail UI examples"
 paths = [
   '''^internal/config/config_test\.go$''',
@@ -30,4 +30,20 @@ regexes = [
   '''imdsV2SecretKey''',
   '''test-hs256-secret-for-fail-closed''',
   '''IQoJb3JpZ2luX2VjECoaCXVzLWVhc3QtMSJG''',
+]
+
+[[allowlists]]
+description = "Deterministic synthetic credentials in local/CI Docker prod-test harness (never real secrets)"
+condition = "AND"
+paths = [
+  '''^deployments/prod-test/docker-compose\.prod-test\.yml$''',
+  '''^deployments/prod-test/realm-prod-test\.json$''',
+  '''^tests/prod-docker/run_prod_tests\.sh$''',
+  '''^tests/prod-docker/prod_e2e_test\.go$''',
+]
+regexes = [
+  '''a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90''',
+  '''b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1''',
+  '''goroute-prod-oidc-secret-2026''',
+  '''goroute-ci-(mint|es256|eddsa)-secret-2026''',
 ]
