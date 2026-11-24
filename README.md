@@ -70,6 +70,7 @@ Looking for technical setup, API details, or architecture guides? Everything liv
 | **[Documentation Index](./docs/README.md)** | Full map of all technical guides and protocol specifications. |
 | **[Configuration Guide](./docs/CONFIGURATION_GUIDE.md)** | YAML setup, environment variables, SSO login, and Go SDK examples. |
 | **[API Reference](./docs/API_REFERENCE.md)** | REST endpoints, team keys, MCP tools, A2A agents, and metrics. |
+| **[Authorization & Access Control](./docs/AUTHORIZATION_AND_ACCESS_CONTROL.md)** | 19-capability RBAC, tri-state allowlists, SSO/JWT, quotas, and audit guide. |
 | **[System Architecture](./docs/ARCHITECTURE.md)** | System design, database schema, and scaling model. |
 | **[Testing Guide](./docs/TESTING.md)** | Unit, database, browser UI, and Docker verification suites. |
 | **[Security Policy](./SECURITY.md)** | Vulnerability reporting and security architecture guarantees. |

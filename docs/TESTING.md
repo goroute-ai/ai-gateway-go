@@ -31,11 +31,11 @@ go build -o /dev/null ./cmd/gateway
 make specgen && git diff --exit-code -- internal/openapi/ internal/mcp/spec/
 
 # Embedded Operator Web UI asset sync & 700 KB raw / 185 KB gzipped bundle budget
+# (Works both on fresh checkouts without web/dist and after `make ui-build`)
 make ui-check-dist
-node web/scripts/check-budget.mjs
 
-# Secret scanning (excludes tests/ui-e2e/node_modules/)
-gitleaks detect --source=. --config=.gitleaks.toml --no-git
+# Full working-tree secret scanning (precision synthetic-fixture allowlists in .gitleaks.toml)
+make security-scan
 ```
 
 ---
@@ -107,4 +107,6 @@ Runs an isolated production-topology Docker Compose stack (`deployments/prod-tes
 make test-prod-docker
 ```
 
-Executes Suites `1`–`9` (plus opt-in Suite `10` when ephemeral `PROD_LIVE_*_API_KEY` env vars are provided in CI/local shell — never committed) and Suite `99`, covering startup fail-closed container checks, migrations `0039`/`0040`/`0041`, asymmetric JWT (`RS256`/`ES256`/`EdDSA`), RFC 7662 introspection + revocation, multi-replica SCIM/admin session revocation, `group_role_mappings`, fail-closed `ExternalAuthorizer` (`auth.external_authorizer`), `audit.siem_webhook`, `Dockerfile.fixtures` deterministic mock LLM providers, `cmd/goroute` CLI E2E, CSRF/Host/SSRF/secret-scrubbing log scans, resilience (Keycloak outage stale-JWKS survival, Redis restart, live KEK rotation), and Playwright Chromium browser login + seamless Keycloak RP-Initiated Logout (`id_token_hint`).
+Executes Suites `1`–`9`, `5b`, `6b`, `7b`, `11` (plus opt-in Suite `10` when ephemeral `PROD_LIVE_*_API_KEY` env vars are provided in CI/local shell — never committed) and Suite `99`, covering all 19 enterprise authorization & access-control capabilities: startup fail-closed container checks, migrations `0039`/`0040`/`0041`, asymmetric JWT (`RS256`/`ES256`/`EdDSA`), expired/wrong-aud/forged JWT rejection, positive & negative `jwt_key_mappings`, RFC 7662 introspection, multi-replica SCIM/admin session revocation, `group_role_mappings` + `sync_roles_on_login`, full 7-role RBAC matrix (`platform_admin`..`viewer`), positive/negative `team_admin` & `team_member_permissions`, CSRF cookie enforcement, Org deactivation cutoff, self-service `/v1/self/keys` isolation, wildcard models + Org Model Policy & Org Provider Subscription gates, `Team ∩ Project ∩ Key` `allowed_deployments` & mandatory `allowed_routing_tags` across chat/responses/embeddings, Project `enforce_project_model_quota`, distributed Redis RPM/TPM/concurrency limits, multi-window `rolling_24h` & temporary budget boosts, multi-server `/mcp` Virtual Hub isolation, positive `allowed_mcp_tools`/`toolsets` & unconditional `ToolPolicy`, A2A `key_strict` isolation + emergency kill-switch, positive Unified Access Group & gated `ModelAccessGroup` + Dynamic `AccessGroupRule` grants, fail-closed `ExternalAuthorizer` (`deny_models`/`deny_tools`/`deny_agents`/`deny_paths` + 503 outage), Virtual Key endpoint allowlists/expiry/rotation grace window/revocation/delegation narrowing, filtered cursor audit logs & HMAC-signed `audit.siem_webhook` (including MCP/A2A admin mutations), `cmd/goroute` CLI E2E, SSRF/secret-scrubbing log scans, resilience (Keycloak outage stale-JWKS survival, Redis restart, live KEK rotation), and Playwright Chromium browser login + seamless Keycloak RP-Initiated Logout (`id_token_hint`).
+
+See [AUTHORIZATION_AND_ACCESS_CONTROL.md](./AUTHORIZATION_AND_ACCESS_CONTROL.md) for the full 19-capability architectural reference and single-node `deployments/docker-compose.yml` smoke test instructions.

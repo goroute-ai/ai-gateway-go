@@ -50,7 +50,8 @@ func redactAuditMap(m map[string]any) map[string]any {
 		if lower == "raw_key" || lower == "key_hash" || lower == "key" ||
 			lower == "master_key" || lower == "new_master_key" ||
 			lower == "password" || lower == "password_hash" || lower == "password_sha1" ||
-			lower == "auth_secret" || lower == "csrf_token" ||
+			lower == "auth_secret" || lower == "auth_token" || lower == "token" || lower == "secret" ||
+			lower == "csrf_token" ||
 			lower == "authorization" || lower == "x-api-key" || lower == "api_key" ||
 			strings.HasPrefix(lower, "encrypted_") ||
 			lower == "dek_nonce" || lower == "data_nonce" ||
@@ -920,10 +921,7 @@ func (s *GatewayServer) handleAdminBulkTeamMembers(w http.ResponseWriter, r *htt
 			domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusBadRequest, Type: domain.ErrorTypeInvalidRequest, Code: "missing_user_id", Message: "every member entry requires user_id"})
 			return
 		}
-		role := entry.Role
-		if role == "" {
-			role = domain.RoleDeveloper
-		}
+		role := normalizeTeamMemberRole(entry.Role)
 		if !isValidTenantRole(role) {
 			domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusBadRequest, Type: domain.ErrorTypeInvalidRequest, Code: "invalid_role", Message: fmt.Sprintf("Unsupported role %q", role)})
 			return

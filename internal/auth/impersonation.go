@@ -193,7 +193,7 @@ func (s *Service) ResolveImpersonatedOperator(ctx context.Context, op *domain.Op
 		}
 	}
 
-	targetRole, ok := mapDomainRoleToOperatorRole(user.Role)
+	targetRole, ok := s.MapDomainRoleToOperatorRole(user.Role)
 	targetTeamID := user.TeamID
 	if !ok || (targetRole == domain.OperatorRoleTeamAdmin && targetTeamID == "") {
 		if pmRepo, pmOK := s.repo.(storage.ProjectAndMembershipRepository); pmOK && pmRepo != nil {

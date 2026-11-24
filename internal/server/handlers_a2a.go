@@ -20,6 +20,48 @@ func (s *GatewayServer) handleA2AWellKnownCard(w http.ResponseWriter, r *http.Re
 	a2a.ServeWellKnownAgentCard(w, r, s.repo, s.a2aSigner, s.serverBaseURL(r), "")
 }
 
+// authorizeA2AEndpoint enforces identity presence, optional A2A agent RBAC, and post-auth CustomAuthorizer
+// consistently across all A2A message, task, and streaming endpoints.
+func (s *GatewayServer) authorizeA2AEndpoint(
+	w http.ResponseWriter,
+	r *http.Request,
+	idCtx *domain.IdentityContext,
+	agentSlug string,
+	resourceID string,
+	checkRBAC bool,
+) bool {
+	if idCtx == nil {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusUnauthorized,
+			Type:       domain.ErrorTypeAuthentication,
+			Code:       "unauthenticated",
+			Message:    "Identity context required for A2A communication",
+		})
+		return false
+	}
+	if checkRBAC && s.rbac != nil {
+		if err := s.rbac.AuthorizeA2AAgent(idCtx, agentSlug); err != nil {
+			domain.WriteHTTPError(w, err)
+			return false
+		}
+	}
+	if s.customAuthorizer != nil {
+		if err := s.evaluateCustomAuthorizer(r.Context(), &auth.AuthzRequest{
+			Identity:     idCtx,
+			Action:       auth.AuthzActionA2AInvoke,
+			ResourceType: "a2a_agent",
+			ResourceID:   resourceID,
+			A2AAgent:     agentSlug,
+			HTTPMethod:   r.Method,
+			HTTPPath:     r.URL.Path,
+		}); err != nil {
+			domain.WriteHTTPError(w, err)
+			return false
+		}
+	}
+	return true
+}
+
 // handleA2AAgentMessage serves `POST /a2a/v1/agents/{agentSlug}`
 // (supporting both JSON-RPC 2.0 and HTTP+JSON SendMessage).
 func (s *GatewayServer) handleA2AAgentMessage(w http.ResponseWriter, r *http.Request) {
@@ -38,28 +80,8 @@ func (s *GatewayServer) handleA2AAgentMessage(w http.ResponseWriter, r *http.Req
 	}
 
 	idCtx := auth.IdentityFromContext(r.Context())
-	if idCtx == nil {
-		domain.WriteHTTPError(w, &domain.GatewayError{
-			StatusCode: http.StatusUnauthorized,
-			Type:       domain.ErrorTypeAuthentication,
-			Code:       "unauthenticated",
-			Message:    "Identity context required for A2A communication",
-		})
+	if !s.authorizeA2AEndpoint(w, r, idCtx, agentSlug, agentSlug, false) {
 		return
-	}
-	if s.customAuthorizer != nil {
-		if err := s.evaluateCustomAuthorizer(r.Context(), &auth.AuthzRequest{
-			Identity:     idCtx,
-			Action:       auth.AuthzActionA2AInvoke,
-			ResourceType: "a2a_agent",
-			ResourceID:   agentSlug,
-			A2AAgent:     agentSlug,
-			HTTPMethod:   r.Method,
-			HTTPPath:     r.URL.Path,
-		}); err != nil {
-			domain.WriteHTTPError(w, err)
-			return
-		}
 	}
 
 	bodyBytes, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 10*1024*1024))
@@ -131,6 +153,9 @@ func (s *GatewayServer) handleA2AGetTask(w http.ResponseWriter, r *http.Request)
 	agentSlug := chi.URLParam(r, "agentSlug")
 	taskID := chi.URLParam(r, "taskID")
 	idCtx := auth.IdentityFromContext(r.Context())
+	if !s.authorizeA2AEndpoint(w, r, idCtx, agentSlug, agentSlug+"/"+taskID, false) {
+		return
+	}
 
 	task, err := s.a2aRouter.GetTask(r.Context(), idCtx, agentSlug, taskID)
 	if err != nil {
@@ -148,6 +173,9 @@ func (s *GatewayServer) handleA2AGetTask(w http.ResponseWriter, r *http.Request)
 func (s *GatewayServer) handleA2AListTasks(w http.ResponseWriter, r *http.Request) {
 	agentSlug := chi.URLParam(r, "agentSlug")
 	idCtx := auth.IdentityFromContext(r.Context())
+	if !s.authorizeA2AEndpoint(w, r, idCtx, agentSlug, agentSlug, false) {
+		return
+	}
 
 	listResp, err := s.a2aRouter.ListTasks(r.Context(), idCtx, agentSlug, &pb.ListTasksRequest{})
 	if err != nil {
@@ -166,6 +194,9 @@ func (s *GatewayServer) handleA2ACancelTask(w http.ResponseWriter, r *http.Reque
 	agentSlug := chi.URLParam(r, "agentSlug")
 	taskID := chi.URLParam(r, "taskID")
 	idCtx := auth.IdentityFromContext(r.Context())
+	if !s.authorizeA2AEndpoint(w, r, idCtx, agentSlug, agentSlug+"/"+taskID, false) {
+		return
+	}
 
 	task, err := s.a2aRouter.CancelTask(r.Context(), idCtx, agentSlug, taskID)
 	if err != nil {
@@ -184,13 +215,11 @@ func (s *GatewayServer) handleA2ASubscribeTask(w http.ResponseWriter, r *http.Re
 	agentSlug := chi.URLParam(r, "agentSlug")
 	taskID := chi.URLParam(r, "taskID")
 	idCtx := auth.IdentityFromContext(r.Context())
-
-	orgID := ""
-	if idCtx != nil {
-		orgID = idCtx.OrgID
+	if !s.authorizeA2AEndpoint(w, r, idCtx, agentSlug, agentSlug+"/"+taskID, true) {
+		return
 	}
 
-	agent, err := s.repo.GetA2AAgentBySlug(r.Context(), orgID, agentSlug)
+	agent, err := s.repo.GetA2AAgentBySlug(r.Context(), idCtx.OrgID, agentSlug)
 	if err != nil || agent == nil {
 		http.Error(w, fmt.Sprintf("Agent %q not found", agentSlug), http.StatusNotFound)
 		return

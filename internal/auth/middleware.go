@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
@@ -13,7 +14,66 @@ const (
 	HeaderKeyDeprecated = "X-Gateway-Key-Deprecated"
 	// HeaderKeyRevokeAt communicates the RFC3339 UTC timestamp when a deprecated virtual key will stop working.
 	HeaderKeyRevokeAt = "X-Gateway-Key-Revoke-At"
+	// HeaderClientApp identifies the calling client application for allowed_client_apps RBAC enforcement.
+	HeaderClientApp = "X-Gateway-Client-App"
+	// HeaderClientAppFallback is accepted as a compatibility fallback when X-Gateway-Client-App is absent.
+	HeaderClientAppFallback = "X-Client-App"
 )
+
+func extractClientAppHeader(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if v := strings.TrimSpace(r.Header.Get(HeaderClientApp)); v != "" {
+		return v
+	}
+	return strings.TrimSpace(r.Header.Get(HeaderClientAppFallback))
+}
+
+func isMasterAdminIdentity(idCtx *domain.IdentityContext) bool {
+	return idCtx != nil && idCtx.VirtualKeyID == "vk_master_admin"
+}
+
+// hasExplicitRestrictedClientAppAllowlist reports whether the effective 3-state
+// client-app policy is an explicit non-empty list that does not contain "*".
+// In that case, omitting the client-app header must not bypass the restriction.
+func hasExplicitRestrictedClientAppAllowlist(idCtx *domain.IdentityContext) bool {
+	if idCtx == nil || isMasterAdminIdentity(idCtx) {
+		return false
+	}
+	effective := idCtx.KeyAllowedClientApps
+	if effective == nil {
+		effective = idCtx.TeamAllowedClientApps
+	}
+	if len(effective) == 0 {
+		return false
+	}
+	for _, app := range effective {
+		if strings.TrimSpace(app) == "*" {
+			return false
+		}
+	}
+	return true
+}
+
+func enforceClientAppPolicy(r *http.Request, idCtx *domain.IdentityContext, rbac *RBACEngine, requireHeader bool) error {
+	if rbac == nil || idCtx == nil || isMasterAdminIdentity(idCtx) {
+		return nil
+	}
+	clientApp := extractClientAppHeader(r)
+	if clientApp == "" {
+		if requireHeader || hasExplicitRestrictedClientAppAllowlist(idCtx) {
+			return &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "client_app_required",
+				Message:    "Header X-Gateway-Client-App is required by client application access policy",
+			}
+		}
+		return nil
+	}
+	return rbac.AuthorizeClientApp(idCtx, clientApp)
+}
 
 func writeDeprecatedKeyHeaders(w http.ResponseWriter, revokeAt *time.Time) {
 	if w == nil || revokeAt == nil {
@@ -157,6 +217,11 @@ func DataPlaneMiddleware(svc *Service, rbac *RBACEngine) func(http.Handler) http
 					return
 				}
 			}
+			requireClientApp := svc != nil && svc.RequireClientAppHeader()
+			if err := enforceClientAppPolicy(r, idCtx, rbac, requireClientApp); err != nil {
+				domain.WriteHTTPError(w, err)
+				return
+			}
 			next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), idCtx)))
 		})
 	}
@@ -194,6 +259,11 @@ func DataPlaneMiddlewareWithResolver(resolver *AuthResolver, rbac *RBACEngine) f
 					domain.WriteHTTPError(w, err)
 					return
 				}
+			}
+			requireClientApp := resolver != nil && resolver.authSvc != nil && resolver.authSvc.RequireClientAppHeader()
+			if err := enforceClientAppPolicy(r, idCtx, rbac, requireClientApp); err != nil {
+				domain.WriteHTTPError(w, err)
+				return
 			}
 			next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), idCtx)))
 		})

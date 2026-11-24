@@ -438,7 +438,7 @@ func (s *GatewayServer) handleAudioSpeech(w http.ResponseWriter, r *http.Request
 	}
 
 	if s.spendWorker != nil {
-		if spendErr := s.spendWorker.Record(r.Context(), domain.SpendEvent{
+		if spendErr := s.spendWorker.Record(r.Context(), enrichSpendEventFromContext(r.Context(), domain.SpendEvent{
 			RequestID:               reqID,
 			TraceID:                 traceID,
 			OrgID:                   idCtx.OrgID,
@@ -459,7 +459,7 @@ func (s *GatewayServer) handleAudioSpeech(w http.ResponseWriter, r *http.Request
 			Modality:                domain.ModalityAudioTTS,
 			ModalityUnits:           map[string]any{"character_count": len(raw.Input)},
 			CreatedAt:               time.Now().UTC(),
-		}); spendErr != nil {
+		})); spendErr != nil {
 			logger.WarnContext(r.Context(), "Failed to persist TTS spend event",
 				slog.String("component", "audio"),
 				slog.String("request_id", reqID),

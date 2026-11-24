@@ -41,25 +41,27 @@ type cachedIdentity struct {
 
 // Service manages Boundary 1 authentication (Virtual API Keys, L1/L2 caching, and Admin authentication).
 type Service struct {
-	repo                    storage.Repository
-	redis                   *storage.RedisFabric
-	masterAdminKey          string
-	masterEncryptionKey     string
-	vault                   *Vault
-	allowMasterKeyDataPlane bool
-	customAPIKeyHeader      string
-	jwtVerifier             *JWTVerifier
-	sessionManager          *SessionManager
-	dataPlaneResolver       *AuthResolver
-	l1TTL                   time.Duration
-	l2TTL                   time.Duration
-	l1Cache                 sync.Map // keyHash -> l1CacheEntry
-	authFlight              singleflight.Group
-	invalidationSeq         atomic.Uint64
-	invalidationMu          sync.Mutex
-	invalidationCancel      context.CancelFunc
-	nowFn                   func() time.Time
-	invalidationHandlers    []func(storage.InvalidationEvent)
+	repo                        storage.Repository
+	redis                       *storage.RedisFabric
+	masterAdminKey              string
+	masterEncryptionKey         string
+	vault                       *Vault
+	allowMasterKeyDataPlane     bool
+	customAPIKeyHeader          string
+	requireClientAppHeader      atomic.Bool
+	allowViewerControlPlaneRead atomic.Bool
+	jwtVerifier                 *JWTVerifier
+	sessionManager              *SessionManager
+	dataPlaneResolver           *AuthResolver
+	l1TTL                       time.Duration
+	l2TTL                       time.Duration
+	l1Cache                     sync.Map // keyHash -> l1CacheEntry
+	authFlight                  singleflight.Group
+	invalidationSeq             atomic.Uint64
+	invalidationMu              sync.Mutex
+	invalidationCancel          context.CancelFunc
+	nowFn                       func() time.Time
+	invalidationHandlers        []func(storage.InvalidationEvent)
 }
 
 // NewService creates a virtual-key and identity authentication Service with L1/L2 caching.
@@ -176,6 +178,32 @@ func (s *Service) SetCustomAPIKeyHeader(name string) {
 	s.customAPIKeyHeader = strings.TrimSpace(name)
 }
 
+// SetRequireClientAppHeader configures whether DataPlaneMiddleware requires
+// X-Gateway-Client-App on all non-master requests regardless of allowlist defaults.
+func (s *Service) SetRequireClientAppHeader(required bool) {
+	if s != nil {
+		s.requireClientAppHeader.Store(required)
+	}
+}
+
+// RequireClientAppHeader reports whether X-Gateway-Client-App is globally required.
+func (s *Service) RequireClientAppHeader() bool {
+	return s != nil && s.requireClientAppHeader.Load()
+}
+
+// SetAllowViewerControlPlaneRead configures legacy compatibility mapping of
+// domain.RoleViewer to OperatorRoleOrgViewer on the Control Plane (default false).
+func (s *Service) SetAllowViewerControlPlaneRead(allow bool) {
+	if s != nil {
+		s.allowViewerControlPlaneRead.Store(allow)
+	}
+}
+
+// AllowViewerControlPlaneRead reports whether legacy RoleViewer control-plane read mapping is enabled.
+func (s *Service) AllowViewerControlPlaneRead() bool {
+	return s != nil && s.allowViewerControlPlaneRead.Load()
+}
+
 // ExtractorOptions returns the inbound credential extraction options configured for this service.
 func (s *Service) ExtractorOptions() ExtractorOptions {
 	if s == nil {
@@ -194,9 +222,25 @@ func HashKey(rawKey string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// IssueVirtualKeyOptions controls optional tri-state inheritance preservation
+// when issuing a new Virtual Key. Zero values keep the fail-closed DenyAll ([])
+// default for omitted MCP, A2A, and ClientApp allowlists.
+type IssueVirtualKeyOptions struct {
+	InheritMCPServers bool
+	InheritA2AAgents  bool
+	InheritClientApps bool
+}
+
 // IssueVirtualKey generates a cryptographically random Virtual Key (`sk-gw-<8char>-<36char>`),
 // stores only its SHA-256 hash in the repository, and returns the VirtualKey with `RawKey` populated once.
 func (s *Service) IssueVirtualKey(ctx context.Context, req *domain.VirtualKey) (*domain.VirtualKey, error) {
+	return s.IssueVirtualKeyWithOptions(ctx, req, IssueVirtualKeyOptions{})
+}
+
+// IssueVirtualKeyWithOptions generates a new Virtual Key while allowing callers
+// (such as POST /admin/v1/keys with explicit JSON null) to opt into SQL NULL
+// tri-state inheritance for MCP servers, A2A agents, or client applications.
+func (s *Service) IssueVirtualKeyWithOptions(ctx context.Context, req *domain.VirtualKey, opts IssueVirtualKeyOptions) (*domain.VirtualKey, error) {
 	if req == nil || req.OrgID == "" {
 		return nil, fmt.Errorf("org_id is required to issue a virtual key")
 	}
@@ -294,14 +338,15 @@ func (s *Service) IssueVirtualKey(ctx context.Context, req *domain.VirtualKey) (
 		nextRotation := s.now().Add(time.Duration(vk.RotationIntervalSec) * time.Second)
 		vk.KeyRotationAt = &nextRotation
 	}
-	// Confirmed Default: newly provisioned keys default to DenyAll ([]string{}) for MCP and A2A
-	if vk.AllowedMCPServers == nil {
+	// Confirmed Default: newly provisioned keys default to DenyAll ([]string{}) for MCP, A2A,
+	// and ClientApps unless the caller explicitly opted into SQL NULL inheritance.
+	if vk.AllowedMCPServers == nil && !opts.InheritMCPServers {
 		vk.AllowedMCPServers = []string{}
 	}
-	if vk.AllowedA2AAgents == nil {
+	if vk.AllowedA2AAgents == nil && !opts.InheritA2AAgents {
 		vk.AllowedA2AAgents = []string{}
 	}
-	if vk.AllowedClientApps == nil {
+	if vk.AllowedClientApps == nil && !opts.InheritClientApps {
 		vk.AllowedClientApps = []string{}
 	}
 
@@ -1648,7 +1693,7 @@ func (s *Service) AuthenticateOperatorWithSource(ctx context.Context, cred Extra
 				Message:    "Virtual keys with key_type \"llm_api\" are restricted to data-plane inference endpoints",
 			}
 		}
-		opRole, ok := mapDomainRoleToOperatorRole(idCtx.Role)
+		opRole, ok := s.MapDomainRoleToOperatorRole(idCtx.Role)
 		if !ok {
 			return nil, &domain.GatewayError{
 				StatusCode: http.StatusForbidden,
@@ -1721,7 +1766,7 @@ func (s *Service) AuthenticateOperatorWithSource(ctx context.Context, cred Extra
 				Message:    "Organization associated with this operator is inactive",
 			}
 		}
-		opRole, ok := mapDomainRoleToOperatorRole(user.Role)
+		opRole, ok := s.MapDomainRoleToOperatorRole(user.Role)
 		teamID := user.TeamID
 		if !ok || (opRole == domain.OperatorRoleTeamAdmin && teamID == "") {
 			if pmRepo, pmOK := s.repo.(storage.ProjectAndMembershipRepository); pmOK && pmRepo != nil {
@@ -1851,7 +1896,7 @@ func (s *Service) authenticateSessionToken(ctx context.Context, rawToken string)
 				Message:    "Organization associated with this operator is inactive",
 			}
 		}
-		opRole, ok := mapDomainRoleToOperatorRole(user.Role)
+		opRole, ok := s.MapDomainRoleToOperatorRole(user.Role)
 		if !ok {
 			return nil, &domain.GatewayError{
 				StatusCode: http.StatusForbidden,
@@ -1887,14 +1932,31 @@ func (s *Service) authenticateSessionToken(ctx context.Context, rawToken string)
 	return op, nil
 }
 
+// MapDomainRoleToOperatorRole maps a tenant domain.Role to a Control Plane OperatorRole.
+// By default, RoleViewer is restricted to Data Plane / Self-Service only; RoleOrgViewer
+// is the dedicated org-scoped read-only Control Plane auditor role. Setting
+// auth.allow_viewer_control_plane_read=true enables legacy mapping of RoleViewer to org_viewer.
+func (s *Service) MapDomainRoleToOperatorRole(role domain.Role) (domain.OperatorRole, bool) {
+	return mapDomainRoleToOperatorRoleWithOptions(role, s != nil && s.allowViewerControlPlaneRead.Load())
+}
+
 func mapDomainRoleToOperatorRole(role domain.Role) (domain.OperatorRole, bool) {
+	return mapDomainRoleToOperatorRoleWithOptions(role, false)
+}
+
+func mapDomainRoleToOperatorRoleWithOptions(role domain.Role, allowViewerControlPlaneRead bool) (domain.OperatorRole, bool) {
 	switch role {
 	case domain.RolePlatformAdmin:
 		return domain.OperatorRolePlatformAdmin, true
 	case domain.RoleOrgAdmin:
 		return domain.OperatorRoleOrgAdmin, true
-	case domain.RoleViewer, domain.RoleOrgViewer:
+	case domain.RoleOrgViewer:
 		return domain.OperatorRoleOrgViewer, true
+	case domain.RoleViewer:
+		if allowViewerControlPlaneRead {
+			return domain.OperatorRoleOrgViewer, true
+		}
+		return "", false
 	case domain.RoleTeamAdmin:
 		return domain.OperatorRoleTeamAdmin, true
 	default:
@@ -2019,7 +2081,7 @@ func (s *Service) AuthenticateSelfServiceUser(ctx context.Context, cred Extracte
 		if uErr != nil {
 			return nil, nil, uErr
 		}
-		opRole, ok := mapDomainRoleToOperatorRole(user.Role)
+		opRole, ok := s.MapDomainRoleToOperatorRole(user.Role)
 		if !ok {
 			opRole = domain.OperatorRole(user.Role)
 		}
@@ -2055,7 +2117,7 @@ func (s *Service) AuthenticateSelfServiceUser(ctx context.Context, cred Extracte
 		if uErr != nil {
 			return nil, nil, uErr
 		}
-		opRole, ok := mapDomainRoleToOperatorRole(checkedUser.Role)
+		opRole, ok := s.MapDomainRoleToOperatorRole(checkedUser.Role)
 		if !ok {
 			opRole = domain.OperatorRole(checkedUser.Role)
 		}

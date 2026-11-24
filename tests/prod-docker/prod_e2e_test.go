@@ -402,6 +402,8 @@ func TestProdDocker_Suite3_AsymmetricJWT_MultiIssuer_GroupRoleSync_AndSCIM(t *te
 		{"HS256", buildFakeJWT("HS256", "JWT", "k1", map[string]any{"iss": prodAuthBase + "/realms/goroute-prod", "sub": "u1", "aud": "goroute-gateway", "exp": now + 300}, []byte("secret"))},
 		{"AlgNone", buildFakeJWT("none", "JWT", "", map[string]any{"iss": prodAuthBase + "/realms/goroute-prod", "sub": "u1", "aud": "goroute-gateway", "exp": now + 300}, nil)},
 		{"IDJAG", buildFakeJWT("RS256", "oauth-id-jag+jwt", "k1", map[string]any{"iss": prodAuthBase + "/realms/goroute-prod", "sub": "u1", "aud": "goroute-gateway", "exp": now + 300}, []byte("k"))},
+		{"ExpiredJWT", buildFakeJWT("RS256", "JWT", "k1", map[string]any{"iss": prodAuthBase + "/realms/goroute-prod", "sub": "u1", "aud": "goroute-gateway", "exp": now - 60}, []byte("k"))},
+		{"WrongAudJWT", buildFakeJWT("RS256", "JWT", "k1", map[string]any{"iss": prodAuthBase + "/realms/goroute-prod", "sub": "u1", "aud": "wrong-audience", "exp": now + 300}, []byte("k"))},
 		{"OpaqueInvalid", "opaque-revoked-token-not-active-in-keycloak"},
 	} {
 		resp, _ := doReq(t, client, http.MethodGet, prodLBBase+"/v1/models", nil, map[string]string{
@@ -465,7 +467,33 @@ func TestProdDocker_Suite3_AsymmetricJWT_MultiIssuer_GroupRoleSync_AndSCIM(t *te
 			"Authorization": "Bearer " + prodMasterKey,
 		})
 	}()
-	// privCapTok has group goroute-platform-admins -> should only see jwt-mapped-only-model if VK applies cleanly on /v1/models or chat denial
+	// Seed a real fixture deployment for jwt-mapped-only-model so we verify BOTH positive 200 and negative 403!
+	jwtMapGlobalID := seedCustomGlobalModel(t, "openai/prod-fixture-mini", "openai", "gpt-4o-mini", 100000, 200000)
+	var jwtMapCred, jwtMapMG struct {
+		ID string `json:"id"`
+	}
+	mustAdminJSON(t, client, http.MethodPost, prodPod1Base+"/admin/v1/credentials", map[string]any{
+		"org_id": "org_default", "provider": "openai", "name": "jwt-map-cred-" + fmt.Sprintf("%d", time.Now().UnixNano()),
+		"api_key": "sk-mock-jwt", "base_url": prodFixturesBase + "/llm/eu/v1",
+	}, &jwtMapCred, http.StatusCreated)
+	mustAdminJSON(t, client, http.MethodPost, prodPod1Base+"/admin/v1/model-groups", map[string]any{
+		"org_id": "org_default", "alias": "jwt-mapped-only-model", "routing_strategy": "round_robin",
+	}, &jwtMapMG, http.StatusCreated, http.StatusConflict)
+	if jwtMapMG.ID != "" {
+		mustAdminJSON(t, client, http.MethodPost, prodPod1Base+"/admin/v1/deployments", map[string]any{
+			"model_group_id": jwtMapMG.ID, "global_model_id": jwtMapGlobalID, "credential_id": jwtMapCred.ID,
+			"deployment_name": "dep-jwt-map", "weight": 100, "priority": 1,
+		}, nil, http.StatusCreated)
+	}
+
+	// privCapTok has group goroute-platform-admins -> allowed on jwt-mapped-only-model (200), denied on unmapped-model (403) on Pod 2
+	allowChat, allowBody := doReq(t, client, http.MethodPost, prodPod2Base+"/v1/chat/completions", map[string]any{
+		"model":    "jwt-mapped-only-model",
+		"messages": []map[string]any{{"role": "user", "content": "hi"}},
+	}, map[string]string{"Authorization": "Bearer " + privCapTok})
+	if allowChat.StatusCode != http.StatusOK || !strings.Contains(string(allowBody), "eu-deployment-ok") {
+		t.Fatalf("JWT-mapped virtual key expected 200 on jwt-mapped-only-model on Pod 2, got %d: %s", allowChat.StatusCode, string(allowBody))
+	}
 	denyChat, denyBody := doReq(t, client, http.MethodPost, prodPod2Base+"/v1/chat/completions", map[string]any{
 		"model":    "unmapped-model",
 		"messages": []map[string]any{{"role": "user", "content": "hi"}},
@@ -1107,14 +1135,8 @@ func TestProdDocker_Suite7_MCP_UnconditionalToolPolicy_A2A_AndUnifiedAccessGroup
 		t.Fatalf("explicit Key [] DenyAll did not win over Unified Access Group grant! got %d %s", denyWinsResp.StatusCode, string(denyWinsBody))
 	}
 
-	// Key inheriting (nil allowlists -> Wait: CreateVirtualKey sets AllowedMCPServers=[] by default unless AccessGroupRule / Key Update sets nil or matches!)
-	// Dynamic AccessGroupRule on org_default with privCap OIDC JWT (groups: ["goroute-platform-admins"])!
-	var ruleKey struct {
-		ID string `json:"id"`
-	}
-	mustAdminJSON(t, client, http.MethodPost, prodPod1Base+"/admin/v1/keys", map[string]any{
-		"org_id": "org_default", "name": "rule-inherit-key-" + suffix,
-	}, &ruleKey, http.StatusCreated)
+	// Positive Unified Access Group grants, gated ModelAccessGroup enforcement, and Dynamic AccessGroupRule
+	// evaluation across replicas are exercised in TestProdDocker_Suite7b_MultiMCPHub_ToolAuthz_A2AKillSwitch_UnifiedGroups_AndDynamicRules.
 }
 
 func TestProdDocker_Suite8_ExternalAuthorizer_AuditFilters_AndSIEM(t *testing.T) {
@@ -1194,21 +1216,25 @@ func TestProdDocker_Suite8_ExternalAuthorizer_AuditFilters_AndSIEM(t *testing.T)
 		t.Fatalf("cursor page 2 failed to advance deterministically")
 	}
 
-	// 3. SIEM Webhook collector received HMAC-verified batches (flush_interval=500ms)
+	// 3. SIEM Webhook collector received HMAC-verified batches (flush_interval=500ms) including new MCP/A2A admin audit events
 	var siemOK bool
 	var siemBody []byte
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
 		_, siemBody = doReq(t, client, http.MethodGet, prodFixturesBase+"/_control/siem/events", nil, nil)
 		s := string(siemBody)
-		if strings.Contains(s, "sso.role_synced") && strings.Contains(s, "mcp.tool_policy.blocked") && strings.Contains(s, "virtual_key.issued") {
+		if strings.Contains(s, "sso.role_synced") &&
+			strings.Contains(s, "mcp.tool_policy.blocked") &&
+			strings.Contains(s, "virtual_key.issued") &&
+			strings.Contains(s, "mcp_server.created") &&
+			strings.Contains(s, "a2a_agent.created") {
 			siemOK = true
 			break
 		}
 		time.Sleep(300 * time.Millisecond)
 	}
 	if !siemOK {
-		t.Fatalf("expected HMAC-verified SIEM webhook events (sso.role_synced, mcp.tool_policy.blocked, virtual_key.issued), got: %s", string(siemBody))
+		t.Fatalf("expected HMAC-verified SIEM webhook events (sso.role_synced, mcp.tool_policy.blocked, virtual_key.issued, mcp_server.created, a2a_agent.created), got: %s", string(siemBody))
 	}
 }
 
@@ -1226,8 +1252,12 @@ func TestProdDocker_Suite10_LiveMultiProviderAuthorizationAndFinOps(t *testing.T
 		InputMicros int64
 		OutMicros   int64
 	}
+	groqModel := strings.TrimSpace(os.Getenv("PROD_LIVE_GROQ_MODEL"))
+	if groqModel == "" {
+		groqModel = "openai/gpt-oss-20b"
+	}
 	specs := []liveSpec{
-		{Name: "groq", EnvVar: "PROD_LIVE_GROQ_API_KEY", Provider: "groq", GlobalID: "groq/llama-3.3-70b-versatile", ModelName: "llama-3.3-70b-versatile", InputMicros: 590000, OutMicros: 790000},
+		{Name: "groq", EnvVar: "PROD_LIVE_GROQ_API_KEY", Provider: "groq", GlobalID: "groq/" + groqModel, ModelName: groqModel, InputMicros: 100000, OutMicros: 300000},
 		{Name: "openai", EnvVar: "PROD_LIVE_OPENAI_API_KEY", Provider: "openai", GlobalID: "openai/gpt-4o-mini", ModelName: "gpt-4o-mini", InputMicros: 150000, OutMicros: 600000},
 		{Name: "openrouter", EnvVar: "PROD_LIVE_OPENROUTER_API_KEY", Provider: "openrouter", GlobalID: "openrouter/openai/gpt-4o-mini", ModelName: "openai/gpt-4o-mini", InputMicros: 150000, OutMicros: 600000},
 		{Name: "anthropic", EnvVar: "PROD_LIVE_ANTHROPIC_API_KEY", Provider: "anthropic", GlobalID: "anthropic/claude-haiku-4-5-20251001", ModelName: "claude-haiku-4-5-20251001", InputMicros: 800000, OutMicros: 4000000},
@@ -1337,8 +1367,8 @@ func TestProdDocker_Suite10_LiveMultiProviderAuthorizationAndFinOps(t *testing.T
 		}
 	}
 
-	if len(succeeded) == 0 {
-		t.Fatalf("expected at least 1 live LLM provider to succeed end-to-end, got 0")
+	if len(succeeded) != len(configured) {
+		t.Fatalf("expected all %d configured live LLM providers to succeed end-to-end, got %d", len(configured), len(succeeded))
 	}
 
 	// Cross-provider Mandatory Tag Routing & Subscription Gate using top succeeding live provider

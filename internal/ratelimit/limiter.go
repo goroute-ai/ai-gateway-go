@@ -445,10 +445,18 @@ func (l *Limiter) AcquireWithBudgetAndRollback(ctx context.Context, idCtx *domai
 
 // AcquireWithBudgetAndRollbackWithMeta combines rollback hooks with 2xx rate-limit header metadata.
 func (l *Limiter) AcquireWithBudgetAndRollbackWithMeta(ctx context.Context, idCtx *domain.IdentityContext, estimatedTokens int, reserveMicros int64, requestID string) (func(actualTokens int, actualCostMicros int64), func(), *domain.RateLimitHeaderMetadata, error) {
+	return l.AcquireWithBudgetAndSettlementIDWithMeta(ctx, idCtx, estimatedTokens, reserveMicros, requestID, "")
+}
+
+// AcquireWithBudgetAndSettlementIDWithMeta acquires rate/budget reservations and associates
+// a shared settlementID with the reconciliation hook so completed requests can atomically swap
+// reservations for actual spend in Redis immediately while sharing the same idempotency key
+// (`gw:spend:applied:{org:<orgID>}:<settlementID>`) with SpendWorker's RecordSpendIncrementsBatch.
+func (l *Limiter) AcquireWithBudgetAndSettlementIDWithMeta(ctx context.Context, idCtx *domain.IdentityContext, estimatedTokens int, reserveMicros int64, requestID, settlementID string) (func(actualTokens int, actualCostMicros int64), func(), *domain.RateLimitHeaderMetadata, error) {
 	if reserveMicros < 0 || requestID == "" {
 		return nil, nil, nil, fmt.Errorf("budget reservation requires a non-negative amount and request ID")
 	}
-	return l.acquireInternal(ctx, idCtx, estimatedTokens, reserveMicros, requestID)
+	return l.acquireInternalWithSettlementID(ctx, idCtx, estimatedTokens, reserveMicros, requestID, strings.TrimSpace(settlementID))
 }
 
 func orgHashTag(orgID string) string {
@@ -555,6 +563,10 @@ func spendKeys(keyID, teamID, userID, orgID string) []string {
 }
 
 func (l *Limiter) acquireInternal(ctx context.Context, idCtx *domain.IdentityContext, estimatedTokens int, reserveMicros int64, requestID string) (func(int, int64), func(), *domain.RateLimitHeaderMetadata, error) {
+	return l.acquireInternalWithSettlementID(ctx, idCtx, estimatedTokens, reserveMicros, requestID, "")
+}
+
+func (l *Limiter) acquireInternalWithSettlementID(ctx context.Context, idCtx *domain.IdentityContext, estimatedTokens int, reserveMicros int64, requestID, settlementID string) (func(int, int64), func(), *domain.RateLimitHeaderMetadata, error) {
 	enabled, fallbackLocal, defaultEstTPM, gRPM, gTPM, gConc := l.configSnapshot()
 	if !enabled || idCtx == nil {
 		return func(int, int64) {}, func() {}, nil, nil
@@ -666,9 +678,16 @@ func (l *Limiter) acquireInternal(ctx context.Context, idCtx *domain.IdentityCon
 						if actualTokens < 0 {
 							settle[3] = int64(-1)
 						} else if reserveMicros > 0 {
-							// Successful budgeted requests settle the reservation with their SpendEvent,
-							// which atomically swaps reserved cost for actual spend.
-							settle[3] = int64(-2)
+							if actualCostMicros >= 0 && settlementID != "" {
+								// Atomically swap reservation -> actual spend immediately using the
+								// exact same idempotency key that SpendWorker uses in record_spend.lua.
+								tag := orgHashTag(idCtx.OrgID)
+								resKeys = append(resKeys, fmt.Sprintf("gw:spend:applied:%s:%s", tag, settlementID))
+								settle[3] = actualCostMicros
+							} else {
+								// Legacy callers without a shared settlementID defer settlement to SpendEvent.
+								settle[3] = int64(-2)
+							}
 						}
 						_, _ = l.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
 							rCtx, cancel := l.withRedisTimeout(context.Background())

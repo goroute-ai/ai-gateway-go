@@ -797,17 +797,22 @@ Admin APIs authenticate via `Authorization: Bearer <MASTER_ADMIN_KEY>`, an organ
     "rpm_limit": 1000,
     "tpm_limit": 500000,
     "allowed_models": ["fast", "reasoning"],
+    "allowed_deployments": ["dep_eu_1"],
+    "allowed_routing_tags": ["eu-gdpr"],
     "allowed_mcp_servers": ["github-tools"],
+    "allowed_mcp_tools": ["github-tools:get_*"],
+    "allowed_mcp_toolsets": ["github-readonly"],
     "allowed_a2a_agents": ["analyst-agent"]
   }
   ```
-- `GET /admin/v1/keys?org_id={orgID}`, `GET /admin/v1/keys/{keyID}`, `PUT /admin/v1/keys/{keyID}`: List (`team_admin` restricted to administered teams), inspect, or update mutable virtual key limits, models, and metadata (invalidating both primary and active deprecated grace hashes across L1/L2 caches).
+- `GET /admin/v1/keys?org_id={orgID}`, `GET /admin/v1/keys/{keyID}`, `PUT /admin/v1/keys/{keyID}`: List (`team_admin` restricted to administered teams), inspect, or update mutable virtual key limits, models, deployments, 3-state MCP/A2A allowlists (`null` = Inherit vs `[]` = Deny All), and metadata (invalidating both primary and active deprecated grace hashes across L1/L2 caches).
 - `POST /admin/v1/keys/{keyID}/rotate`: Manually rotate a virtual key immediately or with a dual-active grace window (`grace_period_seconds`, marking previous hash in `virtual_key_deprecated_hashes` and emitting `X-Gateway-Key-Deprecated` / `X-Gateway-Key-Revoke-At` headers during grace).
 - `POST /admin/v1/keys/{keyID}/temp-budget`: Grant an expiring temporary budget increase (`temp_budget_increase_micros` / `increase_micros` plus `temp_budget_expires_at` / `expires_at` / `ttl_seconds`) enforced immediately at quota admission.
 - `POST /admin/v1/keys/{keyID}/block`, `POST /admin/v1/keys/{keyID}/unblock`, `POST /admin/v1/keys/{keyID}/reset-spend`, `POST /admin/v1/keys/bulk-update`: Temporarily block/unblock keys, reset spend, or atomically update up to `250` keys per batch.
 - `POST /admin/v1/keys/{keyID}/revoke` or `DELETE /admin/v1/keys/{keyID}`: Instantly revokes a key and purges cached primary & deprecated grace permissions from L1 memory and Redis via Pub/Sub.
 - `POST /admin/v1/jwt-mappings`, `GET /admin/v1/jwt-mappings`, `DELETE /admin/v1/jwt-mappings/{id}`: Configure explicit tenant-scoped JWT claim-to-Virtual-Key (`(org_id, issuer, claim_name, claim_value) -> virtual_key_id`) bindings.
-- `POST /admin/v1/access-group-rules`, `GET /admin/v1/access-group-rules`, `DELETE /admin/v1/access-group-rules/{id}`: Configure ABAC claim/attribute dynamic access rules (`allowed_models`, `access_group_id`, `operator`, `priority`).
+- `POST /admin/v1/access-group-rules`, `GET /admin/v1/access-group-rules`, `DELETE /admin/v1/access-group-rules/{id}`: Configure ABAC claim/attribute dynamic access rules (`allowed_models`, `allowed_mcp_servers`, `allowed_mcp_tools`, `allowed_a2a_agents`, `access_group_id`, `operator`, `priority`).
+- `POST /admin/v1/access-groups` (alias `/admin/v1/model-access-groups`): Manage Unified Access Groups bundling models, MCP servers/tools, A2A agents, and shared budgets. See [AUTHORIZATION_AND_ACCESS_CONTROL.md](./AUTHORIZATION_AND_ACCESS_CONTROL.md) for the complete 19-capability RBAC, tri-state allowlist, external authorizer, and audit event reference.
 - **Data Plane Self-Inspection & Developer Self-Service**: `GET /v1/key/info` inspects the caller's active key identity, effective limits, and spend; `GET /v1/self/keys`, `POST /v1/self/keys`, `POST /v1/self/keys/{keyID}/rotate`, and `DELETE /v1/self/keys/{keyID}` allow scoped self-service governed by `team_member_permissions` and `self_serve_budget_policy`.
 
 ### 5.5 Upstream Provider Credentials Vault
@@ -927,7 +932,7 @@ Admin APIs authenticate via `Authorization: Bearer <MASTER_ADMIN_KEY>`, an organ
   - `GET /admin/v1/organizations/{orgID}/guardrail-usage`: Returns daily guardrail metrics, top triggered guardrails, usage units, and integer micro-dollar (`cost_micros`) attribution rollups (optional filters: `start_date`, `end_date`, `guardrail_id`, `team_id`, `virtual_key_id`, `top_limit`).
 
 ### 5.10 Quotas, Multi-Window Budgets, PTU Sharing, Config, Security & Audit Ledgers
-- `PUT /admin/v1/quotas`, `GET /admin/v1/quotas`, `DELETE /admin/v1/quotas/{policyID}`: Configure multi-dimensional per-model and scope quota policies (`scope_type`: `org`, `team`, `user`, `virtual_key`, `end_user`, `tag`, `model_access_group`, `agent_session`; `model_pattern`, `rpm_limit`, `tpm_limit`, `itpm_limit`, `otpm_limit`, `tpd_limit`, `max_concurrent`, `max_budget_micros`, `max_iterations`).
+- `PUT /admin/v1/quotas`, `GET /admin/v1/quotas`, `DELETE /admin/v1/quotas/{policyID}`: Configure multi-dimensional per-model and scope quota policies (`scope_type`: `org`, `team`, `team_member`, `project`, `user`, `key` — alias `virtual_key` also accepted, `model_per_key` — alias `model_per_virtual_key`, `end_user`, `tag`, `model_access_group`, `agent_session`; `model_pattern`, `rpm_limit`, `tpm_limit`, `itpm_limit`, `otpm_limit`, `tpd_limit`, `max_concurrent`, `max_budget_micros`, `max_iterations`).
 - `PUT /admin/v1/budget-windows`, `GET /admin/v1/budget-windows`: Configure multi-window budgets (`hourly`, `daily`, `weekly`, `monthly`, `rolling_24h`, `never`) evaluated simultaneously during atomic descriptor admission (`rolling_24h` expires each settled spend charge independently 24 hours after its spend timestamp and recovers from PostgreSQL `spend_logs` on cold Redis state).
 - `POST|PUT /admin/v1/end-users`, `GET /admin/v1/end-users`, `GET /admin/v1/end-users/{id}`, `DELETE /admin/v1/end-users/{id}`: Manage persisted end-user budgets, RPM/TPM/TPD limits, and aliases.
 - `POST|PUT /admin/v1/tags`, `GET /admin/v1/tags`, `GET /admin/v1/tags/{id}`, `DELETE /admin/v1/tags/{id}`: Manage persisted tag budgets and rate-limit policies matched on `X-Gateway-Tags` / request tags.

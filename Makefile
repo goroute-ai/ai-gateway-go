@@ -158,9 +158,25 @@ ui-build:
 	@echo "==> Frontend assets built and synchronized successfully."
 
 ui-check-dist:
-	@echo "==> Verifying internal/ui/dist synchronization..."
-	@diff -rq web/dist internal/ui/dist >/dev/null || (echo "❌ internal/ui/dist is out of sync with web/dist. Run 'make ui-build' to synchronize." && exit 1)
-	@echo "==> internal/ui/dist is in sync."
+	@echo "==> Verifying internal/ui/dist synchronization and bundle budget..."
+	@if [ -d web/dist ]; then \
+		diff -rq web/dist internal/ui/dist >/dev/null || (echo "❌ internal/ui/dist is out of sync with web/dist. Run 'make ui-build' to synchronize." && exit 1); \
+		if command -v node >/dev/null 2>&1; then \
+			node web/scripts/check-budget.mjs web/dist; \
+		fi; \
+		echo "==> internal/ui/dist is in sync with web/dist."; \
+	else \
+		test -f internal/ui/dist/index.html || (echo "❌ internal/ui/dist/index.html missing. Run 'make ui-build'." && exit 1); \
+		test -d internal/ui/dist/assets || (echo "❌ internal/ui/dist/assets missing. Run 'make ui-build'." && exit 1); \
+		if command -v node >/dev/null 2>&1; then \
+			node web/scripts/check-budget.mjs internal/ui/dist; \
+		fi; \
+		echo "ℹ️  web/dist not present (fresh checkout); verified committed internal/ui/dist assets & bundle budget. Run 'make ui-build' to rebuild from web/src."; \
+	fi
+
+security-scan:
+	@echo "==> Running full working-tree secret scan (gitleaks --no-git)..."
+	gitleaks detect --source=. --config=.gitleaks.toml --no-git --redact
 
 ui-dev:
 	@echo "==> Starting Vite local dev server with API proxy..."

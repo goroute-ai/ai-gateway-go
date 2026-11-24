@@ -12,6 +12,24 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
 
+func normalizeTeamMemberRole(raw domain.Role) domain.Role {
+	r := domain.Role(strings.ToLower(strings.TrimSpace(string(raw))))
+	if r == "" || r == "member" {
+		return domain.RoleDeveloper
+	}
+	return r
+}
+
+func resolveProjectModelQuotaFlag(canonical, alias *bool) (*bool, bool) {
+	if canonical != nil && alias != nil && *canonical != *alias {
+		return nil, false
+	}
+	if canonical != nil {
+		return canonical, true
+	}
+	return alias, true
+}
+
 func (s *GatewayServer) projectMembershipRepo() (storage.ProjectAndMembershipRepository, bool) {
 	if s == nil || s.repo == nil {
 		return nil, false
@@ -68,7 +86,8 @@ func (s *GatewayServer) handleAdminCreateProject(w http.ResponseWriter, r *http.
 		AllowedMCPTools          []string `json:"allowed_mcp_tools"`
 		AllowedMCPToolsets       []string `json:"allowed_mcp_toolsets"`
 		AllowedA2AAgents         []string `json:"allowed_a2a_agents"`
-		EnforceProjectModelQuota bool     `json:"enforce_project_model_quota,omitempty"`
+		EnforceProjectModelQuota *bool    `json:"enforce_project_model_quota,omitempty"`
+		EnforceModelQuota        *bool    `json:"enforce_model_quota,omitempty"`
 		IsActive                 *bool    `json:"is_active,omitempty"`
 	}
 	if err := decodeAdminJSON(w, r, &req); err != nil {
@@ -173,6 +192,20 @@ func (s *GatewayServer) handleAdminCreateProject(w http.ResponseWriter, r *http.
 		return
 	}
 
+	enforceModelQuotaPtr, flagOK := resolveProjectModelQuotaFlag(req.EnforceProjectModelQuota, req.EnforceModelQuota)
+	if !flagOK {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "conflicting_project_quota_flags",
+			Message:    "enforce_project_model_quota and enforce_model_quota cannot have conflicting values",
+		})
+		return
+	}
+	enforceModelQuota := false
+	if enforceModelQuotaPtr != nil {
+		enforceModelQuota = *enforceModelQuotaPtr
+	}
 	isActive := true
 	if req.IsActive != nil {
 		isActive = *req.IsActive
@@ -193,7 +226,7 @@ func (s *GatewayServer) handleAdminCreateProject(w http.ResponseWriter, r *http.
 		AllowedMCPTools:          req.AllowedMCPTools,
 		AllowedMCPToolsets:       req.AllowedMCPToolsets,
 		AllowedA2AAgents:         req.AllowedA2AAgents,
-		EnforceProjectModelQuota: req.EnforceProjectModelQuota,
+		EnforceProjectModelQuota: enforceModelQuota,
 		IsActive:                 isActive,
 	}
 	if err := pmRepo.CreateProject(r.Context(), proj); err != nil {
@@ -305,6 +338,7 @@ func (s *GatewayServer) handleAdminUpdateProject(w http.ResponseWriter, r *http.
 		AllowedMCPToolsets       optionalStringSlice `json:"allowed_mcp_toolsets"`
 		AllowedA2AAgents         optionalStringSlice `json:"allowed_a2a_agents"`
 		EnforceProjectModelQuota *bool               `json:"enforce_project_model_quota,omitempty"`
+		EnforceModelQuota        *bool               `json:"enforce_model_quota,omitempty"`
 		IsActive                 *bool               `json:"is_active,omitempty"`
 	}
 	if err := decodeAdminJSON(w, r, &req); err != nil {
@@ -436,8 +470,18 @@ func (s *GatewayServer) handleAdminUpdateProject(w http.ResponseWriter, r *http.
 	if req.AllowedA2AAgents.Set {
 		updated.AllowedA2AAgents = req.AllowedA2AAgents.Value
 	}
-	if req.EnforceProjectModelQuota != nil {
-		updated.EnforceProjectModelQuota = *req.EnforceProjectModelQuota
+	enforceModelQuotaPtr, flagOK := resolveProjectModelQuotaFlag(req.EnforceProjectModelQuota, req.EnforceModelQuota)
+	if !flagOK {
+		domain.WriteHTTPError(w, &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "conflicting_project_quota_flags",
+			Message:    "enforce_project_model_quota and enforce_model_quota cannot have conflicting values",
+		})
+		return
+	}
+	if enforceModelQuotaPtr != nil {
+		updated.EnforceProjectModelQuota = *enforceModelQuotaPtr
 	}
 	if req.IsActive != nil {
 		updated.IsActive = *req.IsActive
@@ -613,10 +657,7 @@ func (s *GatewayServer) handleAdminUpsertTeamMember(w http.ResponseWriter, r *ht
 		})
 		return
 	}
-	role := req.Role
-	if role == "" {
-		role = domain.RoleDeveloper
-	}
+	role := normalizeTeamMemberRole(req.Role)
 	if !isValidTenantRole(role) {
 		domain.WriteHTTPError(w, &domain.GatewayError{
 			StatusCode: http.StatusBadRequest,

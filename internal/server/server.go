@@ -444,6 +444,8 @@ func buildAuthSubsystem(cfg *config.Config, repo storage.Repository, redisFabric
 	authSvc.SetVault(vault)
 	authSvc.SetAllowMasterKeyDataPlane(cfg.Auth.AllowMasterKeyDataPlane)
 	authSvc.SetCustomAPIKeyHeader(cfg.Auth.CustomAPIKeyHeader)
+	authSvc.SetRequireClientAppHeader(cfg.Auth.RequireClientAppHeader)
+	authSvc.SetAllowViewerControlPlaneRead(cfg.Auth.AllowViewerControlPlaneRead)
 	jwtVerifier := auth.NewJWTVerifier(auth.JWTConfig{
 		Issuer:        cfg.Auth.JWTIssuer,
 		Audience:      cfg.Auth.JWTAudience,

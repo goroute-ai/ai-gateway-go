@@ -932,6 +932,11 @@ func (rm *ReliabilityManager) resolveCommaSeparatedCandidates(
 		pool.activeByGroup[g.ID] = activeTotal
 		if filterErr != nil {
 			pool.lastErr = filterErr
+			var orgPolicyErr *OrgPolicyDeniedError
+			if errors.As(filterErr, &orgPolicyErr) {
+				// Allow other comma-separated aliases to be tried; if all fail, pool.lastErr surfaces the 403.
+				continue
+			}
 			if rm.classifyErr(filterErr) == CategoryNonRetryable {
 				return nil, filterErr
 			}
@@ -1037,6 +1042,9 @@ func (rm *ReliabilityManager) getHealthyDeployments(ctx context.Context, orgID s
 		return nil, err
 	}
 	now := time.Now().UTC()
+	consideredActive := 0
+	policyDeniedCount := 0
+	var firstPolicyErr error
 	eligible := make([]*domain.Deployment, 0, len(all))
 	for _, d := range all {
 		if d.Status != domain.DeploymentStatusActive || d.GlobalModel == nil {
@@ -1055,12 +1063,20 @@ func (rm *ReliabilityManager) getHealthyDeployments(ctx context.Context, orgID s
 		if rm.healthMon != nil && !rm.healthMon.IsHealthyWithMaxAge(d.ID, rm.cfg.HealthStalenessThreshold) {
 			continue
 		}
+		consideredActive++
 		if rm.rbac != nil && orgID != "" {
 			if err := rm.rbac.AuthorizeDeployment(ctx, orgID, d); err != nil {
+				policyDeniedCount++
+				if firstPolicyErr == nil {
+					firstPolicyErr = err
+				}
 				continue
 			}
 		}
 		eligible = append(eligible, d)
+	}
+	if len(eligible) == 0 && consideredActive > 0 && policyDeniedCount == consideredActive && firstPolicyErr != nil {
+		return nil, newOrgPolicyDeniedError(firstPolicyErr)
 	}
 	return rm.admitThroughCircuitBreakerForGroup(ctx, group, eligible), nil
 }
@@ -1127,12 +1143,16 @@ func (rm *ReliabilityManager) getEligibleDeploymentsDetailed(
 	}
 
 	activeTotal := 0
+	consideredActive := 0
+	policyDeniedCount := 0
+	var firstPolicyErr error
 	authorized := make([]*domain.Deployment, 0, len(all))
 	for _, d := range all {
 		if d == nil {
 			continue
 		}
-		if d.Status == domain.DeploymentStatusActive && d.GlobalModel != nil {
+		isActive := d.Status == domain.DeploymentStatusActive && d.GlobalModel != nil
+		if isActive {
 			activeTotal++
 		}
 		if len(excludeDepIDs) > 0 {
@@ -1140,8 +1160,17 @@ func (rm *ReliabilityManager) getEligibleDeploymentsDetailed(
 				continue
 			}
 		}
+		if isActive {
+			consideredActive++
+		}
 		if rm.rbac != nil && orgID != "" {
 			if err := rm.rbac.AuthorizeDeployment(ctx, orgID, d); err != nil {
+				if isActive {
+					policyDeniedCount++
+					if firstPolicyErr == nil {
+						firstPolicyErr = err
+					}
+				}
 				continue
 			}
 		}
@@ -1151,6 +1180,9 @@ func (rm *ReliabilityManager) getEligibleDeploymentsDetailed(
 		authorized = preStageFilter(authorized)
 	}
 	if len(authorized) == 0 {
+		if consideredActive > 0 && policyDeniedCount == consideredActive && firstPolicyErr != nil {
+			return nil, activeTotal, nil, false, newOrgPolicyDeniedError(firstPolicyErr)
+		}
 		return nil, activeTotal, nil, false, nil
 	}
 

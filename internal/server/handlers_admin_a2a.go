@@ -107,6 +107,13 @@ func (s *GatewayServer) handleAdminCreateA2AAgent(w http.ResponseWriter, r *http
 		return
 	}
 
+	s.auditWithDiff(r.Context(), agent.OrgID, "a2a_agent.created", "a2a_agent", agent.ID, map[string]any{
+		"name":                 agent.Name,
+		"slug":                 agent.Slug,
+		"task_visibility_mode": agent.TaskVisibilityMode,
+		"auth_type":            agent.AuthType,
+	}, nil, agent)
+
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"status": "created",
 		"agent":  agent,
@@ -192,6 +199,7 @@ func (s *GatewayServer) handleAdminSetA2AKillSwitch(w http.ResponseWriter, r *ht
 		return
 	}
 
+	before := *agent
 	if err := s.repo.SetA2AAgentKillSwitch(r.Context(), agentID, input.Killed); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{
 			StatusCode: http.StatusInternalServerError,
@@ -201,6 +209,12 @@ func (s *GatewayServer) handleAdminSetA2AKillSwitch(w http.ResponseWriter, r *ht
 		})
 		return
 	}
+	after := before
+	after.IsKilled = input.Killed
+	s.auditWithDiff(r.Context(), agent.OrgID, "a2a_agent.kill_switch_updated", "a2a_agent", agentID, map[string]any{
+		"slug":   agent.Slug,
+		"killed": input.Killed,
+	}, &before, &after)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":   "updated",
@@ -286,6 +300,11 @@ func (s *GatewayServer) handleAdminSetA2APushConfig(w http.ResponseWriter, r *ht
 		})
 		return
 	}
+
+	s.auditWithDiff(r.Context(), targetOrgID, "a2a_push_config.created", "a2a_push_config", cfg.ID, map[string]any{
+		"task_id":    cfg.TaskID,
+		"target_url": cfg.TargetURL,
+	}, nil, cfg)
 
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"status":      "created",

@@ -236,6 +236,7 @@ func (s *GatewayServer) acquireQuotaUsingEstimator(ctx context.Context, id *doma
 	needsBudget := legacyHasBudget || extHasBudget
 
 	var reserve int64
+	var settlementID string
 	if needsBudget {
 		if s.budgetStats != nil {
 			s.budgetStats.budgetedChecks.Add(1)
@@ -250,9 +251,18 @@ func (s *GatewayServer) acquireQuotaUsingEstimator(ctx context.Context, id *doma
 			return nil, nil, requestBudgetEstimateError(err)
 		}
 		if qState := requestQuotaStateFromContext(ctx); qState != nil {
+			if qState.SettlementID == "" || qState.SettlementRequestID != requestID {
+				qState.SettlementID = uuid.NewString()
+			}
+			settlementID = qState.SettlementID
 			qState.SettlementRequestID = requestID
 			qState.MaxOutputTokens = requestedOutput
 			qState.PrimaryReserveMicros = reserve
+		} else {
+			// Without requestQuotaState on ctx, fall back to requestID so reconcile.lua
+			// and SpendWorker/record_spend.lua (which falls back to request_id when event_id=="")
+			// still share the exact same Redis idempotency key.
+			settlementID = requestID
 		}
 	} else if qState := requestQuotaStateFromContext(ctx); qState != nil {
 		qState.SettlementRequestID = requestID
@@ -266,7 +276,7 @@ func (s *GatewayServer) acquireQuotaUsingEstimator(ctx context.Context, id *doma
 	var legacyRollback func()
 	var meta *domain.RateLimitHeaderMetadata
 	if legacyHasBudget {
-		rel, rb, m, err := s.limiter.AcquireWithBudgetAndRollbackWithMeta(ctx, effID, rateTokens, reserve, requestID)
+		rel, rb, m, err := s.limiter.AcquireWithBudgetAndSettlementIDWithMeta(ctx, effID, rateTokens, reserve, requestID, settlementID)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -314,7 +324,7 @@ func (s *GatewayServer) acquireQuotaUsingEstimator(ctx context.Context, id *doma
 	stopRenewer := s.startReservationLeaseRenewerWithDescriptors(ctx, effID, extDescriptors, requestID)
 	var legacyRel func(actualTokens int, overrideCostMicros int64)
 	if legacyHasBudget {
-		legacyRel = s.wrapBudgetReleaseWithRenewer(effID, requestID, stopRenewer, legacyRawRel)
+		legacyRel = s.wrapBudgetReleaseWithRenewerAndSettlement(effID, requestID, settlementID, stopRenewer, legacyRawRel)
 	} else {
 		var legacyOnce sync.Once
 		legacyRel = func(actualTokens int, _ int64) {
@@ -344,7 +354,7 @@ func (s *GatewayServer) acquireQuotaUsingEstimator(ctx context.Context, id *doma
 			totalTokens := actualInput + actualOutput
 			if legacyRel != nil {
 				legacyCost := overrideCostMicros
-				if s.spendWorker != nil && overrideCostMicros >= 0 {
+				if s.spendWorker != nil && overrideCostMicros >= 0 && settlementID == "" {
 					legacyCost = -2
 				}
 				legacyRel(totalTokens, legacyCost)
@@ -441,7 +451,11 @@ func (s *GatewayServer) reserveExtendedQuotaWithMeta(ctx context.Context, orgID,
 	if state != nil {
 		for _, d := range descriptors {
 			if d.WindowType == domain.BudgetWindowRolling24h && d.MaxBudgetMicros > 0 {
-				settlementID = uuid.NewString()
+				if state.SettlementID != "" && state.SettlementRequestID == requestID {
+					settlementID = state.SettlementID
+				} else {
+					settlementID = uuid.NewString()
+				}
 				break
 			}
 		}

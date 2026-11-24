@@ -401,6 +401,8 @@ type AuthConfig struct {
 	AllowMasterKeyDataPlane      bool                     `yaml:"allow_master_key_data_plane"`
 	EnableDataPlaneJWT           bool                     `yaml:"enable_data_plane_jwt"`
 	CustomAPIKeyHeader           string                   `yaml:"custom_api_key_header"`
+	RequireClientAppHeader       bool                     `yaml:"require_client_app_header,omitempty"`
+	AllowViewerControlPlaneRead  bool                     `yaml:"allow_viewer_control_plane_read,omitempty"`
 	JWTIssuer                    string                   `yaml:"jwt_issuer"`
 	JWTAudience                  string                   `yaml:"jwt_audience"`
 	OIDCJWKSURL                  string                   `yaml:"oidc_jwks_url"`
@@ -904,6 +906,8 @@ func (c *Config) applyAuthEnvOverrides() {
 	envDuration("GATEWAY_CLI_LOGIN_DEFAULT_TTL", &c.Auth.CLILoginDefaultTTL)
 	envDuration("GATEWAY_CLI_LOGIN_MAX_TTL", &c.Auth.CLILoginMaxTTL)
 	envInt("GATEWAY_AUTH_START_RATE_LIMIT_PER_MIN", &c.Auth.AuthStartRateLimitPerMin)
+	envBool("GATEWAY_AUTH_REQUIRE_CLIENT_APP_HEADER", &c.Auth.RequireClientAppHeader)
+	envBool("GATEWAY_AUTH_ALLOW_VIEWER_CONTROL_PLANE_READ", &c.Auth.AllowViewerControlPlaneRead)
 }
 
 func (c *Config) applyRouterEnvOverrides() {
