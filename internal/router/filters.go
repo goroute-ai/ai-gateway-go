@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -199,6 +200,46 @@ func (e *DeploymentRestrictedError) Error() string {
 
 // Unwrap exposes the underlying *domain.GatewayError for errors.As matching.
 func (e *DeploymentRestrictedError) Unwrap() error {
+	if e == nil || e.GatewayErr == nil {
+		return nil
+	}
+	return e.GatewayErr
+}
+
+// OrgPolicyDeniedError is returned when every active, non-excluded deployment
+// in a model group is denied solely by organization provider subscription or
+// model policy (`AuthorizeDeployment`), preserving the underlying 403 error
+// instead of masking it as 503 all_deployments_unavailable.
+type OrgPolicyDeniedError struct {
+	GatewayErr *domain.GatewayError
+}
+
+func newOrgPolicyDeniedError(err error) *OrgPolicyDeniedError {
+	var gwErr *domain.GatewayError
+	if errors.As(err, &gwErr) && gwErr != nil {
+		cp := *gwErr
+		return &OrgPolicyDeniedError{GatewayErr: &cp}
+	}
+	return &OrgPolicyDeniedError{
+		GatewayErr: &domain.GatewayError{
+			StatusCode: http.StatusForbidden,
+			Type:       domain.ErrorTypePermission,
+			Code:       "org_policy_denied",
+			Message:    "Requested model deployment is denied by organization policy",
+		},
+	}
+}
+
+// Error returns the underlying GatewayError message.
+func (e *OrgPolicyDeniedError) Error() string {
+	if e == nil || e.GatewayErr == nil {
+		return "organization policy denied"
+	}
+	return e.GatewayErr.Error()
+}
+
+// Unwrap exposes the underlying *domain.GatewayError for errors.As matching.
+func (e *OrgPolicyDeniedError) Unwrap() error {
 	if e == nil || e.GatewayErr == nil {
 		return nil
 	}

@@ -12,6 +12,18 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
 
+func normalizeQuotaScopeType(raw domain.QuotaScopeType) domain.QuotaScopeType {
+	norm := domain.QuotaScopeType(strings.ToLower(strings.TrimSpace(string(raw))))
+	switch norm {
+	case "virtual_key":
+		return domain.QuotaScopeKey
+	case "model_per_virtual_key":
+		return domain.QuotaScopeModelPerKey
+	default:
+		return norm
+	}
+}
+
 func (s *GatewayServer) quotaPolicyRepo() (storage.QuotaPolicyRepository, bool) {
 	if s == nil || s.repo == nil {
 		return nil, false
@@ -105,7 +117,7 @@ func (s *GatewayServer) handleAdminUpsertQuotaPolicy(w http.ResponseWriter, r *h
 	policy := &domain.QuotaPolicy{
 		ID:                strings.TrimSpace(req.ID),
 		OrgID:             req.OrgID,
-		ScopeType:         req.ScopeType,
+		ScopeType:         normalizeQuotaScopeType(req.ScopeType),
 		ScopeID:           req.ScopeID,
 		ModelPattern:      req.ModelPattern,
 		RPMLimit:          req.RPMLimit,
@@ -172,8 +184,8 @@ func (s *GatewayServer) handleAdminListQuotaPolicies(w http.ResponseWriter, r *h
 	}
 
 	var scopeType domain.QuotaScopeType
-	if rawScope := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("scope_type"))); rawScope != "" {
-		scopeType = domain.QuotaScopeType(rawScope)
+	if rawScope := strings.TrimSpace(r.URL.Query().Get("scope_type")); rawScope != "" {
+		scopeType = normalizeQuotaScopeType(domain.QuotaScopeType(rawScope))
 		if !scopeType.IsValid() {
 			domain.WriteHTTPError(w, &domain.GatewayError{
 				StatusCode: http.StatusBadRequest,
@@ -318,7 +330,7 @@ func (s *GatewayServer) handleAdminUpsertBudgetWindow(w http.ResponseWriter, r *
 	limit := &domain.BudgetWindowLimit{
 		ID:              strings.TrimSpace(req.ID),
 		OrgID:           req.OrgID,
-		ScopeType:       req.ScopeType,
+		ScopeType:       normalizeQuotaScopeType(req.ScopeType),
 		ScopeID:         req.ScopeID,
 		WindowType:      req.WindowType,
 		MaxBudgetMicros: req.MaxBudgetMicros,
@@ -377,8 +389,8 @@ func (s *GatewayServer) handleAdminListBudgetWindows(w http.ResponseWriter, r *h
 	}
 
 	var scopeType domain.QuotaScopeType
-	if rawScope := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("scope_type"))); rawScope != "" {
-		scopeType = domain.QuotaScopeType(rawScope)
+	if rawScope := strings.TrimSpace(r.URL.Query().Get("scope_type")); rawScope != "" {
+		scopeType = normalizeQuotaScopeType(domain.QuotaScopeType(rawScope))
 		if !scopeType.IsValid() {
 			domain.WriteHTTPError(w, &domain.GatewayError{
 				StatusCode: http.StatusBadRequest,

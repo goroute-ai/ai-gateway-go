@@ -623,10 +623,29 @@ func (s *GatewayServer) handleAdminListUsers(w http.ResponseWriter, r *http.Requ
 // --- Virtual API Keys ---
 
 func (s *GatewayServer) handleAdminIssueKey(w http.ResponseWriter, r *http.Request) {
-	var req domain.VirtualKey
-	if err := decodeAdminJSON(w, r, &req); err != nil {
+	var payload struct {
+		domain.VirtualKey
+		AllowedMCPServers optionalStringSlice `json:"allowed_mcp_servers"`
+		AllowedA2AAgents  optionalStringSlice `json:"allowed_a2a_agents"`
+		AllowedClientApps optionalStringSlice `json:"allowed_client_apps"`
+	}
+	if err := decodeAdminJSON(w, r, &payload); err != nil {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: err.Error()})
 		return
+	}
+	req := payload.VirtualKey
+	issueOpts := auth.IssueVirtualKeyOptions{}
+	if payload.AllowedMCPServers.Set {
+		req.AllowedMCPServers = payload.AllowedMCPServers.Value
+		issueOpts.InheritMCPServers = payload.AllowedMCPServers.Value == nil
+	}
+	if payload.AllowedA2AAgents.Set {
+		req.AllowedA2AAgents = payload.AllowedA2AAgents.Value
+		issueOpts.InheritA2AAgents = payload.AllowedA2AAgents.Value == nil
+	}
+	if payload.AllowedClientApps.Set {
+		req.AllowedClientApps = payload.AllowedClientApps.Value
+		issueOpts.InheritClientApps = payload.AllowedClientApps.Value == nil
 	}
 	req.OrgID = resolveScopedOrgID(r, req.OrgID)
 	req.TeamID = strings.TrimSpace(req.TeamID)
@@ -761,7 +780,7 @@ func (s *GatewayServer) handleAdminIssueKey(w http.ResponseWriter, r *http.Reque
 	if !s.enforceGuaranteedThroughput(r.Context(), w, req.OrgID, req.TeamID, "", req.RPMLimit, req.TPMLimit) {
 		return
 	}
-	vk, err := s.authSvc.IssueVirtualKey(r.Context(), &req)
+	vk, err := s.authSvc.IssueVirtualKeyWithOptions(r.Context(), &req, issueOpts)
 	if err != nil {
 		domain.WriteHTTPError(w, err)
 		return

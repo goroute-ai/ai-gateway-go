@@ -6,6 +6,7 @@
 -- KEYS[15..17]: user_res_zset, user_res_sum, user_res_amounts
 -- KEYS[18..20]: org_res_zset,  org_res_sum,  org_res_amounts
 -- KEYS[21..24]: key_spend, team_spend, user_spend, org_spend
+-- KEYS[25] (optional): idempotency key shared with record_spend.lua (gw:spend:applied:{org:<orgID>}:<event_id>)
 -- ARGV[1]: token_delta, ARGV[2]: window_ttl_sec
 -- ARGV[3]: request_id, ARGV[4]: actual cost micros (-1 releases without charge, -2 leaves for outbox), ARGV[5]: reserved amount
 
@@ -41,6 +42,14 @@ if delta ~= 0 then
 end
 
 if request_id ~= "" and actual_cost ~= -2 then
+    local apply_spend = (actual_cost >= 0)
+    local idemp_key = KEYS[25]
+    if apply_spend and idemp_key and idemp_key ~= "" then
+        local set_res = redis.call("SET", idemp_key, "1", "NX", "EX", 86400)
+        if not set_res then
+            apply_spend = false
+        end
+    end
     local scopes = {
         {KEYS[9],  KEYS[10], KEYS[11], KEYS[21]},
         {KEYS[12], KEYS[13], KEYS[14], KEYS[22]},
@@ -59,7 +68,7 @@ if request_id ~= "" and actual_cost ~= -2 then
                     redis.call("SET", res_sum, 0)
                 end
             end
-            if removed > 0 and actual_cost >= 0 and spend_key ~= "" then
+            if removed > 0 and apply_spend and actual_cost > 0 and spend_key ~= "" then
                 local v = redis.call("INCRBY", spend_key, actual_cost)
                 if v < 0 then
                     redis.call("SET", spend_key, 0)

@@ -914,6 +914,7 @@ func cloneBatchRoutingHeaders(src http.Header) http.Header {
 	}
 	allowed := map[string]bool{
 		"X-Gateway-Session-Id":              true,
+		"X-Gateway-Client-App":              true,
 		"X-Gateway-Tags":                    true,
 		"X-Gateway-Allowed-Region":          true,
 		"X-Gateway-Preferred-Deployment-Id": true,

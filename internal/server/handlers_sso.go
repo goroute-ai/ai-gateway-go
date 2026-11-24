@@ -20,13 +20,16 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
 
-func mapUserRoleForControlPlane(role domain.Role) (domain.OperatorRole, bool) {
+func (s *GatewayServer) mapUserRoleForControlPlane(role domain.Role) (domain.OperatorRole, bool) {
+	if s != nil && s.authSvc != nil {
+		return s.authSvc.MapDomainRoleToOperatorRole(role)
+	}
 	switch role {
 	case domain.RolePlatformAdmin:
 		return domain.OperatorRolePlatformAdmin, true
 	case domain.RoleOrgAdmin:
 		return domain.OperatorRoleOrgAdmin, true
-	case domain.RoleViewer, domain.RoleOrgViewer:
+	case domain.RoleOrgViewer:
 		return domain.OperatorRoleOrgViewer, true
 	case domain.RoleTeamAdmin:
 		return domain.OperatorRoleTeamAdmin, true
@@ -503,7 +506,7 @@ func (s *GatewayServer) handleAuthSSOCallback(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	opRole, hasOpRole := mapUserRoleForControlPlane(user.Role)
+	opRole, hasOpRole := s.mapUserRoleForControlPlane(user.Role)
 	if !hasOpRole {
 		if authState.CLILoginID != "" {
 			s.audit(r.Context(), user.OrgID, "auth.sso.cli_login", "cli_login", authState.CLILoginID, map[string]any{

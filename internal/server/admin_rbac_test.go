@@ -37,8 +37,17 @@ func TestAdminRBAC_DataPlaneMasterKeyDisabled_JWT_AuditLogs_And_MCPTools(t *test
 		OrgID:       "org_a",
 		Email:       "viewer@orga.example",
 		Name:        "Org A Viewer",
-		Role:        domain.RoleViewer,
+		Role:        domain.RoleOrgViewer,
 		OIDCSubject: "oidc-viewer-a",
+		IsActive:    true,
+	})
+	_ = repo.CreateUser(ctx, &domain.User{
+		ID:          "usr_dp_viewer_a",
+		OrgID:       "org_a",
+		Email:       "dpviewer@orga.example",
+		Name:        "Org A Data Plane Viewer",
+		Role:        domain.RoleViewer,
+		OIDCSubject: "oidc-dp-viewer-a",
 		IsActive:    true,
 	})
 
@@ -228,5 +237,21 @@ func TestAdminRBAC_DataPlaneMasterKeyDisabled_JWT_AuditLogs_And_MCPTools(t *test
 	status, toolsMaster := doReq(http.MethodGet, "/admin/v1/mcp/tools?org_id=org_a", cfg.Auth.MasterAdminKey, nil)
 	if status != http.StatusOK {
 		t.Fatalf("expected 200 for platform_admin GET /admin/v1/mcp/tools, got %d (%v)", status, toolsMaster)
+	}
+
+	// 6. Data-plane RoleViewer must be denied control-plane read access by default (least privilege)
+	dpViewerJWT := idp.SignClaims(&auth.JWTClaims{
+		Subject:   "oidc-dp-viewer-a",
+		Issuer:    idp.Issuer(),
+		Audience:  auth.AudienceClaim{"ai-gateway"},
+		ExpiresAt: time.Now().UTC().Add(5 * time.Minute).Unix(),
+	})
+	status, _ = doReq(http.MethodGet, "/admin/v1/audit/logs?org_id=org_a", dpViewerJWT, nil)
+	if status != http.StatusForbidden {
+		t.Fatalf("expected 403 for role=viewer reading /admin/v1/audit/logs by default, got %d", status)
+	}
+	status, _ = doReq(http.MethodGet, "/admin/v1/keys?org_id=org_a", dpViewerJWT, nil)
+	if status != http.StatusForbidden {
+		t.Fatalf("expected 403 for role=viewer reading /admin/v1/keys by default, got %d", status)
 	}
 }

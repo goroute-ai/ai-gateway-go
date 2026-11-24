@@ -921,10 +921,7 @@ func (s *GatewayServer) handleAdminBulkTeamMembers(w http.ResponseWriter, r *htt
 			domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusBadRequest, Type: domain.ErrorTypeInvalidRequest, Code: "missing_user_id", Message: "every member entry requires user_id"})
 			return
 		}
-		role := entry.Role
-		if role == "" {
-			role = domain.RoleDeveloper
-		}
+		role := normalizeTeamMemberRole(entry.Role)
 		if !isValidTenantRole(role) {
 			domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusBadRequest, Type: domain.ErrorTypeInvalidRequest, Code: "invalid_role", Message: fmt.Sprintf("Unsupported role %q", role)})
 			return

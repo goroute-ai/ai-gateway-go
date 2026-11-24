@@ -267,10 +267,14 @@ func (s *GatewayServer) startReservationLeaseRenewerWithDescriptors(
 }
 
 func (s *GatewayServer) wrapBudgetRelease(ctx context.Context, id *domain.IdentityContext, requestID string, release func(int, int64)) func(actualTokens int, overrideCostMicros int64) {
-	return s.wrapBudgetReleaseWithRenewer(id, requestID, s.startReservationLeaseRenewer(ctx, id, requestID), release)
+	return s.wrapBudgetReleaseWithRenewerAndSettlement(id, requestID, requestID, s.startReservationLeaseRenewer(ctx, id, requestID), release)
 }
 
 func (s *GatewayServer) wrapBudgetReleaseWithRenewer(id *domain.IdentityContext, requestID string, stopRenewer func(), release func(int, int64)) func(actualTokens int, overrideCostMicros int64) {
+	return s.wrapBudgetReleaseWithRenewerAndSettlement(id, requestID, requestID, stopRenewer, release)
+}
+
+func (s *GatewayServer) wrapBudgetReleaseWithRenewerAndSettlement(id *domain.IdentityContext, requestID, settlementID string, stopRenewer func(), release func(int, int64)) func(actualTokens int, overrideCostMicros int64) {
 	if stopRenewer == nil {
 		stopRenewer = func() {}
 	}
@@ -288,7 +292,7 @@ func (s *GatewayServer) wrapBudgetReleaseWithRenewer(id *domain.IdentityContext,
 			if actualTokens >= 0 && overrideCostMicros >= 0 && s.spendWorker == nil && s.limiter != nil && id != nil {
 				settleCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 				defer cancel()
-				_ = s.limiter.RecordSpendIncrementForUserEvent(settleCtx, "", requestID, id.VirtualKeyID, id.TeamID, id.UserID, id.OrgID, overrideCostMicros)
+				_ = s.limiter.RecordSpendIncrementForUserEvent(settleCtx, settlementID, requestID, id.VirtualKeyID, id.TeamID, id.UserID, id.OrgID, overrideCostMicros)
 			}
 		})
 	}

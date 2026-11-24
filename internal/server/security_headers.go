@@ -116,7 +116,7 @@ func CORSMiddleware(allowedOrigins []string, allowCredentials bool) func(http.Ha
 				h.Add("Vary", "Access-Control-Request-Method")
 				h.Add("Vary", "Access-Control-Request-Headers")
 				h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-				h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-API-Key, X-CSRF-Token, X-Requested-With, Accept, Origin")
+				h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-API-Key, X-CSRF-Token, X-Gateway-Client-App, X-Requested-With, Accept, Origin")
 				h.Set("Access-Control-Max-Age", "86400")
 				w.WriteHeader(http.StatusNoContent)
 				return

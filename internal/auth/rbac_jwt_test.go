@@ -271,8 +271,17 @@ func TestAuthenticateOperatorAndAuthorizeAdminAction(t *testing.T) {
 		OrgID:       "org_a",
 		Email:       "viewer@orga.io",
 		Name:        "Viewer A",
-		Role:        domain.RoleViewer,
+		Role:        domain.RoleOrgViewer,
 		OIDCSubject: "sub-viewer-a",
+		IsActive:    true,
+	})
+	_ = repo.CreateUser(ctx, &domain.User{
+		ID:          "usr_dp_viewer_a",
+		OrgID:       "org_a",
+		Email:       "dpviewer@orga.io",
+		Name:        "Data Plane Viewer A",
+		Role:        domain.RoleViewer,
+		OIDCSubject: "sub-dp-viewer-a",
 		IsActive:    true,
 	})
 	_ = repo.CreateUser(ctx, &domain.User{
@@ -375,5 +384,26 @@ func TestAuthenticateOperatorAndAuthorizeAdminAction(t *testing.T) {
 	})
 	if _, err := svc.AuthenticateOperator(ctx, devTok); err == nil {
 		t.Fatalf("developer jwt should be rejected on control plane")
+	}
+
+	// Data-plane RoleViewer JWT should be rejected on control plane by default (least privilege),
+	// and mapped to org_viewer only when AllowViewerControlPlaneRead legacy opt-in is enabled.
+	dpViewerTok := idp.SignClaims(&auth.JWTClaims{
+		Subject:   "sub-dp-viewer-a",
+		Issuer:    idp.Issuer(),
+		Audience:  auth.AudienceClaim{"ai-gateway"},
+		ExpiresAt: time.Now().UTC().Add(5 * time.Minute).Unix(),
+	})
+	if _, err := svc.AuthenticateOperator(ctx, dpViewerTok); err == nil {
+		t.Fatalf("role=viewer jwt should be rejected on control plane by default")
+	}
+	svc.SetAllowViewerControlPlaneRead(true)
+	defer svc.SetAllowViewerControlPlaneRead(false)
+	legacyViewerOp, err := svc.AuthenticateOperator(ctx, dpViewerTok)
+	if err != nil {
+		t.Fatalf("legacy allow_viewer_control_plane_read failed: %v", err)
+	}
+	if legacyViewerOp.Role != domain.OperatorRoleOrgViewer || legacyViewerOp.OrgID != "org_a" {
+		t.Fatalf("expected legacy viewer -> org_viewer, got %+v", legacyViewerOp)
 	}
 }

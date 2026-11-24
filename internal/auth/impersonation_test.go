@@ -431,6 +431,7 @@ func TestDelegatedAgentCallerNarrowing(t *testing.T) {
 		req.Header.Set("Authorization", "Bearer "+agentKey.RawKey)
 		req.Header.Set(auth.HeaderDelegatedUserID, "usr-tight")
 		req.Header.Set(auth.HeaderDelegatedTeamID, "team-tight")
+		req.Header.Set(auth.HeaderClientApp, "cli")
 		rec := httptest.NewRecorder()
 		mw.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {

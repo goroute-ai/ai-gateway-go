@@ -62,6 +62,8 @@ auth:
   allow_ambient_cloud_iam: false
   enable_data_plane_jwt: false       # Allow OIDC/JWT bearer auth on /v1/* data plane routes
   custom_api_key_header: ""          # Optional custom header name overriding default virtual key extraction order
+  require_client_app_header: false       # Require X-Gateway-Client-App on all non-master Data Plane requests (explicit non-wildcard allowlists always require it)
+  allow_viewer_control_plane_read: false # Legacy opt-in mapping role "viewer" to Control Plane org_viewer read-only access
   # Secure delivery or an in-process KeySecretSink is required to activate scheduled replacement keys.
   # key_rotation_delivery_url: "https://secrets.example.com/goroute/key-rotation"
   # key_rotation_delivery_token: "os.environ/GATEWAY_KEY_ROTATION_DELIVERY_TOKEN"
