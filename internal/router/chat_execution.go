@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -322,16 +324,13 @@ func (rm *ReliabilityManager) executeChatHedgeRace(
 		estOut := requestEstimatedOutputTokens(&reqCopy)
 		depStart := time.Now()
 		rm.loadBalancer.OnRequestStartWithTokens(dep.ID, estTokens, estOut)
-		spanCtx, span := rm.startGenAIClientSpan(raceCtx, "chat", dep)
+		capture := rm.shouldCaptureContent()
+		spanCtx, span := rm.startGenAIClientSpan(raceCtx, "chat", dep, buildChatStartOpts(&reqCopy, capture))
 		depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
 		markProviderDispatch(depCtx, dep)
 		r, callErr := adp.ChatCompletion(depCtx, dep, &reqCopy)
 		depCancel()
-		var usage *domain.TokenUsage
-		if r != nil {
-			usage = &r.Usage
-		}
-		finishGenAIClientSpan(span, usage, callErr)
+		rm.finishGenAIClientSpanWithOpts(spanCtx, span, buildChatFinishOpts(r, meta.RetryCount, meta.FallbackAttempted, capture, callErr))
 		depLatency := time.Since(depStart).Milliseconds()
 
 		if callErr == nil && r != nil {
@@ -635,17 +634,14 @@ func (rm *ReliabilityManager) executeChatTierSequential(
 		estOut := requestEstimatedOutputTokens(&reqCopy)
 		depStart := time.Now()
 		rm.loadBalancer.OnRequestStartWithTokens(dep.ID, estTokens, estOut)
-		spanCtx, span := rm.startGenAIClientSpan(ctx, "chat", dep)
+		capture := rm.shouldCaptureContent()
+		spanCtx, span := rm.startGenAIClientSpan(ctx, "chat", dep, buildChatStartOpts(&reqCopy, capture))
 		depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
 		markProviderDispatch(depCtx, dep)
 		resp, callErr := adp.ChatCompletion(depCtx, dep, &reqCopy)
 		depCancel()
 		relSlot()
-		var usage *domain.TokenUsage
-		if resp != nil {
-			usage = &resp.Usage
-		}
-		finishGenAIClientSpan(span, usage, callErr)
+		rm.finishGenAIClientSpanWithOpts(spanCtx, span, buildChatFinishOpts(resp, meta.RetryCount, meta.FallbackAttempted, capture, callErr))
 		depLatency := time.Since(depStart).Milliseconds()
 
 		if callErr == nil && resp != nil {
@@ -984,12 +980,27 @@ func (rm *ReliabilityManager) executeStreamHedgeRace(
 		estOut := requestEstimatedOutputTokens(&reqCopy)
 		depStart := time.Now()
 		rm.loadBalancer.OnRequestStartWithTokens(dep.ID, estTokens, estOut)
-		spanCtx, span := rm.startGenAIClientSpan(racerCtx, "chat", dep)
+		capture := rm.shouldCaptureContent()
+		spanCtx, span := rm.startGenAIClientSpan(racerCtx, "chat", dep, buildChatStartOpts(&reqCopy, capture))
 		depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
 		markProviderDispatch(depCtx, dep)
-		u, callErr := adp.StreamChatCompletion(depCtx, dep, &reqCopy, emit)
+		spanCap := streamSpanCapture{captureContent: capture}
+		u, callErr := adp.StreamChatCompletion(depCtx, dep, &reqCopy, func(chunk *domain.CanonicalStreamChunk) error {
+			recordGenAISpanFirstToken(spanCtx, span)
+			spanCap.observeChunk(chunk)
+			return emit(chunk)
+		})
 		depCancel()
-		finishGenAIClientSpan(span, u, callErr)
+		rm.finishGenAIClientSpanWithOpts(spanCtx, span, genAIClientFinishOpts{
+			responseModel:     spanCap.responseModel,
+			responseID:        spanCap.responseID,
+			finishReasons:     spanCap.finishReasons,
+			usage:             u,
+			retryCount:        meta.RetryCount,
+			fallbackAttempted: meta.FallbackAttempted,
+			outputText:        spanCap.outputBuf.String(),
+			err:               callErr,
+		})
 		depLatency := time.Since(depStart).Milliseconds()
 
 		if callErr == nil {
@@ -1411,7 +1422,8 @@ func (rm *ReliabilityManager) executeStreamTierSequential(
 		var clientChunkErr error
 		rm.loadBalancer.OnRequestStartWithTokens(dep.ID, estTokens, estOut)
 
-		spanCtx, span := rm.startGenAIClientSpan(ctx, "chat", dep)
+		capture := rm.shouldCaptureContent()
+		spanCtx, span := rm.startGenAIClientSpan(ctx, "chat", dep, buildChatStartOpts(&reqCopy, capture))
 		if requirePrefill {
 			attrs := trace.WithAttributes(
 				attribute.Int("continuation.attempt", state.continuationCount),
@@ -1424,6 +1436,7 @@ func (rm *ReliabilityManager) executeStreamTierSequential(
 		}
 		depCtx, depCancel := withDeploymentTimeout(spanCtx, dep)
 		markProviderDispatch(depCtx, dep)
+		spanCap := streamSpanCapture{captureContent: capture}
 		usage, callErr := adp.StreamChatCompletion(depCtx, dep, &reqCopy, func(chunk *domain.CanonicalStreamChunk) error {
 			if cerr := onChunk(chunk); cerr != nil {
 				clientChunkErr = cerr
@@ -1432,8 +1445,10 @@ func (rm *ReliabilityManager) executeStreamTierSequential(
 			if !state.firstChunkSentToClient {
 				state.firstChunkSentToClient = true
 				meta.TTFTMs = time.Since(depStart).Milliseconds()
+				recordGenAISpanFirstToken(spanCtx, span)
 			}
 			attemptEmittedChunk = true
+			spanCap.observeChunk(chunk)
 			if chunk != nil && chunk.Usage != nil {
 				u := *chunk.Usage
 				chunkUsageThisAttempt = &u
@@ -1443,7 +1458,16 @@ func (rm *ReliabilityManager) executeStreamTierSequential(
 		})
 		depCancel()
 		relSlot()
-		finishGenAIClientSpan(span, usage, callErr)
+		rm.finishGenAIClientSpanWithOpts(spanCtx, span, genAIClientFinishOpts{
+			responseModel:     spanCap.responseModel,
+			responseID:        spanCap.responseID,
+			finishReasons:     spanCap.finishReasons,
+			usage:             usage,
+			retryCount:        meta.RetryCount,
+			fallbackAttempted: meta.FallbackAttempted,
+			outputText:        spanCap.outputBuf.String(),
+			err:               callErr,
+		})
 		depLatency := time.Since(depStart).Milliseconds()
 
 		if callErr == nil {
@@ -1574,4 +1598,34 @@ func (rm *ReliabilityManager) executeStreamTierSequential(
 		}
 	}
 	return groupHopOutcome[*domain.TokenUsage]{}
+}
+
+type streamSpanCapture struct {
+	captureContent bool
+	responseID     string
+	responseModel  string
+	finishReasons  []string
+	outputBuf      strings.Builder
+}
+
+func (c *streamSpanCapture) observeChunk(chunk *domain.CanonicalStreamChunk) {
+	if chunk == nil {
+		return
+	}
+	if c.responseID == "" && chunk.ID != "" {
+		c.responseID = chunk.ID
+	}
+	if c.responseModel == "" && chunk.Model != "" {
+		c.responseModel = chunk.Model
+	}
+	for _, ch := range chunk.Choices {
+		if ch.FinishReason != nil {
+			if fr := strings.TrimSpace(*ch.FinishReason); fr != "" && !slices.Contains(c.finishReasons, fr) {
+				c.finishReasons = append(c.finishReasons, fr)
+			}
+		}
+		if c.captureContent && ch.Delta.Content != "" && c.outputBuf.Len() < 4096 {
+			c.outputBuf.WriteString(ch.Delta.Content)
+		}
+	}
 }

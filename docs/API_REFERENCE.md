@@ -976,62 +976,19 @@ Admin APIs authenticate via `Authorization: Bearer <MASTER_ADMIN_KEY>`, an organ
 
 ## 6. Observability & Telemetry APIs
 
-### 6.1 Prometheus Metrics Scraper
-`GET /metrics`
+### 6.1 OpenTelemetry (OTLP/HTTP) Export (`v0.1` LTS)
+GoRoute `v0.1` LTS supports **pure OpenTelemetry OTLP/HTTP only** for telemetry export (`otel.enabled: true`), emitting **Traces**, **Metrics**, and opt-in post-scrub **Logs** with zero vendor SDK lock-in. No non-OTLP scrape endpoints (such as Prometheus `/metrics`) or vendor-specific exporters are built into the gateway; external observability platforms integrate on top of GoRoute's standard OTLP/HTTP output directly or through an OpenTelemetry Collector.
 
-Returns standard OpenMetrics text format:
-```prometheus
-# HELP gateway_requests_total Total inference requests processed by the AI Gateway.
-# TYPE gateway_requests_total counter
-gateway_requests_total 14499
+Standardized OTLP metric instruments follow pure dot-separated OpenTelemetry GenAI Semantic Conventions (`gen_ai.*`) and gateway telemetry (`gateway.*`):
+- **GenAI Client & Streaming Histograms**: `gen_ai.client.operation.duration` (`s`), `gen_ai.client.token.usage` (`{token}`, `gen_ai.token.type=input|output`), `gen_ai.server.time_to_first_token` (`s`).
+- **Gateway Inference, Routing & Reliability**: `gateway.requests`, `gateway.errors`, `gateway.request.duration`, `gateway.provider.spend`, `gateway.streams`, `gateway.stream.errors`, `gateway.stream.duration`, `gateway.stream.ttft`, `gateway.routing.overhead`, `gateway.routing.fallbacks`, `gateway.routing.retries`, `gateway.routing.signal_degraded`.
+- **Caching, Guardrails & Agentic Protocols**: `gateway.cache.hits`, `gateway.cache.misses`, `gateway.cache.semantic_hits`, `gateway.cache.errors`, `gateway.cache.entries`, `gateway.cache.evictions`, `gateway.guardrail.evaluations`, `gateway.guardrail.blocks`, `gateway.guardrail.errors`, `gateway.guardrail.duration`, `gateway.mcp.requests`, `gateway.a2a.requests`.
+- **Platform Health, Outbox, SIEM & Runtime**: `gateway.redis.circuit_breaker.state` (`0=closed`, `1=half_open`, `2=open`), `gateway.deployment.healthy`, `gateway.finops.outbox.pending`, `gateway.finops.outbox.dead_letter`, `gateway.finops.outbox.backpressure`, `gateway.audit.siem.delivered`, `gateway.audit.siem.failed`, `gateway.audit.siem.dropped`, `gateway.go.memory.heap_alloc`, `gateway.go.memory.heap_inuse`, `gateway.go.gc.cycles`, `gateway.go.gc.pause`, `gateway.model_catalog.size`.
 
-# HELP gateway_latency_ms Request latency percentiles in milliseconds.
-# TYPE gateway_latency_ms gauge
-gateway_latency_ms{quantile="0.5"} 1.50
-gateway_latency_ms{quantile="0.95"} 3.27
-gateway_latency_ms{quantile="0.99"} 4.53
-
-# HELP gateway_cache_hits_total Total response cache hits (exact and semantic).
-# TYPE gateway_cache_hits_total counter
-gateway_cache_hits_total 8675
-
-# TYPE gateway_cache_misses_total counter
-gateway_cache_misses_total 1240
-
-# TYPE gateway_cache_errors_total counter
-gateway_cache_errors_total 0
-
-# TYPE gateway_cache_semantic_hits_total counter
-gateway_cache_semantic_hits_total 312
-
-# TYPE gateway_cache_entries gauge
-gateway_cache_entries 234
-
-# TYPE gateway_cache_evictions_total counter
-gateway_cache_evictions_total 12
-
-# TYPE gateway_upstream_connections_reused_total counter
-gateway_upstream_connections_reused_total 891
-gateway_streams_total 122
-gateway_stream_errors_total 2
-gateway_routing_overhead_micros{quantile="0.95"} 42
-gateway_fallbacks_total 7
-gateway_retries_total 19
-gw_redis_cb_state 0
-gw_routing_signal_degraded_total 0
-gateway_guardrail_blocks_total 4
-gateway_guardrail_evaluations_total{guardrail="prod-pii-shield",hook="pre_call"} 412
-gateway_guardrail_errors_total{guardrail="prod-pii-shield",hook="pre_call"} 0
-gateway_guardrail_duration_ms_sum{guardrail="prod-pii-shield",hook="pre_call"} 1850
-gateway_guardrail_duration_ms_count{guardrail="prod-pii-shield",hook="pre_call"} 412
-gateway_go_heap_alloc_bytes 41943040
-gateway_model_catalog_size 5493
-```
-
-### 6.2 Administrative Metrics Snapshot
+### 6.2 Administrative Metrics Snapshot (Operator Web UI)
 `GET /admin/v1/observability/metrics`
 
-Returns comprehensive JSON snapshot with P50/P95/P99 latencies, authoritative response cache metrics (`cache_enabled`, `cache_type`, `cache_status`, `cache_hits`, `cache_misses`, `cache_semantic_hits`, `cache_errors`, `cache_entries`, `cache_evictions`, `cache_hit_rate`), per-provider error rates, and routing overhead.
+Requires Admin Control Plane authentication (`Authorization: Bearer` or operator session). Returns a real-time JSON telemetry snapshot powering the embedded Operator Web UI (`OverviewView`): sliding-window P50/P95/P99 latencies, authoritative response cache metrics (`cache_enabled`, `cache_type`, `cache_status`, `cache_hits`, `cache_misses`, `cache_semantic_hits`, `cache_errors`, `cache_entries`, `cache_evictions`, `cache_hit_rate`), per-provider stats, `otel_enabled`, `otel_signals`, `finops_outbox_pending`, `audit_siem_delivered`, and `redis_cb_state`.
 
 ### 6.3 Health & Readiness Probes
 GoRoute exposes production-grade Kubernetes health check probes:

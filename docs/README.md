@@ -44,7 +44,7 @@ docs/
    - Embedded Operator Web UI (`GET /ui/*`) with streaming SSE & cacheable JSON chat playground, cache controls & rich Response Cache telemetry, OIDC SSO / break-glass master key login, virtual key rotation & temp budgets, multi-window quotas, KEK rotation, and Agentic Hub Gateway MCP spec switcher.
    - Model Context Protocol (Spec-Generated Multi-Release `2024-11-05`–`2026-07-28` Virtual Hub, Scoped Servers, and Curated Toolsets).
    - Agent-to-Agent Protocol (A2A v1.0 JWS Agent Cards, Dual-Binding dispatch, Subscribe-First SSE).
-   - Control Plane & Provisioning (`/auth/*`, `/scim/v2/*`, `/admin/v1/*`), including federated OIDC binding, SCIM 2.0 Users & Groups, multi-dimensional quotas, multi-window budgets (`rolling_24h`), PTU shares & priority classes, preflight credential validation, specialized fallback & budget fields on model groups/deployments, named guardrail registry, tool trust policies, guardrail simulation, and Prometheus Metrics scraping (`/metrics`).
+   - Control Plane & Provisioning (`/auth/*`, `/scim/v2/*`, `/admin/v1/*`), including federated OIDC binding, SCIM 2.0 Users & Groups, multi-dimensional quotas, multi-window budgets (`rolling_24h`), PTU shares & priority classes, preflight credential validation, specialized fallback & budget fields on model groups/deployments, named guardrail registry, tool trust policies, guardrail simulation, OpenTelemetry OTLP/HTTP export, and Admin UI telemetry snapshot (`/admin/v1/observability/metrics`).
 
 4. **[Subsystem Internals & Engineering Guide (`INTERNALS.md`)](./INTERNALS.md)**  
    *Deep-dive code tour and mathematical specifications for core contributors and platform architects:*
@@ -78,7 +78,7 @@ docs/
    *Upgrade guidance for `v0.1.0`, migrations `0001`–`0041`, `0034` rollback duplicate-subject preflight checks, and `rolling_24h` cold recovery boundaries.*
 
 8. **[Testing & Verification Guide (`TESTING.md`)](./TESTING.md)**  
-   *Complete 3-tier testing workflow covering static/contract parity, unit/race checks, live PostgreSQL 16 & Redis 8 E2E suites, Playwright headless Chromium Web UI tests, and production Docker OIDC & Caching HA suites.*
+   *Complete 3-tier testing workflow covering static/contract parity, unit/race checks, live PostgreSQL 16 & Redis 8 E2E suites, Playwright headless Chromium Web UI tests, and production Docker OIDC, Caching & OTLP Observability HA suites.*
 
 9. **[OpenAPI Specifications (`openapi/README.md`)](./openapi/README.md)**  
    *Machine-readable API contracts:*

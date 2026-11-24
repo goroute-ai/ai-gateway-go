@@ -1,0 +1,103 @@
+server:
+  environment: "production"
+  host: "0.0.0.0"
+  port: 8080
+  public_base_url: "https://gateway.prod.test:20443"
+  enable_hsts: true
+  cors_allowed_origins:
+    - "https://gateway.prod.test:20443"
+  cors_allow_credentials: true
+
+logging:
+  level: "info"
+  format: "json"
+
+storage:
+  mode: "postgres"
+  postgres_dsn: "os.environ/GATEWAY_POSTGRES_DSN"
+  redis_addr: "redis:6379"
+  redis_pass: "os.environ/GATEWAY_REDIS_PASS"
+  redis_db: 0
+
+auth:
+  master_admin_key: "os.environ/GATEWAY_MASTER_ADMIN_KEY"
+  master_encryption_key: "os.environ/GATEWAY_MASTER_ENCRYPTION_KEY"
+  session_secret: "os.environ/GATEWAY_SESSION_SECRET"
+  allow_master_key_data_plane: false
+  default_org_id: "org_default"
+
+rate_limit:
+  enabled: true
+  fallback_to_local_on_outage: true
+  window_seconds: 60
+  redis_timeout: 500ms
+
+cache:
+  enabled: true
+  type: "local"
+  default_ttl: 5m
+  namespace: "gw:obs-cache"
+  max_entries: 1024
+  max_item_bytes: 1048576
+
+finops:
+  flush_interval: 150ms
+  batch_size: 10
+  worker_count: 2
+
+health:
+  probe_interval: 2s
+  probe_timeout: 2s
+
+otel:
+  enabled: true
+  service_name: "goroute-obs-prod-test"
+  endpoint: "https://otel.prod.test:20443"
+  headers:
+    Authorization: "os.environ/OBS_OTEL_AUTH_HEADER"
+  traces:
+    enabled: true
+    sampler: "always_on"
+    capture_content: false
+  metrics:
+    enabled: true
+    export_interval: 1s
+  logs:
+    enabled: true
+
+audit:
+  siem_webhook:
+    enabled: true
+    url: "https://fixtures.prod.test:20443/siem/audit"
+    secret: "os.environ/OBS_SIEM_HMAC_SECRET"
+    batch_size: 10
+    flush_interval: 300ms
+    timeout: 3s
+    max_queue_size: 1024
+
+guardrails:
+  definitions:
+    - name: "obs-pii-guard"
+      provider: "local_content_filter"
+      event_hooks:
+        - "pre_call"
+      default_on: true
+      config:
+        action: "block"
+        blocked_words:
+          - "FORBIDDEN_OBS_BLOCK_TOKEN"
+
+security:
+  network:
+    inbound_caller:
+      expose_on_public_internet: true
+      trusted_proxy_cidrs:
+        - "172.29.10.200/32"
+    outbound_ssrf:
+      allow_private_networks: false
+      allow_insecure_http: false
+      allow_loopback_http: false
+      allowed_schemes:
+        - "https"
+      allowed_private_cidrs:
+        - "172.29.10.200/32"

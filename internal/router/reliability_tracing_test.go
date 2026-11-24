@@ -72,19 +72,31 @@ func TestReliabilityManagerEmitsGenAIClientChildSpansWithoutSecretsOrPrompts(t *
 	ir := router.NewIntelligentRouter(repo, config.RouterConfig{})
 	lb := router.NewLoadBalancer()
 	rm := router.NewReliabilityManager(repo, reg, ir, lb, vault, rbac, nil, config.RouterConfig{})
+	rm.SetCostCalculator(func(_ *domain.GlobalModel, usage *domain.TokenUsage) int64 {
+		if usage == nil {
+			return 0
+		}
+		return int64(usage.PromptTokens*2 + usage.CompletionTokens*5)
+	})
 
 	sr := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
 	defer func() { _ = tp.Shutdown(ctx) }()
 
 	parentTracer := tp.Tracer("test-server")
+	temp := 0.25
+	topP := 0.9
+	maxTok := 128
 	var resp *domain.CanonicalChatResponse
 	var err error
 	handler := observability.TraceMiddlewareWithTracer(parentTracer)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp, _, err = rm.ExecuteChat(r.Context(), &domain.IdentityContext{OrgID: org.ID}, &domain.CanonicalChatRequest{
-			Model: "fast",
+			Model:       "fast",
+			Temperature: &temp,
+			TopP:        &topP,
+			MaxTokens:   &maxTok,
 			Messages: []domain.CanonicalMessage{
-				{Role: "user", Content: "top-secret-prompt-text"},
+				{Role: "user", Content: "top-secret-prompt-text email alice@example.com key sk-live-secret-token-999999"},
 			},
 		})
 		if err != nil {
@@ -111,7 +123,7 @@ func TestReliabilityManagerEmitsGenAIClientChildSpansWithoutSecretsOrPrompts(t *
 	var serverSpan sdktrace.ReadOnlySpan
 	for _, sp := range ended {
 		switch sp.Name() {
-		case "gen_ai.client":
+		case "chat gpt-4.1-mini":
 			clientSpan = sp
 		case "HTTP POST":
 			serverSpan = sp
@@ -124,7 +136,7 @@ func TestReliabilityManagerEmitsGenAIClientChildSpansWithoutSecretsOrPrompts(t *
 		t.Fatalf("expected SpanKindClient, got %v", clientSpan.SpanKind())
 	}
 	if clientSpan.Parent().SpanID() != serverSpan.SpanContext().SpanID() {
-		t.Fatalf("expected gen_ai.client parent %s, got %s", serverSpan.SpanContext().SpanID(), clientSpan.Parent().SpanID())
+		t.Fatalf("expected chat client span parent %s, got %s", serverSpan.SpanContext().SpanID(), clientSpan.Parent().SpanID())
 	}
 	if clientSpan.Status().Code == codes.Error {
 		t.Fatalf("unexpected error status on successful client span")
@@ -138,8 +150,11 @@ func TestReliabilityManagerEmitsGenAIClientChildSpansWithoutSecretsOrPrompts(t *
 			t.Fatalf("sensitive prompt or credential leaked into span attribute %s=%q", a.Key, valStr)
 		}
 	}
-	if attrs["gen_ai.system"] != "openai" {
-		t.Fatalf("gen_ai.system = %v, want openai", attrs["gen_ai.system"])
+	if attrs["gen_ai.operation.name"] != "chat" {
+		t.Fatalf("gen_ai.operation.name = %v, want chat", attrs["gen_ai.operation.name"])
+	}
+	if attrs["gen_ai.provider.name"] != "openai" {
+		t.Fatalf("gen_ai.provider.name = %v, want openai", attrs["gen_ai.provider.name"])
 	}
 	if attrs["gen_ai.request.model"] != "gpt-4.1-mini" {
 		t.Fatalf("gen_ai.request.model = %v, want gpt-4.1-mini", attrs["gen_ai.request.model"])
@@ -150,7 +165,41 @@ func TestReliabilityManagerEmitsGenAIClientChildSpansWithoutSecretsOrPrompts(t *
 	if attrs["gen_ai.usage.output_tokens"] != int64(7) {
 		t.Fatalf("gen_ai.usage.output_tokens = %v, want 7", attrs["gen_ai.usage.output_tokens"])
 	}
-	if attrs["gen_ai.usage.total_tokens"] != int64(19) {
-		t.Fatalf("gen_ai.usage.total_tokens = %v, want 19", attrs["gen_ai.usage.total_tokens"])
+	if attrs["gen_ai.request.temperature"] != 0.25 || attrs["gen_ai.request.top_p"] != 0.9 || attrs["gen_ai.request.max_tokens"] != int64(128) {
+		t.Fatalf("missing request params on span: %+v", attrs)
+	}
+	if attrs["gen_ai.response.id"] != "chatcmpl-1" || attrs["goroute.cost_micros"] != int64(59) {
+		t.Fatalf("missing response id / cost_micros on span: %+v", attrs)
+	}
+	if _, exists := attrs["gen_ai.input.messages"]; exists {
+		t.Fatalf("gen_ai.input.messages must not be set when captureContent=false")
+	}
+
+	// Verify opt-in capture_content=true exports scrubbed input/output messages (redacting secrets & emails).
+	rm.SetCaptureContent(true)
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+
+	var optInSpan sdktrace.ReadOnlySpan
+	for _, sp := range sr.Ended()[len(ended):] {
+		if sp.Name() == "chat gpt-4.1-mini" {
+			optInSpan = sp
+		}
+	}
+	if optInSpan == nil {
+		t.Fatalf("expected opt-in chat client span")
+	}
+	optAttrs := make(map[string]any)
+	for _, a := range optInSpan.Attributes() {
+		optAttrs[string(a.Key)] = a.Value.AsInterface()
+	}
+	inMsg, _ := optAttrs["gen_ai.input.messages"].(string)
+	outMsg, _ := optAttrs["gen_ai.output.messages"].(string)
+	if !strings.Contains(inMsg, "top-secret-prompt-text") || !strings.Contains(outMsg, "secret-response") {
+		t.Fatalf("expected captured input/output messages when captureContent=true, got in=%q out=%q", inMsg, outMsg)
+	}
+	if strings.Contains(inMsg, "alice@example.com") || strings.Contains(inMsg, "sk-live-secret-token-999999") {
+		t.Fatalf("PII or API secret leaked into captured gen_ai.input.messages: %q", inMsg)
 	}
 }

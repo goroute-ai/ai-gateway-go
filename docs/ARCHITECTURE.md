@@ -98,7 +98,7 @@ The gateway is partitioned into nine foundational subsystems:
 | **2. AI Governance & Security** | Dual-boundary authentication, Virtual API Keys (`sk-gw-...` + grace-period rotation + `KeySecretSink`), Multi-tenant RBAC (Org $\rightarrow$ Team $\rightarrow$ Project $\rightarrow$ User $\rightarrow$ Key with `team_member_permissions` and self-service enforcement), `(org_id, oidc_issuer, oidc_subject)` federated OIDC/SSO/CLI login with PKCE `S256`, SCIM v2 provisioning, impersonation/delegation, `CustomAuthenticator`, 4-layer model access control, AES-256-GCM credential vault & transactional Master KEK rotation. | `internal/auth`, `internal/modelmgmt`, `pkg/gateway` |
 | **3. AI FinOps & Quotas** | Integer micro-dollar precision token cost calculation ($1 = 1,000,000\ \mu\$$), multi-dimensional & per-model quota descriptors, simultaneous multi-window budgets (`hourly`, `daily`, `weekly`, `monthly`, `rolling_24h`, `never`) with atomic PostgreSQL cold recovery, soft budget alerts/throttling, temporary key budget boosts, PTU team shares, and priority classes. | `internal/finops`, `internal/ratelimit`, `internal/router` |
 | **4. AI Model Lifecycle Automation** | Scheduled background discovery of new/deprecated models from provider APIs, capability & pricing registry enrichment, tenant subscription filtering. | `internal/modelmgmt` |
-| **5. AI Observability & Audit** | W3C distributed trace propagation (`traceparent`/`tracestate`), OpenMetrics Prometheus scraping, structured logs, immutable spend and governance audit ledgers. | `internal/observability`, `internal/finops`, `internal/server` |
+| **5. AI Observability & Audit** | OpenTelemetry (OTLP/HTTP) 3-signal export (GenAI traces, dot-separated `gen_ai.*`/`gateway.*` metrics, opt-in post-scrub logs), W3C `traceparent` across all 4 adapters, structured JSON logs, immutable spend & governance audit ledgers, and HMAC-signed SIEM webhook sink. | `internal/observability`, `internal/logger`, `internal/finops`, `internal/server` |
 | **6. MCP Hub & Tool Registry** | Spec-generated 5-release MCP hub (`2024-11-05`–`2026-07-28`, UI-switchable via `PUT /admin/v1/mcp/spec`), Plain REST Bridge (`/mcp-rest/*`), Progressive Tool Discovery (`/v1/goroute/mcp/registry` & 256-bit handles), Governed OpenAPI adapter, Stdio process sandboxing, tool pinning. | `cmd/mcpgen`, `internal/mcp/spec`, `internal/mcp` |
 | **7. A2A Protocol Engine** | Linux Foundation A2A v1.0, Native gRPC Service (`lf.a2a.v1.A2AService`), OpenAI Chat Completions bridge (`model: "a2a/{slug}"`), JCS/JWS cryptographic cards, Subscribe-First SSE task streaming, transactional outbox with DLQ. | `internal/a2a` |
 | **8. Autonomous Orchestrator & Enterprise Auth** | Server-side recursive tool loop orchestrator with zero double-billing FinOps ledger accounting, `DistributedTokenCache` & opt-in AWS RDS IAM, AWS SigV4 signing, CIMD with S256 PKCE, RFC 9207 & 8707 validation, RFC 8693 token exchange. | `internal/orchestrator`, `internal/auth/upstream`, `internal/storage` |
@@ -204,7 +204,7 @@ flowchart TB
 6. **6-Stage Model Routing & Candidate Filtering (`internal/router`)**:
    - **Stage 0 (PreRouterRegistry)**: Resolves virtual aliases (`auto`, `router/heuristic`, `router/semantic`, `router/quality`, `router/adaptive`, or custom `PreRouter` hooks) and session affinity pins (`AffinityStore`). Also supports comma-separated hedged racing (`model-a,model-b`) and dynamic `provider/model` auto-provisioning from the embedded 5,493-record catalogue (`internal/modelcatalog`) if the tenant has an active credential. Fails closed (HTTP 404) on unconfigured explicit models or uncallable providers without custom endpoints.
    - **Stages 1–3 (Group Resolution, Filter Chain & Priority Tiers)**: `DeploymentFilterChain` evaluates `RBACEngine.AuthorizeDeployment` (fail-closed on repo errors), health & staleness (`health_staleness_threshold`), 3-state CB cooldowns, context windows, region, `&`/`!` tag expressions, deployment RPM/TPM/budget caps & provider budgets, affinity hints, and registered `RoutingPlugin` filters. Surviving candidates are grouped by ascending `Deployment.Priority` tier.
-   - **Stages 4–5 (Load Balancer & Scheduler)**: Selects the optimal deployment using the configured strategy (`weighted-shuffle`, `round-robin`, `least-busy`, `latency-based`, `fastest-response`, `usage-based-headroom`, or `lowest-cost`), optionally bounded by `PriorityScheduler`. Adaptive signals, affinity pins, and bandit updates use Redis with graceful fallback to process-local observations (`gw_routing_signal_degraded_total` counter + warning log).
+   - **Stages 4–5 (Load Balancer & Scheduler)**: Selects the optimal deployment using the configured strategy (`weighted-shuffle`, `round-robin`, `least-busy`, `latency-based`, `fastest-response`, `usage-based-headroom`, or `lowest-cost`), optionally bounded by `PriorityScheduler`. Adaptive signals, affinity pins, and bandit updates use Redis with graceful fallback to process-local observations (`gateway.routing.signal_degraded` OTLP counter + warning log).
 7. **Reliability Loop, Specialized Fallbacks & SSE Continuation (`internal/router/reliability.go` + `internal/adapter`)**:
    - Decrypts the deployment's upstream API key from the in-memory/vault cache (`internal/auth/vault.go`) and transforms `CanonicalChatRequest` into the target provider's OpenAPI or protocol schema.
    - Executes the request (or `fastest-response` hedged race):
@@ -701,7 +701,9 @@ ai-gateway-go/
 ├── tests/
 │   ├── e2e/                          # End-to-end live PostgreSQL + Redis, federation, SCIM, quota & cluster suites
 │   ├── guardrails/                   # Isolated guardrail unit/integration suite
-│   ├── prod-docker/                  # Production-like HA Docker OIDC, authz parity & CLI verification suites (Suites 1-10 + 99)
+│   ├── prod-docker/                  # Production-like HA Docker OIDC, authz parity & CLI verification suites (Suites 1-11 + 99)
+│   ├── cache-prod-docker/            # Production-like HA Docker caching & Redis 8 semantic vector suite (Suites C0-C6)
+│   ├── obs-prod-docker/              # Production-like HA Docker 3-signal OTLP observability suite (Suites O0-O5)
 │   └── ui-e2e/                       # Playwright headless Chromium Operator Web UI E2E suite
 ├── web/                              # React 18 + TypeScript + Vite Operator Console SPA source & bundle budget check
 ├── internal/
@@ -710,6 +712,7 @@ ai-gateway-go/
 │   ├── openapi/                      # Generated Go types from OpenAPI specs
 │   ├── adapter/                      # OpenAI, Anthropic, Groq, and OpenRouter (OpenAPI-first adapters)
 │   ├── auth/                         # Virtual keys, OIDC/SSO, SCIM, rotation, L1/L2 cache, RBAC, Credential Vault & upstream IAM
+│   ├── logger/                       # Structured slog JSON/text logging, secret/PII scrubbing, request/tenant correlation & OTLP log fan-out
 │   ├── mcp/                          # Multi-release MCP engine (2024-11-05..2026-07-28), spec_profile, MRTR, Cache & Hub
 │   ├── a2a/                          # A2A v1.0 engine, Card signer/verifier, RouterService, Streams & Outbox
 │   ├── security/                     # Centralized outbound SSRF network policy engine & safe HTTP client
@@ -717,6 +720,7 @@ ai-gateway-go/
 │   ├── ratelimit/                    # Redis Lua multi-descriptor atomic rate limiter, rolling_24h recovery + tokenizer
 │   ├── cache/                        # Single-backend response cache (local LRU, Redis KV, Redis 8 semantic vector search)
 │   ├── modelmgmt/                    # 4-Layer model catalogue, org policies & automated discovery worker
+│   ├── observability/                # Pure OpenTelemetry (OTLP/HTTP) 3-signal runtime, GenAI spans, dot-separated metrics & UI telemetry snapshot
 │   ├── router/                       # Stage 0–5 Intelligent Router, FilterChain, PTU/Load Balancer, Reliability Manager
 │   ├── finops/                       # Micro-dollar cost calculator, soft budgets & durable spend outbox worker
 │   ├── storage/                      # PostgreSQL (+ RDS IAM), Redis, and In-Memory unified storage repositories
@@ -727,11 +731,11 @@ ai-gateway-go/
 │   └── config.example.yaml           # Annotated production configuration template
 ├── deployments/
 │   ├── Dockerfile                    # Multi-stage distroless container build
-│   ├── docker-compose.yml            # Full stack: Gateway + PostgreSQL 16 + Redis 8 + Prometheus
+│   ├── docker-compose.yml            # Full stack: Gateway + PostgreSQL 16 + Redis 8
 │   ├── docker-compose.test.yml       # Integration test stack
 │   ├── helm/goroute/                 # Production Helm chart (Deployment, HPA, PDB, NetworkPolicy, Migration Job)
 │   ├── k8s/                          # Raw Kubernetes manifests & Kustomize overlay
-│   └── prometheus/prometheus.yml     # Prometheus scrape configuration
+│   └── otel/otel-collector.yaml      # Reference OpenTelemetry Collector (OTLP/HTTP traces, metrics, logs)
 ├── Makefile                          # Build, codegen, test, UI bundle check, and docker targets
 └── go.mod
 ```

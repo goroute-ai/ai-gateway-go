@@ -27,7 +27,7 @@ This script runs (in read-only mode on your working tree):
 6. `go test -race -count=1 ./internal/... ./pkg/... ./cmd/... ./tests/guardrails/...`
 7. Optional `gitleaks` secret hygiene scan (if `gitleaks` is installed)
 
-## Tier 1 Live Stack (PostgreSQL 16 + Redis 7 via Docker)
+## Tier 1 Live Stack (PostgreSQL 16 + Redis 8 via Docker)
 
 Run when modifying `migrations/`, `internal/storage/`, `internal/ratelimit/`, `internal/finops/`, `internal/auth/`, or `internal/router/`:
 

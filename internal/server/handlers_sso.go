@@ -840,33 +840,6 @@ func (s *GatewayServer) resolveOrProvisionSSOUser(ctx context.Context, p *auth.S
 	return user, nil
 }
 
-func resolveSSOProvisionRole(claimRole, defaultRole string, allowPrivilegedClaims bool) domain.Role {
-	parseRole := func(raw string) (domain.Role, bool) {
-		r := domain.Role(strings.ToLower(strings.TrimSpace(raw)))
-		switch r {
-		case domain.RolePlatformAdmin,
-			domain.RoleOrgAdmin,
-			domain.RoleOrgViewer,
-			domain.RoleTeamAdmin,
-			domain.RoleDeveloper,
-			domain.RoleServiceAccount,
-			domain.RoleViewer:
-			return r, true
-		default:
-			return "", false
-		}
-	}
-	if role, ok := parseRole(claimRole); ok {
-		if role != domain.RolePlatformAdmin || allowPrivilegedClaims {
-			return role
-		}
-	}
-	if role, ok := parseRole(defaultRole); ok {
-		return role
-	}
-	return domain.RoleOrgViewer
-}
-
 func sanitizeSSOEmailPart(raw, fallback string) string {
 	cleaned := strings.Map(func(r rune) rune {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {

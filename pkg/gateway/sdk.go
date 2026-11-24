@@ -228,7 +228,7 @@ func New(opts ...Option) (*Client, error) {
 	if cc.silentLogs {
 		logger.Init(logger.Config{Output: io.Discard})
 	} else if cc.customLogger != nil {
-		slog.SetDefault(cc.customLogger)
+		logger.SetGlobal(cc.customLogger)
 	} else if cc.logLevel != "" {
 		logger.Init(logger.Config{Level: cc.logLevel})
 	}

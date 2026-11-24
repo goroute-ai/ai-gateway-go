@@ -1925,6 +1925,27 @@ func (e GetObservabilityMetrics200JSONResponseBodyCacheType) Valid() bool {
 	}
 }
 
+// Defines values for GetObservabilityMetrics200JSONResponseBodyOtelSignals.
+const (
+	Logs    GetObservabilityMetrics200JSONResponseBodyOtelSignals = "logs"
+	Metrics GetObservabilityMetrics200JSONResponseBodyOtelSignals = "metrics"
+	Traces  GetObservabilityMetrics200JSONResponseBodyOtelSignals = "traces"
+)
+
+// Valid indicates whether the value is a known member of the GetObservabilityMetrics200JSONResponseBodyOtelSignals enum.
+func (e GetObservabilityMetrics200JSONResponseBodyOtelSignals) Valid() bool {
+	switch e {
+	case Logs:
+		return true
+	case Metrics:
+		return true
+	case Traces:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for CreateSelfServiceKeyJSONBodyKeyType.
 const (
 	CreateSelfServiceKeyJSONBodyKeyTypeDefault        CreateSelfServiceKeyJSONBodyKeyType = "default"
@@ -4203,8 +4224,20 @@ type GetObservabilityMetrics200JSONResponseBodyCacheStatus string
 // GetObservabilityMetrics200JSONResponseBodyCacheType defines parameters for GetObservabilityMetrics.
 type GetObservabilityMetrics200JSONResponseBodyCacheType string
 
+// GetObservabilityMetrics200JSONResponseBodyOtelSignals defines parameters for GetObservabilityMetrics.
+type GetObservabilityMetrics200JSONResponseBodyOtelSignals string
+
 // GetObservabilityMetrics200JSONResponseBody defines parameters for GetObservabilityMetrics.
 type GetObservabilityMetrics200JSONResponseBody struct {
+	// AuditSiemDelivered Cumulative audit log events delivered to the SIEM webhook sink.
+	AuditSiemDelivered *int64 `json:"audit_siem_delivered,omitempty"`
+
+	// AuditSiemDropped Cumulative audit log events dropped due to a full SIEM webhook queue.
+	AuditSiemDropped *int64 `json:"audit_siem_dropped,omitempty"`
+
+	// AuditSiemFailed Cumulative audit log events that failed SIEM webhook delivery.
+	AuditSiemFailed *int64 `json:"audit_siem_failed,omitempty"`
+
 	// CacheEnabled Whether response caching is enabled on this gateway instance.
 	CacheEnabled *bool `json:"cache_enabled,omitempty"`
 
@@ -4233,8 +4266,29 @@ type GetObservabilityMetrics200JSONResponseBody struct {
 	CacheStatus *GetObservabilityMetrics200JSONResponseBodyCacheStatus `json:"cache_status,omitempty"`
 
 	// CacheType Active single-backend response cache mode.
-	CacheType            *GetObservabilityMetrics200JSONResponseBodyCacheType `json:"cache_type,omitempty"`
-	AdditionalProperties map[string]interface{}                               `json:"-"`
+	CacheType *GetObservabilityMetrics200JSONResponseBodyCacheType `json:"cache_type,omitempty"`
+
+	// FinopsOutboxBackpressure Cumulative FinOps spend outbox backpressure rejections.
+	FinopsOutboxBackpressure *int64 `json:"finops_outbox_backpressure,omitempty"`
+
+	// FinopsOutboxDeadLetter Cumulative FinOps spend events moved to dead-letter state.
+	FinopsOutboxDeadLetter *int64 `json:"finops_outbox_dead_letter,omitempty"`
+
+	// FinopsOutboxPending Current pending FinOps spend outbox queue depth.
+	FinopsOutboxPending *int64 `json:"finops_outbox_pending,omitempty"`
+
+	// OtelEnabled Whether OpenTelemetry OTLP/HTTP telemetry export is enabled.
+	OtelEnabled *bool `json:"otel_enabled,omitempty"`
+
+	// OtelSignals Active OTLP/HTTP telemetry signals exporting from this gateway instance.
+	OtelSignals *[]GetObservabilityMetrics200JSONResponseBodyOtelSignals `json:"otel_signals,omitempty"`
+
+	// RedisCbState Primary Redis circuit breaker state (0=closed, 1=half_open, 2=open).
+	RedisCbState *int `json:"redis_cb_state,omitempty"`
+
+	// RoutingSignalDegradedTotal Routing operations degraded to process-local signals due to Redis unavailability.
+	RoutingSignalDegradedTotal *int64                 `json:"routing_signal_degraded_total,omitempty"`
+	AdditionalProperties       map[string]interface{} `json:"-"`
 }
 
 // ListGuardrailBindingsParams defines parameters for ListGuardrailBindings.
@@ -4915,6 +4969,30 @@ func (a *GetObservabilityMetrics200JSONResponseBody) UnmarshalJSON(b []byte) err
 		return err
 	}
 
+	if raw, found := object["audit_siem_delivered"]; found {
+		err = json.Unmarshal(raw, &a.AuditSiemDelivered)
+		if err != nil {
+			return fmt.Errorf("error reading 'audit_siem_delivered': %w", err)
+		}
+		delete(object, "audit_siem_delivered")
+	}
+
+	if raw, found := object["audit_siem_dropped"]; found {
+		err = json.Unmarshal(raw, &a.AuditSiemDropped)
+		if err != nil {
+			return fmt.Errorf("error reading 'audit_siem_dropped': %w", err)
+		}
+		delete(object, "audit_siem_dropped")
+	}
+
+	if raw, found := object["audit_siem_failed"]; found {
+		err = json.Unmarshal(raw, &a.AuditSiemFailed)
+		if err != nil {
+			return fmt.Errorf("error reading 'audit_siem_failed': %w", err)
+		}
+		delete(object, "audit_siem_failed")
+	}
+
 	if raw, found := object["cache_enabled"]; found {
 		err = json.Unmarshal(raw, &a.CacheEnabled)
 		if err != nil {
@@ -4995,6 +5073,62 @@ func (a *GetObservabilityMetrics200JSONResponseBody) UnmarshalJSON(b []byte) err
 		delete(object, "cache_type")
 	}
 
+	if raw, found := object["finops_outbox_backpressure"]; found {
+		err = json.Unmarshal(raw, &a.FinopsOutboxBackpressure)
+		if err != nil {
+			return fmt.Errorf("error reading 'finops_outbox_backpressure': %w", err)
+		}
+		delete(object, "finops_outbox_backpressure")
+	}
+
+	if raw, found := object["finops_outbox_dead_letter"]; found {
+		err = json.Unmarshal(raw, &a.FinopsOutboxDeadLetter)
+		if err != nil {
+			return fmt.Errorf("error reading 'finops_outbox_dead_letter': %w", err)
+		}
+		delete(object, "finops_outbox_dead_letter")
+	}
+
+	if raw, found := object["finops_outbox_pending"]; found {
+		err = json.Unmarshal(raw, &a.FinopsOutboxPending)
+		if err != nil {
+			return fmt.Errorf("error reading 'finops_outbox_pending': %w", err)
+		}
+		delete(object, "finops_outbox_pending")
+	}
+
+	if raw, found := object["otel_enabled"]; found {
+		err = json.Unmarshal(raw, &a.OtelEnabled)
+		if err != nil {
+			return fmt.Errorf("error reading 'otel_enabled': %w", err)
+		}
+		delete(object, "otel_enabled")
+	}
+
+	if raw, found := object["otel_signals"]; found {
+		err = json.Unmarshal(raw, &a.OtelSignals)
+		if err != nil {
+			return fmt.Errorf("error reading 'otel_signals': %w", err)
+		}
+		delete(object, "otel_signals")
+	}
+
+	if raw, found := object["redis_cb_state"]; found {
+		err = json.Unmarshal(raw, &a.RedisCbState)
+		if err != nil {
+			return fmt.Errorf("error reading 'redis_cb_state': %w", err)
+		}
+		delete(object, "redis_cb_state")
+	}
+
+	if raw, found := object["routing_signal_degraded_total"]; found {
+		err = json.Unmarshal(raw, &a.RoutingSignalDegradedTotal)
+		if err != nil {
+			return fmt.Errorf("error reading 'routing_signal_degraded_total': %w", err)
+		}
+		delete(object, "routing_signal_degraded_total")
+	}
+
 	if len(object) != 0 {
 		a.AdditionalProperties = make(map[string]interface{})
 		for fieldName, fieldBuf := range object {
@@ -5013,6 +5147,27 @@ func (a *GetObservabilityMetrics200JSONResponseBody) UnmarshalJSON(b []byte) err
 func (a GetObservabilityMetrics200JSONResponseBody) MarshalJSON() ([]byte, error) {
 	var err error
 	object := make(map[string]json.RawMessage)
+
+	if a.AuditSiemDelivered != nil {
+		object["audit_siem_delivered"], err = json.Marshal(a.AuditSiemDelivered)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'audit_siem_delivered': %w", err)
+		}
+	}
+
+	if a.AuditSiemDropped != nil {
+		object["audit_siem_dropped"], err = json.Marshal(a.AuditSiemDropped)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'audit_siem_dropped': %w", err)
+		}
+	}
+
+	if a.AuditSiemFailed != nil {
+		object["audit_siem_failed"], err = json.Marshal(a.AuditSiemFailed)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'audit_siem_failed': %w", err)
+		}
+	}
 
 	if a.CacheEnabled != nil {
 		object["cache_enabled"], err = json.Marshal(a.CacheEnabled)
@@ -5081,6 +5236,55 @@ func (a GetObservabilityMetrics200JSONResponseBody) MarshalJSON() ([]byte, error
 		object["cache_type"], err = json.Marshal(a.CacheType)
 		if err != nil {
 			return nil, fmt.Errorf("error marshaling 'cache_type': %w", err)
+		}
+	}
+
+	if a.FinopsOutboxBackpressure != nil {
+		object["finops_outbox_backpressure"], err = json.Marshal(a.FinopsOutboxBackpressure)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'finops_outbox_backpressure': %w", err)
+		}
+	}
+
+	if a.FinopsOutboxDeadLetter != nil {
+		object["finops_outbox_dead_letter"], err = json.Marshal(a.FinopsOutboxDeadLetter)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'finops_outbox_dead_letter': %w", err)
+		}
+	}
+
+	if a.FinopsOutboxPending != nil {
+		object["finops_outbox_pending"], err = json.Marshal(a.FinopsOutboxPending)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'finops_outbox_pending': %w", err)
+		}
+	}
+
+	if a.OtelEnabled != nil {
+		object["otel_enabled"], err = json.Marshal(a.OtelEnabled)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'otel_enabled': %w", err)
+		}
+	}
+
+	if a.OtelSignals != nil {
+		object["otel_signals"], err = json.Marshal(a.OtelSignals)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'otel_signals': %w", err)
+		}
+	}
+
+	if a.RedisCbState != nil {
+		object["redis_cb_state"], err = json.Marshal(a.RedisCbState)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'redis_cb_state': %w", err)
+		}
+	}
+
+	if a.RoutingSignalDegradedTotal != nil {
+		object["routing_signal_degraded_total"], err = json.Marshal(a.RoutingSignalDegradedTotal)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'routing_signal_degraded_total': %w", err)
 		}
 	}
 

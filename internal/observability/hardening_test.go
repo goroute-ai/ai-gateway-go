@@ -11,7 +11,7 @@ import (
 
 func TestCollector_CapsProvidersMap(t *testing.T) {
 	c := NewCollector()
-	for i := 0; i < maxProviderEntries+50; i++ {
+	for i := range maxProviderEntries + 50 {
 		c.Record(RequestObservation{
 			Provider:   fmt.Sprintf("provider-%d", i),
 			StatusCode: 200,
@@ -27,7 +27,7 @@ func TestCollector_CapsProvidersMap(t *testing.T) {
 
 func TestParseOrGenerateTrace_RejectsInvalidAndAllZeroTraceIDs(t *testing.T) {
 	// All-zero traceparent must be rejected
-	reqZero := httptest.NewRequest("GET", "/test", nil)
+	reqZero := httptest.NewRequest(http.MethodGet, "/test", nil)
 	reqZero.Header.Set("traceparent", "00-00000000000000000000000000000000-0123456789abcdef-01")
 	tcZero := ParseOrGenerateTrace(reqZero)
 	if tcZero.TraceID == "00000000000000000000000000000000" || !isValidTraceID(tcZero.TraceID) {
@@ -35,7 +35,7 @@ func TestParseOrGenerateTrace_RejectsInvalidAndAllZeroTraceIDs(t *testing.T) {
 	}
 
 	// Non-hex X-Trace-Id must be rejected
-	reqBadHex := httptest.NewRequest("GET", "/test", nil)
+	reqBadHex := httptest.NewRequest(http.MethodGet, "/test", nil)
 	reqBadHex.Header.Set("X-Trace-Id", "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz")
 	tcBad := ParseOrGenerateTrace(reqBadHex)
 	if tcBad.TraceID == "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz" || !isValidTraceID(tcBad.TraceID) {
@@ -43,7 +43,7 @@ func TestParseOrGenerateTrace_RejectsInvalidAndAllZeroTraceIDs(t *testing.T) {
 	}
 
 	// Valid hex traceparent is accepted and lowercased
-	reqValid := httptest.NewRequest("GET", "/test", nil)
+	reqValid := httptest.NewRequest(http.MethodGet, "/test", nil)
 	reqValid.Header.Set("traceparent", "00-0123456789ABCDEF0123456789ABCDEF-0123456789abcdef-01")
 	tcValid := ParseOrGenerateTrace(reqValid)
 	if tcValid.TraceID != "0123456789abcdef0123456789abcdef" {

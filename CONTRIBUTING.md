@@ -33,7 +33,7 @@ Before writing code, review [`CLAUDE.md`](./CLAUDE.md) for Claude Code workflow 
 - **Go**: Version `1.26.0+` (matching [`go.mod`](./go.mod))
 - **Git**
 - **Node.js `20+` & npm** (required only if contributing to the Operator Web UI in `web/`)
-- **Optional Tooling**: **Docker** (live PostgreSQL 16 + Redis 7 integration tests), **`gitleaks`**, and **`govulncheck`**
+- **Optional Tooling**: **Docker** (live PostgreSQL 16 + Redis 8 integration tests), **`gitleaks`**, and **`govulncheck`**
 
 ### Local Build and Test
 Clone the repository and verify your local toolchain:
@@ -58,7 +58,7 @@ make ui-build
 # Build the gateway executable (with embedded UI)
 make build
 
-# Optional: start PostgreSQL 16 + Redis 7 and run strict live-stack Go & Browser UI E2E tests (see docs/TESTING.md)
+# Optional: start PostgreSQL 16 + Redis 8 and run strict live-stack Go & Browser UI E2E tests (see docs/TESTING.md)
 make test-live-up
 make test-e2e-strict
 make test-ui-e2e

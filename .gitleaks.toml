@@ -42,10 +42,16 @@ paths = [
   '''^tests/prod-docker/prod_e2e_test\.go$''',
   '''^deployments/cache-prod-test/docker-compose\.cache-prod\.yml$''',
   '''^tests/cache-prod-docker/run_cache_prod_tests\.sh$''',
+  '''^deployments/obs-prod-test/docker-compose\.obs-prod\.yml$''',
+  '''^tests/obs-prod-docker/run_obs_prod_tests\.sh$''',
+  '''^tests/obs-prod-docker/obs_prod_e2e_test\.go$''',
 ]
 regexes = [
   '''a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90''',
   '''b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1''',
+  '''c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2''',
   '''goroute-prod-oidc-secret-2026''',
   '''goroute-ci-(mint|es256|eddsa)-secret-2026''',
+  '''obs-prod-(otel-collector-token|siem-hmac-secret|redis-pass|pg-password)-2026''',
+  '''sk-gw-obs-(prod|neg-test)-master''',
 ]

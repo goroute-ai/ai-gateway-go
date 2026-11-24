@@ -55,8 +55,12 @@ type Hub struct {
 	progressive      *ProgressiveDiscoveryManager
 	toolPolicyStore  storage.ToolPolicyRepository
 	customAuthorizer auth.Authorizer
+	instruments      *observability.Instruments
 	runtimeSettings  atomic.Pointer[domain.MCPRuntimeSettings]
 }
+
+// SetInstruments attaches OpenTelemetry metric instruments to the MCP Hub.
+func (h *Hub) SetInstruments(inst *observability.Instruments) { h.instruments = inst }
 
 // SetCache attaches the response cache used for cacheable MCP tool calls and listings.
 func (h *Hub) SetCache(c *MCPCache) { h.cache = c }
@@ -326,7 +330,7 @@ func (h *Hub) CallTool(ctx context.Context, idCtx *domain.IdentityContext, input
 		return nil, fmt.Errorf("guardrail blocked tool call: %w", err)
 	}
 
-	reqHeaders, authCtx, strat := h.resolveUpstreamAuth(ctx, idCtx, orgID, targetServer, meta.CallerMetadata, nil)
+	reqHeaders, authCtx, authStrategy := h.resolveUpstreamAuth(ctx, idCtx, orgID, targetServer, meta.CallerMetadata, nil)
 	paramsMap := map[string]any{"name": input.ToolName}
 	if input.Arguments != nil {
 		paramsMap["arguments"] = input.Arguments
@@ -341,15 +345,40 @@ func (h *Hub) CallTool(ctx context.Context, idCtx *domain.IdentityContext, input
 		Params:  paramsBytes,
 	})
 
-	resp, _, err := h.dispatchWithDuringGuardrails(ctx, targetServer, strat, authCtx, reqBodyBytes, reqHeaders, true, mcpPRC, mcpCallCtx)
+	spanCtx, toolSpan := observability.StartGenAISpan(ctx, nil, observability.GenAISpanStart{
+		Operation:     "execute_tool",
+		ToolName:      input.ToolName,
+		MCPServerSlug: targetServer.Slug,
+		ServerAddress: targetServer.EndpointURL,
+		OrgID:         orgID,
+	})
+	resp, _, err := h.dispatchWithDuringGuardrails(spanCtx, targetServer, authStrategy, authCtx, reqBodyBytes, reqHeaders, true, mcpPRC, mcpCallCtx)
 	if err != nil {
+		observability.FinishGenAISpan(toolSpan, observability.GenAISpanEnd{Err: err, ErrorType: "mcp_dispatch_error"})
+		if h.instruments != nil {
+			h.instruments.RecordMCPRequest(spanCtx, "tools/call", "error")
+		}
 		return nil, err
 	}
 	if resp == nil {
-		return nil, errors.New("upstream returned empty response")
+		emptyErr := errors.New("upstream returned empty response")
+		observability.FinishGenAISpan(toolSpan, observability.GenAISpanEnd{Err: emptyErr, ErrorType: "mcp_empty_response"})
+		if h.instruments != nil {
+			h.instruments.RecordMCPRequest(spanCtx, "tools/call", "error")
+		}
+		return nil, emptyErr
 	}
 	if resp.Error != nil {
-		return nil, fmt.Errorf("upstream mcp error (%d): %s", resp.Error.Code, resp.Error.Message)
+		rpcErr := fmt.Errorf("upstream mcp error (%d): %s", resp.Error.Code, resp.Error.Message)
+		observability.FinishGenAISpan(toolSpan, observability.GenAISpanEnd{Err: rpcErr, ErrorType: "mcp_rpc_error"})
+		if h.instruments != nil {
+			h.instruments.RecordMCPRequest(spanCtx, "tools/call", "error")
+		}
+		return nil, rpcErr
+	}
+	observability.FinishGenAISpan(toolSpan, observability.GenAISpanEnd{})
+	if h.instruments != nil {
+		h.instruments.RecordMCPRequest(spanCtx, "tools/call", "ok")
 	}
 
 	if err := h.evaluatePostMCPGuardrails(ctx, orgID, mcpPRC, mcpCallCtx, resp); err != nil {
@@ -923,7 +952,15 @@ func (h *Hub) dispatchVirtualRequest(
 		}
 		return &JSONRPCResponse{JSONRPC: "2.0", ID: jsonReq.ID, Result: map[string]any{}}, nil, nil
 	case "tools/list":
-		return h.handleVirtualToolsList(ctx, idCtx, jsonReq.ID, profile)
+		resp, hdrs, err := h.handleVirtualToolsList(ctx, idCtx, jsonReq.ID, profile)
+		if h.instruments != nil {
+			status := "ok"
+			if err != nil || (resp != nil && resp.Error != nil) {
+				status = "error"
+			}
+			h.instruments.RecordMCPRequest(ctx, "tools/list", status)
+		}
+		return resp, hdrs, err
 	case "tools/call":
 		return h.handleVirtualToolsCall(ctx, idCtx, jsonReq, reqHeaders, profile)
 	default:
@@ -1075,6 +1112,13 @@ func (h *Hub) dispatchScopedRequest(
 
 	_, authCtx, strat := h.resolveUpstreamAuth(ctx, idCtx, orgID, server, nil, reqHeaders)
 	resp, respHeaders, err := h.dispatchWithDuringGuardrails(ctx, server, strat, authCtx, reqBody, reqHeaders, isGuardedMethod, scopedPRC, scopedCallCtx)
+	if h.instruments != nil {
+		status := "ok"
+		if err != nil || (resp != nil && resp.Error != nil) {
+			status = "error"
+		}
+		h.instruments.RecordMCPRequest(ctx, jsonReq.Method, status)
+	}
 	if err != nil {
 		if respHeaders != nil || strings.HasPrefix(err.Error(), "guardrail blocked tool call:") {
 			return scopedJSONRPCError(jsonReq.ID, fmt.Sprintf("guardrail blocked %s: %s", jsonReq.Method, strings.TrimPrefix(err.Error(), "guardrail blocked tool call: "))), respHeaders, nil

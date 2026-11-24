@@ -26,6 +26,7 @@ GoRoute sits between your apps and major AI providers (**OpenAI**, **Anthropic**
 - **Automatic Backup & Reliability** — If one AI provider slows down or goes offline, GoRoute automatically routes requests to a healthy backup.
 - **Built-In Spending & Usage Limits** — Set clear daily, weekly, or monthly budgets per team, project, or user so AI bills never surprise you.
 - **Built-In Exact & Semantic Response Caching** — Cut latency and LLM spend to `$0` on repeated or paraphrased prompts using in-memory `local` LRU, shared `redis` KV, or Redis 8 `redis-semantic` vector similarity search.
+- **Pure OpenTelemetry (OTLP/HTTP) Observability** — Exports GenAI semantic convention traces (`gen_ai.*`), pure dot-separated OTel metrics (`gen_ai.*`, `gateway.*`), and opt-in post-scrub logs exclusively over standard OTLP/HTTP, letting you connect any OpenTelemetry Collector or OTLP-compatible backend on top without vendor lock-in.
 - **Company Login & Safety Guardrails** — Works with your organization's Single Sign-On (SSO) and automatically blocks sensitive data leaks or unsafe prompts.
 - **Built-In Web Dashboard** — Includes an easy-to-use admin console and chat playground (with streaming SSE and cacheable JSON modes) right out of the box—no extra tools required.
 

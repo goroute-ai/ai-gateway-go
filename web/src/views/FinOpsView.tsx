@@ -141,7 +141,7 @@ export const FinOpsView: React.FC = () => {
   const filteredSpendLogs = spendLogs.filter((e) => {
     if (spendFilterMode === 'cache_hits' && !e.cache_hit) return false;
     if (spendFilterMode === 'semantic_embed' && e.endpoint !== '_internal/semantic_cache') return false;
-    return matchTerm(e.request_id, e.provider, e.resolved_model, e.virtual_key_id, e.endpoint);
+    return matchTerm(e.request_id, e.trace_id, e.provider, e.resolved_model, e.virtual_key_id, e.endpoint, e.protocol, e.deployment_id);
   });
   const filteredAuditLogs = auditLogs.filter((l) =>
     matchTerm(l.action, l.resource, l.resource_id, l.actor_id)
@@ -298,7 +298,7 @@ export const FinOpsView: React.FC = () => {
                   type="text"
                   value={searchFilter}
                   onChange={(e) => setSearchFilter(e.target.value)}
-                  placeholder={activeTab === 'spend' ? 'Filter by request, model, endpoint...' : 'Filter by action, resource...'}
+                  placeholder={activeTab === 'spend' ? 'Filter by request, trace, model, endpoint...' : 'Filter by action, resource...'}
                   className="pl-8 pr-3 py-1 text-xs bg-surface-input border border-border-subtle rounded text-brand-body placeholder-brand-muted focus:outline-none focus:border-accent-primary font-mono w-56"
                 />
               </div>
@@ -373,11 +373,16 @@ export const FinOpsView: React.FC = () => {
                         {evt.requested_model && evt.requested_model !== evt.resolved_model && (
                           <span className="block text-[10px] text-brand-muted">via {evt.requested_model}</span>
                         )}
-                        {evt.endpoint === '_internal/semantic_cache' && (
-                          <span className="mt-0.5 inline-block">
+                        <div className="mt-0.5 flex flex-wrap gap-1">
+                          {evt.endpoint === '_internal/semantic_cache' && (
                             <Badge variant="info" size="sm">semantic cache</Badge>
-                          </span>
-                        )}
+                          )}
+                          {evt.protocol && evt.protocol !== 'inference' && (
+                            <Badge variant="neutral" size="sm">{evt.protocol}</Badge>
+                          )}
+                          {evt.is_stream && <Badge variant="neutral" size="sm">SSE</Badge>}
+                          {evt.fallback_attempted && <Badge variant="warning" size="sm">fallback</Badge>}
+                        </div>
                       </td>
                       <td className="px-4 py-3 text-brand-muted capitalize">
                         <Badge variant="neutral">{evt.provider || 'unknown'}</Badge>
@@ -399,6 +404,9 @@ export const FinOpsView: React.FC = () => {
                       </td>
                       <td className="px-4 py-3 text-brand-muted whitespace-nowrap">
                         {evt.latency_ms ? `${evt.latency_ms.toFixed(0)} ms` : '-'}
+                        {evt.ttft_ms ? (
+                          <span className="block text-[10px] text-brand-muted">TTFT {evt.ttft_ms} ms</span>
+                        ) : null}
                       </td>
                       <td className="px-4 py-3 text-right">
                         <button onClick={() => setSelectedSpendEvent(evt)} className={INSPECT_BTN}>
@@ -502,14 +510,18 @@ export const FinOpsView: React.FC = () => {
         const isSpend = !!selectedSpendEvent;
         const fields: Array<[string, string | number]> = isSpend
           ? [
+              ['Trace ID:', selectedSpendEvent!.trace_id || '—'],
               ['Total Tokens:', (selectedSpendEvent!.usage?.total_tokens ?? 0).toLocaleString()],
               ['Cost (Micros):', `${selectedSpendEvent!.cost_micros?.toLocaleString() || 0} µ$`],
               ['Cost (USD):', formatMicroDollars(selectedSpendEvent!.cost_micros)],
               ['Provider:', selectedSpendEvent!.provider],
               ['Resolved Model:', selectedSpendEvent!.resolved_model],
+              ['Protocol:', selectedSpendEvent!.protocol || 'inference'],
               ['Endpoint:', selectedSpendEvent!.endpoint || '—'],
+              ['Status / Mode:', `${selectedSpendEvent!.status_code || 200}${selectedSpendEvent!.is_stream ? ' (SSE)' : ''}`],
               ['Cache Hit:', selectedSpendEvent!.cache_hit ? 'Yes ($0)' : 'No'],
-              ['Latency:', selectedSpendEvent!.latency_ms ? `${selectedSpendEvent!.latency_ms.toFixed(1)} ms` : '-'],
+              ['Latency / TTFT:', `${selectedSpendEvent!.latency_ms ? `${selectedSpendEvent!.latency_ms.toFixed(1)} ms` : '-'}${selectedSpendEvent!.ttft_ms ? ` · ${selectedSpendEvent!.ttft_ms} ms` : ''}`],
+              ['Fallback / Retries:', `${selectedSpendEvent!.fallback_attempted ? 'Yes' : 'No'} / ${selectedSpendEvent!.retry_count ?? 0}`],
             ]
           : [
               ['Actor:', selectedAuditLog!.actor_id || 'master-admin'],
@@ -530,12 +542,26 @@ export const FinOpsView: React.FC = () => {
           >
             <div className="space-y-4">
               <div className={`grid grid-cols-2 ${isSpend ? 'sm:grid-cols-3' : ''} gap-3 bg-surface-code border border-border-subtle rounded p-3 text-xs font-mono`}>
-                {fields.map(([k, v]) => (
-                  <div key={k}>
-                    <span className="text-brand-muted block">{k}</span>
-                    <span className="text-brand-title font-semibold truncate block">{v}</span>
-                  </div>
-                ))}
+                {fields.map(([k, v]) => {
+                  const isTrace = k === 'Trace ID:' && typeof v === 'string' && v !== '—';
+                  return (
+                    <div key={k}>
+                      <span className="text-brand-muted block">{k}</span>
+                      {isTrace ? (
+                        <button
+                          type="button"
+                          onClick={() => void navigator.clipboard?.writeText(v)}
+                          title={`Click to copy Trace ID: ${v}`}
+                          className="text-accent-primary font-semibold truncate block max-w-full hover:underline cursor-pointer text-left"
+                        >
+                          {v}
+                        </button>
+                      ) : (
+                        <span className="text-brand-title font-semibold truncate block" title={String(v)}>{v}</span>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
               {!isSpend && (selectedAuditLog?.before_value || selectedAuditLog?.after_value) && (
                 <div>

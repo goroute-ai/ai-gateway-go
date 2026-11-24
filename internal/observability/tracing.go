@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/go-chi/chi/v5"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
@@ -39,7 +40,7 @@ func isValidTraceID(s string) bool {
 		return false
 	}
 	allZero := true
-	for i := 0; i < len(s); i++ {
+	for i := range len(s) {
 		c := s[i]
 		isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
 		if !isHex {
@@ -55,10 +56,14 @@ func isValidTraceID(s string) bool {
 // ParseOrGenerateTrace extracts a W3C `traceparent` or `X-Trace-Id` from the request, or generates a fresh 128-bit TraceID + 64-bit SpanID.
 func ParseOrGenerateTrace(r *http.Request) TraceContext {
 	var traceID string
+	traceFlags := "01"
 	if tp := strings.TrimSpace(r.Header.Get("traceparent")); tp != "" {
 		parts := strings.Split(tp, "-")
 		if len(parts) == 4 && isValidTraceID(parts[1]) {
 			traceID = strings.ToLower(parts[1])
+			if len(parts[3]) == 2 {
+				traceFlags = strings.ToLower(parts[3])
+			}
 		}
 	}
 	if traceID == "" {
@@ -79,7 +84,7 @@ func ParseOrGenerateTrace(r *http.Request) TraceContext {
 	return TraceContext{
 		TraceID:     traceID,
 		SpanID:      spanID,
-		TraceParent: fmt.Sprintf("00-%s-%s-01", traceID, spanID),
+		TraceParent: fmt.Sprintf("00-%s-%s-%s", traceID, spanID, traceFlags),
 	}
 }
 
@@ -144,8 +149,8 @@ func (w *statusResponseWriter) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter
 }
 
-// TraceMiddlewareWithTracer returns HTTP middleware that extracts incoming W3C trace context
-// and starts a server span for each request using the provided OpenTelemetry tracer.
+// TraceMiddlewareWithTracer returns HTTP middleware that extracts incoming W3C trace context,
+// starts an OpenTelemetry server span with low-cardinality http.route naming, and emits W3C response headers.
 func TraceMiddlewareWithTracer(tracer trace.Tracer) func(http.Handler) http.Handler {
 	if tracer == nil {
 		tracer = noop.NewTracerProvider().Tracer("ai-gateway-go")
@@ -155,13 +160,19 @@ func TraceMiddlewareWithTracer(tracer trace.Tracer) func(http.Handler) http.Hand
 			parentCtx := propagation.TraceContext{}.Extract(r.Context(), propagation.HeaderCarrier(r.Header))
 			ctx, span := tracer.Start(parentCtx, "HTTP "+r.Method,
 				trace.WithSpanKind(trace.SpanKindServer),
-				trace.WithAttributes(attribute.String("http.request.method", r.Method), attribute.String("url.path", r.URL.Path)),
+				trace.WithAttributes(attribute.String("http.request.method", r.Method)),
 			)
 			sw := &statusResponseWriter{
 				ResponseWriter: w,
 				statusCode:     http.StatusOK,
 			}
 			defer func() {
+				if rctx := chi.RouteContext(r.Context()); rctx != nil {
+					if pattern := strings.TrimSpace(rctx.RoutePattern()); pattern != "" {
+						span.SetName("HTTP " + r.Method + " " + pattern)
+						span.SetAttributes(attribute.String("http.route", pattern))
+					}
+				}
 				span.SetAttributes(attribute.Int("http.response.status_code", sw.statusCode))
 				if sw.statusCode >= http.StatusInternalServerError {
 					span.SetStatus(codes.Error, http.StatusText(sw.statusCode))
@@ -173,7 +184,7 @@ func TraceMiddlewareWithTracer(tracer trace.Tracer) func(http.Handler) http.Hand
 				tc = TraceContext{
 					TraceID:     spanContext.TraceID().String(),
 					SpanID:      spanContext.SpanID().String(),
-					TraceParent: fmt.Sprintf("00-%s-%s-01", spanContext.TraceID(), spanContext.SpanID()),
+					TraceParent: fmt.Sprintf("00-%s-%s-%s", spanContext.TraceID(), spanContext.SpanID(), spanContext.TraceFlags()),
 				}
 			}
 			sw.Header().Set("X-Trace-Id", tc.TraceID)
@@ -187,9 +198,16 @@ func TraceMiddlewareWithTracer(tracer trace.Tracer) func(http.Handler) http.Hand
 	}
 }
 
-// InjectTraceHeaders injects W3C traceparent and X-Trace-Id from ctx into outgoing http.Request headers.
+// InjectTraceHeaders injects W3C traceparent and X-Trace-Id from ctx into outgoing http.Request headers
+// using the official OpenTelemetry W3C TraceContext propagator when an active span exists,
+// falling back to GoRoute's correlation TraceContext when tracing is no-op.
 func InjectTraceHeaders(ctx context.Context, req *http.Request) {
-	if req == nil {
+	if req == nil || ctx == nil {
+		return
+	}
+	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
+		propagation.TraceContext{}.Inject(ctx, propagation.HeaderCarrier(req.Header))
+		req.Header.Set("X-Trace-Id", sc.TraceID().String())
 		return
 	}
 	tc := TraceFromContext(ctx)
@@ -204,7 +222,7 @@ func sanitizeTraceRequestID(raw string) string {
 	if raw == "" || len(raw) > 128 {
 		return ""
 	}
-	for i := 0; i < len(raw); i++ {
+	for i := range len(raw) {
 		c := raw[i]
 		isValid := (c >= 'a' && c <= 'z') ||
 			(c >= 'A' && c <= 'Z') ||

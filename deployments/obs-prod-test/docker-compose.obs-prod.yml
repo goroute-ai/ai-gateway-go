@@ -1,0 +1,201 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    networks:
+      - data_net
+    environment:
+      POSTGRES_USER: gateway
+      POSTGRES_PASSWORD: obs-prod-pg-password-2026
+      POSTGRES_DB: aigateway
+    volumes:
+      - ../../.tmp/obs-prod-certs:/certs:ro
+    tmpfs:
+      - /var/lib/postgresql/data
+    command:
+      - sh
+      - -c
+      - |
+        mkdir -p /tmp/pg-ssl &&
+        cp /certs/server.crt /tmp/pg-ssl/server.crt &&
+        cp /certs/server.key /tmp/pg-ssl/server.key &&
+        chown -R postgres:postgres /tmp/pg-ssl &&
+        chmod 600 /tmp/pg-ssl/server.key &&
+        exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/tmp/pg-ssl/server.crt -c ssl_key_file=/tmp/pg-ssl/server.key
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gateway -d aigateway"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:8-alpine
+    networks:
+      - data_net
+    command: ["redis-server", "--requirepass", "obs-prod-redis-pass-2026", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "obs-prod-redis-pass-2026", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.120.0
+    networks:
+      - edge_net
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./otel-collector-obs.yaml:/etc/otelcol-contrib/config.yaml:ro
+      - ../../.tmp/obs-prod-otel:/var/otel-out
+
+  obs-test-fixtures:
+    build:
+      context: ../..
+      dockerfile: deployments/obs-prod-test/Dockerfile.fixtures
+    image: goroute-obs-test-fixtures:obs-prod-test
+    networks:
+      - edge_net
+    user: "65532:65532"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      FIXTURES_ADDR: ":8080"
+      OBS_SIEM_HMAC_SECRET: "obs-prod-siem-hmac-secret-2026"
+
+  caddy:
+    image: caddy:2-alpine
+    networks:
+      edge_net:
+        ipv4_address: 172.29.10.200
+    ports:
+      - "127.0.0.1:20443:20443"
+      - "127.0.0.1:20444:20444"
+      - "127.0.0.1:20445:20445"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../../.tmp/obs-prod-certs:/certs:ro
+    depends_on:
+      - otel-collector
+      - obs-test-fixtures
+
+  gateway-migrate:
+    build:
+      context: ../..
+      dockerfile: deployments/Dockerfile
+    image: goroute-ai-gateway:obs-prod-test
+    networks:
+      - data_net
+    user: "65532:65532"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    command: ["-config", "/etc/goroute/config.yaml", "-migrate-only"]
+    environment:
+      SSL_CERT_FILE: /certs/ca-bundle.crt
+      GATEWAY_POSTGRES_DSN: "postgres://gateway:obs-prod-pg-password-2026@postgres:5432/aigateway?sslmode=verify-full"
+      GATEWAY_REDIS_PASS: "obs-prod-redis-pass-2026"
+      GATEWAY_MASTER_ADMIN_KEY: "sk-gw-obs-prod-master-admin-key-2026-secure"
+      GATEWAY_MASTER_ENCRYPTION_KEY: "c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2"
+      GATEWAY_SESSION_SECRET: "obs-prod-hmac-session-secret-0123456789abcdef0123456789abcdef"
+      OBS_OTEL_AUTH_HEADER: "Bearer obs-prod-otel-collector-token-2026"
+      OBS_SIEM_HMAC_SECRET: "obs-prod-siem-hmac-secret-2026"
+    volumes:
+      - ./config.obs-prod.yaml:/etc/goroute/config.yaml:ro
+      - ../../.tmp/obs-prod-certs:/certs:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  ai-gateway-1:
+    image: goroute-ai-gateway:obs-prod-test
+    networks:
+      - edge_net
+      - data_net
+    extra_hosts:
+      - "gateway.prod.test:172.29.10.200"
+      - "fixtures.prod.test:172.29.10.200"
+      - "otel.prod.test:172.29.10.200"
+    user: "65532:65532"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    command: ["-config", "/etc/goroute/config.yaml"]
+    environment:
+      SSL_CERT_FILE: /certs/ca-bundle.crt
+      GATEWAY_POSTGRES_DSN: "postgres://gateway:obs-prod-pg-password-2026@postgres:5432/aigateway?sslmode=verify-full"
+      GATEWAY_REDIS_PASS: "obs-prod-redis-pass-2026"
+      GATEWAY_MASTER_ADMIN_KEY: "sk-gw-obs-prod-master-admin-key-2026-secure"
+      GATEWAY_MASTER_ENCRYPTION_KEY: "c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2"
+      GATEWAY_SESSION_SECRET: "obs-prod-hmac-session-secret-0123456789abcdef0123456789abcdef"
+      OBS_OTEL_AUTH_HEADER: "Bearer obs-prod-otel-collector-token-2026"
+      OBS_SIEM_HMAC_SECRET: "obs-prod-siem-hmac-secret-2026"
+      GATEWAY_OTEL_ENABLED: "${GATEWAY_OTEL_ENABLED:-true}"
+    volumes:
+      - ./config.obs-prod.yaml:/etc/goroute/config.yaml:ro
+      - ../../.tmp/obs-prod-certs:/certs:ro
+    depends_on:
+      gateway-migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      caddy:
+        condition: service_started
+
+  ai-gateway-2:
+    image: goroute-ai-gateway:obs-prod-test
+    networks:
+      - edge_net
+      - data_net
+    extra_hosts:
+      - "gateway.prod.test:172.29.10.200"
+      - "fixtures.prod.test:172.29.10.200"
+      - "otel.prod.test:172.29.10.200"
+    user: "65532:65532"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    command: ["-config", "/etc/goroute/config.yaml"]
+    environment:
+      SSL_CERT_FILE: /certs/ca-bundle.crt
+      GATEWAY_POSTGRES_DSN: "postgres://gateway:obs-prod-pg-password-2026@postgres:5432/aigateway?sslmode=verify-full"
+      GATEWAY_REDIS_PASS: "obs-prod-redis-pass-2026"
+      GATEWAY_MASTER_ADMIN_KEY: "sk-gw-obs-prod-master-admin-key-2026-secure"
+      GATEWAY_MASTER_ENCRYPTION_KEY: "c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2"
+      GATEWAY_SESSION_SECRET: "obs-prod-hmac-session-secret-0123456789abcdef0123456789abcdef"
+      OBS_OTEL_AUTH_HEADER: "Bearer obs-prod-otel-collector-token-2026"
+      OBS_SIEM_HMAC_SECRET: "obs-prod-siem-hmac-secret-2026"
+      GATEWAY_OTEL_ENABLED: "${GATEWAY_OTEL_ENABLED:-true}"
+    volumes:
+      - ./config.obs-prod.yaml:/etc/goroute/config.yaml:ro
+      - ../../.tmp/obs-prod-certs:/certs:ro
+    depends_on:
+      gateway-migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      caddy:
+        condition: service_started
+
+networks:
+  edge_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.29.10.0/24
+  data_net:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.29.20.0/24

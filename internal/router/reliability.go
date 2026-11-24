@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -27,8 +28,6 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -81,6 +80,8 @@ type ReliabilityManager struct {
 	healthMon            *health.Monitor
 	collector            *observability.Collector
 	tracer               trace.Tracer
+	captureContent       bool
+	costCalculator       func(*domain.GlobalModel, *domain.TokenUsage) int64
 	cfg                  config.RouterConfig
 	mu                   sync.Mutex
 	cooldowns            map[string]*cooldownState
@@ -171,7 +172,57 @@ func (rm *ReliabilityManager) SetCollector(col *observability.Collector) {
 
 // SetTracer attaches an OpenTelemetry Tracer to ReliabilityManager for upstream client spans.
 func (rm *ReliabilityManager) SetTracer(t trace.Tracer) {
+	if rm == nil {
+		return
+	}
+	rm.collabMu.Lock()
 	rm.tracer = t
+	rm.collabMu.Unlock()
+}
+
+// SetCaptureContent toggles opt-in scrubbed prompt/completion capture on GenAI client spans
+// (corresponds to otel.traces.capture_content; defaults to false).
+func (rm *ReliabilityManager) SetCaptureContent(enabled bool) {
+	if rm == nil {
+		return
+	}
+	rm.collabMu.Lock()
+	rm.captureContent = enabled
+	rm.collabMu.Unlock()
+}
+
+// SetCostCalculator registers an exact integer micro-dollar cost calculator (e.g. finops.CalculateCost)
+// used to populate goroute.cost_micros on finished GenAI client spans without creating package cycles.
+func (rm *ReliabilityManager) SetCostCalculator(fn func(*domain.GlobalModel, *domain.TokenUsage) int64) {
+	if rm == nil {
+		return
+	}
+	rm.collabMu.Lock()
+	rm.costCalculator = fn
+	rm.collabMu.Unlock()
+}
+
+func (rm *ReliabilityManager) shouldCaptureContent() bool {
+	if rm == nil {
+		return false
+	}
+	rm.collabMu.RLock()
+	v := rm.captureContent
+	rm.collabMu.RUnlock()
+	return v
+}
+
+func (rm *ReliabilityManager) calculateSpanCostMicros(dep *domain.Deployment, usage *domain.TokenUsage) int64 {
+	if rm == nil || dep == nil || dep.GlobalModel == nil || usage == nil {
+		return 0
+	}
+	rm.collabMu.RLock()
+	fn := rm.costCalculator
+	rm.collabMu.RUnlock()
+	if fn == nil {
+		return 0
+	}
+	return fn(dep.GlobalModel, usage)
 }
 
 // SetRoutingPlugins replaces the registered Stage 2 RoutingPlugins.
@@ -422,40 +473,258 @@ func (rm *ReliabilityManager) tracerFor(ctx context.Context) trace.Tracer {
 	return otel.Tracer("github.com/goroute-ai/ai-gateway-go/router")
 }
 
-func (rm *ReliabilityManager) startGenAIClientSpan(ctx context.Context, operation string, dep *domain.Deployment) (context.Context, trace.Span) {
-	var provider, model string
-	if dep != nil && dep.GlobalModel != nil {
-		provider = string(dep.GlobalModel.Provider)
-		model = dep.GlobalModel.ModelName
-	}
-	attrs := []attribute.KeyValue{
-		attribute.String("gen_ai.operation.name", operation),
-	}
-	if provider != "" {
-		attrs = append(attrs, attribute.String("gen_ai.system", provider))
-	}
-	if model != "" {
-		attrs = append(attrs, attribute.String("gen_ai.request.model", model))
-	}
-	return rm.tracerFor(ctx).Start(ctx, "gen_ai.client",
-		trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(attrs...),
-	)
+type genAISpanMetaKey struct{}
+
+type genAISpanMeta struct {
+	operation     string
+	provider      string
+	model         string
+	dep           *domain.Deployment
+	scrubbedInput string
+	startedAt     time.Time
+	ttft          time.Duration
 }
 
-func finishGenAIClientSpan(span trace.Span, usage *domain.TokenUsage, err error) {
-	if usage != nil {
-		span.SetAttributes(
-			attribute.Int("gen_ai.usage.input_tokens", usage.PromptTokens),
-			attribute.Int("gen_ai.usage.output_tokens", usage.CompletionTokens),
-			attribute.Int("gen_ai.usage.total_tokens", usage.TotalTokens),
-		)
+type genAIClientStartOpts struct {
+	temperature *float64
+	topP        *float64
+	maxTokens   *int
+	inputText   string
+}
+
+type genAIClientFinishOpts struct {
+	responseModel     string
+	responseID        string
+	finishReasons     []string
+	usage             *domain.TokenUsage
+	retryCount        int
+	fallbackAttempted bool
+	outputText        string
+	err               error
+}
+
+func (rm *ReliabilityManager) startGenAIClientSpan(ctx context.Context, operation string, dep *domain.Deployment, opts ...genAIClientStartOpts) (context.Context, trace.Span) {
+	var provider, model, depID, serverAddr string
+	if dep != nil {
+		depID = dep.ID
+		if dep.GlobalModel != nil {
+			provider = string(dep.GlobalModel.Provider)
+			model = dep.GlobalModel.ModelName
+		}
+		if dep.Credential != nil {
+			serverAddr = dep.Credential.BaseURL
+		}
 	}
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
+	var orgID string
+	if idCtx := auth.IdentityFromContext(ctx); idCtx != nil {
+		orgID = idCtx.OrgID
 	}
-	span.End()
+	var opt genAIClientStartOpts
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+	var scrubbedInput string
+	if rm.shouldCaptureContent() && opt.inputText != "" {
+		scrubbedInput = logger.ScrubSecrets(opt.inputText)
+	}
+	spanCtx, span := observability.StartGenAISpan(ctx, rm.tracerFor(ctx), observability.GenAISpanStart{
+		Operation:     operation,
+		Provider:      provider,
+		RequestModel:  model,
+		ServerAddress: serverAddr,
+		DeploymentID:  depID,
+		OrgID:         orgID,
+		Temperature:   opt.temperature,
+		TopP:          opt.topP,
+		MaxTokens:     opt.maxTokens,
+	})
+	meta := &genAISpanMeta{
+		operation:     operation,
+		provider:      provider,
+		model:         model,
+		dep:           dep,
+		scrubbedInput: scrubbedInput,
+		startedAt:     time.Now(),
+	}
+	return context.WithValue(spanCtx, genAISpanMetaKey{}, meta), span
+}
+
+func (rm *ReliabilityManager) finishGenAIClientSpan(spanCtx context.Context, span trace.Span, usage *domain.TokenUsage, err error) {
+	rm.finishGenAIClientSpanWithOpts(spanCtx, span, genAIClientFinishOpts{
+		usage: usage,
+		err:   err,
+	})
+}
+
+func (rm *ReliabilityManager) finishGenAIClientSpanWithOpts(spanCtx context.Context, span trace.Span, fin genAIClientFinishOpts) {
+	var inTok, outTok, cachedTok int64
+	if fin.usage != nil {
+		inTok = int64(fin.usage.PromptTokens)
+		outTok = int64(fin.usage.CompletionTokens)
+		cachedTok = int64(fin.usage.CachedPromptTokens)
+	}
+	var errType string
+	if fin.err != nil {
+		var gwErr *domain.GatewayError
+		if errors.As(fin.err, &gwErr) && gwErr.Code != "" {
+			errType = gwErr.Code
+		} else {
+			errType = "upstream_error"
+		}
+	}
+	var op, provider, model, scrubbedInput string
+	var dep *domain.Deployment
+	var dur, ttft time.Duration
+	if spanCtx != nil {
+		if m, ok := spanCtx.Value(genAISpanMetaKey{}).(*genAISpanMeta); ok && m != nil {
+			op = m.operation
+			provider = m.provider
+			model = m.model
+			dep = m.dep
+			scrubbedInput = m.scrubbedInput
+			dur = time.Since(m.startedAt)
+			ttft = m.ttft
+		}
+	}
+	respModel := strings.TrimSpace(fin.responseModel)
+	if respModel == "" {
+		respModel = model
+	}
+	capture := rm.shouldCaptureContent()
+	var scrubbedOutput string
+	if capture && fin.outputText != "" {
+		scrubbedOutput = logger.ScrubSecrets(fin.outputText)
+	}
+	costMicros := rm.calculateSpanCostMicros(dep, fin.usage)
+	observability.FinishGenAISpan(span, observability.GenAISpanEnd{
+		ResponseModel:     respModel,
+		ResponseID:        fin.responseID,
+		FinishReasons:     fin.finishReasons,
+		InputTokens:       inTok,
+		OutputTokens:      outTok,
+		CachedInputTokens: cachedTok,
+		CostMicros:        costMicros,
+		RetryCount:        fin.retryCount,
+		FallbackAttempted: fin.fallbackAttempted,
+		Err:               fin.err,
+		ErrorType:         errType,
+		CaptureContent:    capture,
+		ScrubbedInput:     scrubbedInput,
+		ScrubbedOutput:    scrubbedOutput,
+	})
+	if rm != nil && rm.collector != nil {
+		if inst := rm.collector.Instruments(); inst != nil && op != "" {
+			inst.RecordGenAIOperation(spanCtx, observability.GenAIOperationObservation{
+				Operation:    op,
+				Provider:     provider,
+				RequestModel: model,
+				ErrorType:    errType,
+				Duration:     dur,
+				TTFT:         ttft,
+				InputTokens:  inTok,
+				OutputTokens: outTok,
+			})
+		}
+	}
+}
+
+func canonicalMessageText(m domain.CanonicalMessage) string {
+	if m.Content != "" {
+		return m.Content
+	}
+	if len(m.Parts) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, p := range m.Parts {
+		if p.Text != "" {
+			if b.Len() > 0 {
+				b.WriteByte('\n')
+			}
+			b.WriteString(p.Text)
+		}
+	}
+	return b.String()
+}
+
+func buildChatStartOpts(req *domain.CanonicalChatRequest, captureContent bool) genAIClientStartOpts {
+	if req == nil {
+		return genAIClientStartOpts{}
+	}
+	opts := genAIClientStartOpts{
+		temperature: req.Temperature,
+		topP:        req.TopP,
+		maxTokens:   req.MaxTokens,
+	}
+	if captureContent && len(req.Messages) > 0 {
+		type spanMsg struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		}
+		msgs := make([]spanMsg, 0, len(req.Messages))
+		for _, m := range req.Messages {
+			txt := canonicalMessageText(m)
+			if txt == "" {
+				continue
+			}
+			msgs = append(msgs, spanMsg{Role: m.Role, Content: txt})
+		}
+		if len(msgs) > 0 {
+			if raw, err := json.Marshal(msgs); err == nil {
+				opts.inputText = string(raw)
+			}
+		}
+	}
+	return opts
+}
+
+func buildChatFinishOpts(resp *domain.CanonicalChatResponse, retryCount int, fallbackAttempted, captureContent bool, callErr error) genAIClientFinishOpts {
+	fin := genAIClientFinishOpts{
+		retryCount:        retryCount,
+		fallbackAttempted: fallbackAttempted,
+		err:               callErr,
+	}
+	if resp == nil {
+		return fin
+	}
+	fin.responseModel = resp.Model
+	fin.responseID = resp.ID
+	fin.usage = &resp.Usage
+	type spanOutMsg struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}
+	var outMsgs []spanOutMsg
+	for _, ch := range resp.Choices {
+		if fr := strings.TrimSpace(ch.FinishReason); fr != "" && !slices.Contains(fin.finishReasons, fr) {
+			fin.finishReasons = append(fin.finishReasons, fr)
+		}
+		if captureContent {
+			if txt := canonicalMessageText(ch.Message); txt != "" {
+				role := ch.Message.Role
+				if role == "" {
+					role = "assistant"
+				}
+				outMsgs = append(outMsgs, spanOutMsg{Role: role, Content: txt})
+			}
+		}
+	}
+	if captureContent && len(outMsgs) > 0 {
+		if raw, err := json.Marshal(outMsgs); err == nil {
+			fin.outputText = string(raw)
+		}
+	}
+	return fin
+}
+
+func recordGenAISpanFirstToken(spanCtx context.Context, span trace.Span) {
+	if spanCtx == nil {
+		return
+	}
+	if m, ok := spanCtx.Value(genAISpanMetaKey{}).(*genAISpanMeta); ok && m != nil && m.ttft == 0 {
+		m.ttft = time.Since(m.startedAt)
+		observability.RecordGenAIFirstToken(span, m.ttft)
+	}
 }
 
 func withDeploymentTimeout(ctx context.Context, dep *domain.Deployment) (context.Context, context.CancelFunc) {

@@ -2322,11 +2322,40 @@ func sanitizeRuntimeConfig(cfg *config.Config) map[string]any {
 			"format":     cfg.Logging.Format,
 			"add_source": cfg.Logging.AddSource,
 		},
+		"otel": map[string]any{
+			"enabled":                cfg.OTel.Enabled,
+			"endpoint":               redactURLPassword(cfg.OTel.Endpoint),
+			"service_name":           cfg.OTel.ServiceName,
+			"service_version":        cfg.OTel.ServiceVersion,
+			"deployment_environment": cfg.OTel.DeploymentEnvironment,
+			"headers":                redactHeaders(cfg.OTel.Headers),
+			"traces": map[string]any{
+				"enabled":         cfg.OTel.TracesEnabled(),
+				"endpoint":        redactURLPassword(cfg.OTel.Traces.Endpoint),
+				"sampler":         cfg.OTel.Traces.Sampler,
+				"sampler_arg":     cfg.OTel.Traces.SamplerArg,
+				"capture_content": cfg.OTel.Traces.CaptureContent,
+			},
+			"metrics": map[string]any{
+				"enabled":         cfg.OTel.MetricsEnabled(),
+				"endpoint":        redactURLPassword(cfg.OTel.Metrics.Endpoint),
+				"export_interval": cfg.OTel.Metrics.ExportInterval.String(),
+			},
+			"logs": map[string]any{
+				"enabled":  cfg.OTel.LogsEnabled(),
+				"endpoint": redactURLPassword(cfg.OTel.Logs.Endpoint),
+			},
+		},
+		"health": map[string]any{
+			"probe_enabled":  cfg.Health.IsProbeEnabled(),
+			"probe_interval": cfg.Health.ProbeInterval.String(),
+			"probe_timeout":  cfg.Health.ProbeTimeout.String(),
+		},
 		"tracing": map[string]any{
-			"enabled":       cfg.Tracing.Enabled,
-			"otlp_endpoint": redactURLPassword(cfg.Tracing.OTLPEndpoint),
-			"service_name":  cfg.Tracing.ServiceName,
-			"headers":       redactHeaders(cfg.Tracing.Headers),
+			"enabled":       cfg.OTel.TracesEnabled(),
+			"otlp_endpoint": redactURLPassword(cfg.OTel.ResolvedTracesEndpoint()),
+			"service_name":  cfg.OTel.ServiceName,
+			"headers":       redactHeaders(cfg.OTel.Headers),
 		},
 		"security": map[string]any{
 			"outbound_ssrf": map[string]any{

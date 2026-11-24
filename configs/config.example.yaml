@@ -29,11 +29,40 @@ logging:
   format: "json"             # "json" for structured production logging, "text" for local dev
   add_source: false          # Attach source file and line number to log entries
 
-tracing:
-  enabled: false             # Enable OpenTelemetry distributed tracing and OTLP metrics export
-  otlp_endpoint: ""          # Optional OTLP/HTTP endpoint, for example https://otel-collector:4318/v1/traces
+# OpenTelemetry (OTLP/HTTP) — the sole telemetry export protocol supported in v0.1 LTS.
+# Exports Traces, Metrics, and opt-in post-scrub Logs using GenAI Semantic Conventions (gen_ai.*) and dot-separated gateway.* metrics.
+# Connect any external observability platform on top of OTLP/HTTP (directly or via an OpenTelemetry Collector).
+otel:
+  enabled: false             # Enable OTLP/HTTP telemetry export (env: GATEWAY_OTEL_ENABLED)
+  endpoint: ""               # Base OTLP/HTTP collector URL, e.g. https://otel-collector:4318 (env: OTEL_EXPORTER_OTLP_ENDPOINT / GATEWAY_OTEL_ENDPOINT)
   service_name: "ai-gateway-go"
-  headers: {}                # Optional exporter headers, use os.environ/NAME for secret values
+  headers: {}                # Optional exporter headers; supports os.environ/NAME secret refs
+  traces:
+    enabled: true            # Export OTLP /v1/traces when otel.enabled is true
+    sampler: "parentbased_always_on" # always_on | always_off | traceidratio | parentbased_always_on | parentbased_always_off | parentbased_traceidratio
+    sampler_arg: 1.0         # Ratio in [0.0, 1.0] for traceidratio samplers
+    capture_content: false   # Privacy-first default: never export raw prompts/completions on spans unless explicitly enabled
+  metrics:
+    enabled: true            # Export OTLP /v1/metrics when otel.enabled is true
+    export_interval: 60s     # Periodic push interval (env: OTEL_METRIC_EXPORT_INTERVAL in ms or GATEWAY_OTEL_METRICS_EXPORT_INTERVAL)
+  logs:
+    enabled: false           # Opt-in OTLP /v1/logs export via otelslog (always runs strictly AFTER secret/PII scrubbing)
+
+health:
+  probe_enabled: true        # Active background upstream deployment ListModels liveness probe
+  probe_interval: 60s
+  probe_timeout: 5s
+
+audit:
+  siem_webhook:
+    enabled: false           # Async batched HMAC-SHA256 signed audit log export (env: GATEWAY_AUDIT_SIEM_*)
+    url: ""                  # HTTPS SIEM webhook endpoint (SSRF-protected)
+    secret: ""               # Optional HMAC-SHA256 signing secret (supports os.environ/...)
+    auth_header: ""          # Optional Authorization header (supports os.environ/...)
+    batch_size: 50
+    flush_interval: 5s
+    timeout: 5s
+    max_queue_size: 4096
 
 storage:
   mode: "postgres"           # "postgres" (recommended for production) or "memory"

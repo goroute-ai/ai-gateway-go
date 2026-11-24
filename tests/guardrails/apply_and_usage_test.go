@@ -358,7 +358,7 @@ func TestApplyGuardrailsEndpoint_AllowBlockModifyToolCallsRBACAndUsage(t *testin
 		assert.Equal(t, true, out["blocked"])
 	})
 
-	t.Run("usage_rollup_integer_cost_micros_and_prometheus_metrics", func(t *testing.T) {
+	t.Run("usage_rollup_integer_cost_micros_and_observability_metrics", func(t *testing.T) {
 		var usage storage.GuardrailUsageSummary
 		resp, raw := lab.doJSON(http.MethodGet, "/admin/v1/organizations/"+lab.orgID+"/guardrail-usage", lab.adminHeaders, nil, &usage)
 		require.Equal(t, http.StatusOK, resp.StatusCode, string(raw))
@@ -381,16 +381,15 @@ func TestApplyGuardrailsEndpoint_AllowBlockModifyToolCallsRBACAndUsage(t *testin
 		assert.Equal(t, int64(0), org2Usage.Totals.Evaluations)
 		assert.Equal(t, int64(0), org2Usage.TotalCostMicros)
 
-		// Verify Prometheus /metrics endpoint exposes guardrail metrics
-		mReq := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+		// Verify /admin/v1/observability/metrics JSON exposes guardrail telemetry summary
+		mReq := httptest.NewRequest(http.MethodGet, "/admin/v1/observability/metrics", nil)
 		mReq.Header.Set("Authorization", lab.adminHeaders["Authorization"])
 		mRec := httptest.NewRecorder()
 		lab.gw.Handler().ServeHTTP(mRec, mReq)
 		require.Equal(t, http.StatusOK, mRec.Code)
 		metricsBody := mRec.Body.String()
-		assert.Contains(t, metricsBody, `gateway_guardrail_evaluations_total{guardrail="pii-redactor"`)
-		assert.Contains(t, metricsBody, `gateway_guardrail_errors_total{guardrail="pii-redactor"`)
-		assert.Contains(t, metricsBody, `gateway_guardrail_duration_ms_bucket{guardrail="pii-redactor"`)
+		assert.Contains(t, metricsBody, `"guardrail":"pii-redactor"`)
+		assert.Contains(t, metricsBody, `"histogram_buckets"`)
 	})
 }
 

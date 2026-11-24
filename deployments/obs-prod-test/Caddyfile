@@ -1,0 +1,51 @@
+{
+  admin off
+  auto_https off
+}
+
+https://gateway.prod.test:20443, https://127.0.0.1:20443 {
+  tls /certs/server.crt /certs/server.key
+  reverse_proxy ai-gateway-1:8080 ai-gateway-2:8080 {
+    lb_policy round_robin
+    header_up Host {http.request.host}
+    header_up X-Forwarded-Proto https
+    header_up X-Forwarded-Host {http.request.host}
+    header_up X-Forwarded-For {http.request.remote.host}
+  }
+}
+
+https://gateway.prod.test:20444 {
+  tls /certs/server.crt /certs/server.key
+  reverse_proxy ai-gateway-1:8080 {
+    header_up Host gateway.prod.test:20443
+    header_up X-Forwarded-Proto https
+    header_up X-Forwarded-Host gateway.prod.test:20443
+    header_up X-Forwarded-For {http.request.remote.host}
+  }
+}
+
+https://gateway.prod.test:20445 {
+  tls /certs/server.crt /certs/server.key
+  reverse_proxy ai-gateway-2:8080 {
+    header_up Host gateway.prod.test:20443
+    header_up X-Forwarded-Proto https
+    header_up X-Forwarded-Host gateway.prod.test:20443
+    header_up X-Forwarded-For {http.request.remote.host}
+  }
+}
+
+https://fixtures.prod.test:20443 {
+  tls /certs/server.crt /certs/server.key
+  reverse_proxy obs-test-fixtures:8080 {
+    header_up Host {http.request.host}
+    header_up X-Forwarded-Proto https
+  }
+}
+
+https://otel.prod.test:20443 {
+  tls /certs/server.crt /certs/server.key
+  reverse_proxy otel-collector:4318 {
+    header_up Host {http.request.host}
+    header_up X-Forwarded-Proto https
+  }
+}

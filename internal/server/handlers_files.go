@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/logger"
 )
 
 const maxFileUploadBytes = 512 * 1024 * 1024 // 512 MB
@@ -184,6 +185,10 @@ func (s *GatewayServer) handleUploadFile(w http.ResponseWriter, r *http.Request)
 	if purpose == "" {
 		purpose = "batch"
 	}
+	logger.SetInferenceMeta(r.Context(), logger.InferenceMeta{
+		Provider: "files",
+		Model:    purpose,
+	})
 
 	// Re-check quota with actual part size when Content-Length was unknown/chunked.
 	if reservedBytes == 0 && header.Size > 0 {

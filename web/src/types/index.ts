@@ -457,8 +457,35 @@ export interface ProviderTelemetry {
   total_cost_micros: number;
 }
 
+export interface DeploymentTelemetry {
+  deployment_id: string;
+  deployment_name: string;
+  provider: string;
+  model: string;
+  total_requests: number;
+  error_count: number;
+  error_rate: number;
+  avg_latency_ms: number;
+  p95_latency_ms: number;
+  avg_ttft_ms: number;
+}
+
+export interface GuardrailMetricSummary {
+  guardrail: string;
+  hook: string;
+  evaluations: number;
+  errors: number;
+  decision_counts: Record<string, number>;
+  duration_sum_ms: number;
+  duration_count: number;
+  histogram_buckets: number[];
+  histogram_bound_ms: number[];
+}
+
 export interface TelemetrySnapshot {
   generated_at: string;
+  otel_enabled?: boolean;
+  otel_signals?: string[];
   total_requests: number;
   total_errors: number;
   global_error_rate: number;
@@ -483,7 +510,29 @@ export interface TelemetrySnapshot {
   cache_entries?: number;
   cache_evictions?: number;
   cache_hit_rate: number;
+  rate_limit_rejections?: number;
+  guardrail_blocks?: number;
+  guardrail_redactions?: number;
+  spend_redis_drift_total?: number;
+  finops_outbox_pending?: number;
+  finops_outbox_dead_letter?: number;
+  finops_outbox_backpressure?: number;
+  audit_siem_delivered?: number;
+  audit_siem_failed?: number;
+  audit_siem_dropped?: number;
+  routing_signal_degraded_total?: number;
+  redis_cb_state?: number;
+  stream_requests?: number;
+  stream_errors?: number;
+  stream_duration_sum_ms?: number;
+  stream_duration_count?: number;
+  stream_ttft_sum_ms?: number;
+  stream_ttft_count?: number;
+  slowest_provider?: string;
+  highest_failure_deployment?: string;
   providers?: Record<string, ProviderTelemetry>;
+  deployments?: Record<string, DeploymentTelemetry>;
+  guardrail_metrics?: GuardrailMetricSummary[];
 }
 
 export interface SpendSummary {
@@ -510,9 +559,18 @@ export interface TokenUsage {
 export interface SpendEvent {
   id: string;
   request_id: string;
+  trace_id?: string;
+  protocol?: string;
+  protocol_target?: string;
   org_id: string;
+  team_id?: string;
+  project_id?: string;
+  user_id?: string;
   virtual_key_id: string;
+  end_user_id?: string;
+  tags?: string[];
   provider: string;
+  deployment_id?: string;
   requested_model: string;
   resolved_model: string;
   usage?: TokenUsage;
@@ -523,6 +581,12 @@ export interface SpendEvent {
   cache_hit?: boolean;
   pricing_status?: string;
   latency_ms: number;
+  ttft_ms?: number;
+  status_code?: number;
+  is_stream?: boolean;
+  fallback_attempted?: boolean;
+  retry_count?: number;
+  error_message?: string;
   created_at: string;
 }
 
@@ -945,7 +1009,9 @@ export interface GatewayConfig {
   guardrails?: Record<string, any>;
   router?: Record<string, any>;
   routing?: Record<string, any>;
-  observability?: Record<string, any>;
+  otel?: Record<string, any>;
+  health?: Record<string, any>;
+  audit?: Record<string, any>;
   logging?: Record<string, any>;
   tracing?: Record<string, any>;
   [key: string]: any;

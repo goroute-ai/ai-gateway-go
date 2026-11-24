@@ -16,7 +16,10 @@ import {
   Trash2,
 } from 'lucide-react';
 
-export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onNavigateToPlayground }) => {
+export const OverviewView: React.FC<{
+  onNavigateToPlayground: () => void;
+  onNavigateToConfig?: () => void;
+}> = ({ onNavigateToPlayground, onNavigateToConfig }) => {
   const { adminKey, isUnlocked, activeOrgId, operator } = useAuth();
   const isPlatformAdmin = operator?.role === 'platform_admin';
   const queryClient = useQueryClient();
@@ -91,7 +94,12 @@ export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({
           </h1>
           <p className="text-xs text-brand-muted mt-1 flex items-center gap-1.5">
             <Activity className="w-3.5 h-3.5 text-accent-primary animate-pulse" />
-            Live in-process reservoir snapshot generated since gateway launch
+            Live sliding-window pod snapshot (latest 1,024 samples) · Cluster telemetry via OTLP
+            {telemetry?.generated_at && (
+              <span className="font-mono text-[10px]">
+                · Updated {new Date(telemetry.generated_at).toLocaleTimeString()}
+              </span>
+            )}
           </p>
         </div>
 
@@ -179,7 +187,7 @@ export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({
           </div>
           <div className="text-[11px] text-brand-muted mt-1 flex items-center justify-between font-mono">
             <span>Avg: {(telemetry?.avg_latency_ms ?? 0).toFixed(1)} ms</span>
-            <span>P50: {telemetry?.p50_latency_ms ?? 0} ms</span>
+            <span>P50: {telemetry?.p50_latency_ms ?? 0} · P99: {telemetry?.p99_latency_ms ?? 0} ms</span>
           </div>
         </div>
 
@@ -191,8 +199,15 @@ export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({
           <div className="text-2xl font-bold font-mono text-brand-title tracking-tight">
             {isTelemetryLoading ? '...' : `${telemetry?.p95_routing_overhead_micros ?? 0} µs`}
           </div>
-          <div className="text-[11px] text-status-success font-mono mt-1">
-            Avg: {(telemetry?.avg_routing_overhead_micros ?? 0).toFixed(1)} µs (&lt; 0.1ms)
+          <div className="text-[11px] text-brand-muted font-mono mt-1 flex items-center justify-between">
+            <span>Avg: {(telemetry?.avg_routing_overhead_micros ?? 0).toFixed(1)} µs</span>
+            {(telemetry?.routing_signal_degraded_total ?? 0) > 0 ? (
+              <span className="text-status-warning font-semibold">
+                Degraded: {telemetry?.routing_signal_degraded_total}
+              </span>
+            ) : (
+              <span>Fallback: {((telemetry?.fallback_rate ?? 0) * 100).toFixed(1)}%</span>
+            )}
           </div>
         </div>
 
@@ -242,7 +257,10 @@ export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({
               {telemetry?.cache_status === 'degraded' ? (
                 <span className="text-status-warning font-semibold">Cache Redis degraded (fail-open)</span>
               ) : telemetry?.cache_type === 'local' ? (
-                <span>Entries: {telemetry?.cache_entries ?? 0}</span>
+                <span>
+                  Entries: {telemetry?.cache_entries ?? 0}
+                  {(telemetry?.cache_evictions ?? 0) > 0 ? ` · Evict: ${telemetry?.cache_evictions}` : ''}
+                </span>
               ) : (
                 <span />
               )}
@@ -254,101 +272,330 @@ export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({
         </div>
       </div>
 
-      {/* Deployment Health Reports Grid */}
-      <div className="rounded-xl border border-border-subtle bg-surface-base/90 overflow-hidden">
-        <div className="px-6 py-4 border-b border-border-subtle flex items-center justify-between bg-surface-elevated/30">
-          <div>
-            <h2 className="text-sm font-semibold text-brand-title">Upstream Deployment Health Status</h2>
-            <p className="text-xs text-brand-muted mt-0.5">
-              Synthetic probe health reports from background liveness monitor
-            </p>
-          </div>
-          <div className="text-xs text-brand-muted font-mono">
-            Deployments monitored: {healthData?.data?.length ?? 0}
-          </div>
+      {/* OTLP & Platform Resilience Status Strip */}
+      <div className="p-4 rounded-xl border border-border-subtle bg-surface-base/80 flex flex-wrap items-center justify-between gap-3 text-xs">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => onNavigateToConfig?.()}
+            disabled={!onNavigateToConfig}
+            title="Inspect OpenTelemetry (OTLP) runtime configuration"
+            className={onNavigateToConfig ? 'cursor-pointer hover:opacity-85 transition-opacity' : ''}
+          >
+            <Badge
+              variant={
+                telemetry?.otel_enabled
+                  ? (telemetry.otel_signals?.length ?? 0) > 0
+                    ? 'success'
+                    : 'warning'
+                  : 'neutral'
+              }
+              size="sm"
+            >
+              {telemetry?.otel_enabled
+                ? (telemetry.otel_signals?.length ?? 0) > 0
+                  ? `OTLP: ${telemetry.otel_signals?.join(' · ')}`
+                  : 'OTLP: Enabled (No Endpoint)'
+                : 'OTLP: Disabled (UI Snapshot Only)'}
+            </Badge>
+          </button>
+          <Badge
+            variant={
+              (telemetry?.redis_cb_state ?? 0) === 2
+                ? 'danger'
+                : (telemetry?.redis_cb_state ?? 0) === 1
+                  ? 'warning'
+                  : 'success'
+            }
+            size="sm"
+          >
+            Redis CB: {(telemetry?.redis_cb_state ?? 0) === 2 ? 'Open' : (telemetry?.redis_cb_state ?? 0) === 1 ? 'Half-Open' : 'Closed'}
+          </Badge>
+          {telemetry?.slowest_provider && (
+            <Badge variant="neutral" size="sm">
+              Slowest: {telemetry.slowest_provider}
+            </Badge>
+          )}
+          {telemetry?.highest_failure_deployment && (
+            <Badge variant="warning" size="sm">
+              Top Errors: {telemetry.highest_failure_deployment}
+            </Badge>
+          )}
         </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead className={THEAD_CLS}>
-              <tr>
-                <th className="px-6 py-3">Deployment</th>
-                <th className="px-6 py-3">Provider & Model</th>
-                <th className="px-6 py-3">Probe Status</th>
-                <th className="px-6 py-3">Probe Latency</th>
-                <th className="px-6 py-3">Consecutive Failures</th>
-                <th className="px-6 py-3">Last Checked</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border-subtle/40">
-              {isHealthLoading ? (
-                <tr>
-                  <td colSpan={6} className="px-6 py-8 text-center text-brand-muted">
-                    Loading health reports...
-                  </td>
-                </tr>
-              ) : healthData?.data && healthData.data.length > 0 ? (
-                healthData.data.map((h) => (
-                  <tr key={h.deployment_id} className="hover:bg-surface-hover/30 transition-colors">
-                    <td className="px-6 py-3 font-medium text-brand-title">
-                      <div>{h.deployment_name || h.deployment_id}</div>
-                      <div className="text-[10px] font-mono text-brand-muted">{h.deployment_id}</div>
-                    </td>
-                    <td className="px-6 py-3">
-                      <div className="flex items-center gap-1.5">
-                        <Badge variant="provider" provider={h.provider} size="sm">
-                          {h.provider}
-                        </Badge>
-                        <span className="font-mono text-brand-body">{h.model}</span>
-                      </div>
-                    </td>
-                    <td className="px-6 py-3">
-                      {h.status === 'healthy' ? (
-                        <span className="inline-flex items-center gap-1.5 text-status-success font-medium">
-                          <CheckCircle2 className="w-3.5 h-3.5" />
-                          Healthy
-                        </span>
-                      ) : h.status === 'degraded' ? (
-                        <span className="inline-flex items-center gap-1.5 text-status-warning font-medium">
-                          <AlertTriangle className="w-3.5 h-3.5" />
-                          Degraded
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1.5 text-status-danger font-medium">
-                          <XCircle className="w-3.5 h-3.5" />
-                          Unhealthy
-                        </span>
-                      )}
-                      {h.last_error && (
-                        <div className="text-[10px] text-status-danger font-mono mt-0.5 max-w-xs truncate" title={h.last_error}>
-                          {h.last_error}
-                        </div>
-                      )}
-                    </td>
-                    <td className="px-6 py-3 font-mono text-brand-body">
-                      {h.probe_latency_ms} ms
-                    </td>
-                    <td className="px-6 py-3 font-mono">
-                      <span className={h.consecutive_failures > 0 ? 'text-status-danger font-bold' : 'text-brand-muted'}>
-                        {h.consecutive_failures}
-                      </span>
-                    </td>
-                    <td className="px-6 py-3 font-mono text-brand-muted text-[11px]">
-                      {new Date(h.last_checked_at).toLocaleTimeString()}
-                    </td>
-                  </tr>
-                ))
-              ) : (
-                <tr>
-                  <td colSpan={6} className="px-6 py-8 text-center text-brand-muted">
-                    No deployments configured or probed yet. Click "Probe Upstreams" to trigger health checks.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[11px] text-brand-muted">
+          <span>
+            TTFT: <strong className="text-brand-title">{(telemetry?.avg_ttft_ms ?? 0).toFixed(0)} / {telemetry?.p95_ttft_ms ?? 0} ms</strong>
+          </span>
+          {(telemetry?.stream_requests ?? 0) > 0 && (
+            <span>
+              Streams:{' '}
+              <strong className={(telemetry?.stream_errors ?? 0) > 0 ? 'text-status-warning' : 'text-brand-title'}>
+                {telemetry?.stream_requests}
+                {(telemetry?.stream_errors ?? 0) > 0 ? ` (${telemetry?.stream_errors} err)` : ''}
+              </strong>
+            </span>
+          )}
+          <span>Fallbacks: <strong className="text-brand-title">{telemetry?.total_fallbacks ?? 0}</strong></span>
+          <span>Retries: <strong className="text-brand-title">{telemetry?.total_retries ?? 0}</strong></span>
+          <span>429s: <strong className="text-brand-title">{telemetry?.rate_limit_rejections ?? 0}</strong></span>
+          <span>Guardrail Blocks: <strong className="text-brand-title">{telemetry?.guardrail_blocks ?? 0}</strong></span>
+          <span>Redactions: <strong className="text-brand-title">{telemetry?.guardrail_redactions ?? 0}</strong></span>
+          <span>
+            Outbox:{' '}
+            <strong
+              className={
+                (telemetry?.finops_outbox_dead_letter ?? 0) > 0
+                  ? 'text-status-danger'
+                  : (telemetry?.finops_outbox_backpressure ?? 0) > 0
+                    ? 'text-status-warning'
+                    : 'text-brand-title'
+              }
+            >
+              {telemetry?.finops_outbox_pending ?? 0} pending
+              {(telemetry?.finops_outbox_dead_letter ?? 0) > 0 ? ` (${telemetry?.finops_outbox_dead_letter} DLQ)` : ''}
+              {(telemetry?.finops_outbox_backpressure ?? 0) > 0 ? ` · ${telemetry?.finops_outbox_backpressure} bp` : ''}
+            </strong>
+          </span>
+          {(telemetry?.spend_redis_drift_total ?? 0) > 0 && (
+            <span>
+              Redis Drift: <strong className="text-status-warning">{telemetry?.spend_redis_drift_total}</strong>
+            </span>
+          )}
+          {((telemetry?.audit_siem_delivered ?? 0) > 0 ||
+            (telemetry?.audit_siem_failed ?? 0) > 0 ||
+            (telemetry?.audit_siem_dropped ?? 0) > 0) && (
+            <span>
+              SIEM:{' '}
+              <strong
+                className={
+                  (telemetry?.audit_siem_failed ?? 0) > 0 || (telemetry?.audit_siem_dropped ?? 0) > 0
+                    ? 'text-status-warning'
+                    : 'text-brand-title'
+                }
+              >
+                {telemetry?.audit_siem_delivered ?? 0} ok / {telemetry?.audit_siem_failed ?? 0} err
+                {(telemetry?.audit_siem_dropped ?? 0) > 0 ? ` / ${telemetry?.audit_siem_dropped} drop` : ''}
+              </strong>
+            </span>
+          )}
         </div>
       </div>
+
+      {/* Per-Provider Telemetry Breakdown */}
+      {telemetry?.providers && Object.keys(telemetry.providers).length > 0 && (
+        <div className="rounded-xl border border-border-subtle bg-surface-base/90 overflow-hidden">
+          <div className="px-6 py-4 border-b border-border-subtle flex items-center justify-between bg-surface-elevated/30">
+            <div>
+              <h2 className="text-sm font-semibold text-brand-title">Provider Telemetry</h2>
+              <p className="text-xs text-brand-muted mt-0.5">
+                Per-provider request volume, latency percentiles, TTFT, tokens, and spend on this pod
+              </p>
+            </div>
+            <div className="text-xs text-brand-muted font-mono">
+              Active providers: {Object.keys(telemetry.providers).length}
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className={THEAD_CLS}>
+                <tr>
+                  <th className="px-6 py-3">Provider</th>
+                  <th className="px-6 py-3">Requests</th>
+                  <th className="px-6 py-3">Error Rate</th>
+                  <th className="px-6 py-3">Avg / P95 / P99</th>
+                  <th className="px-6 py-3">Avg TTFT</th>
+                  <th className="px-6 py-3">Tokens</th>
+                  <th className="px-6 py-3">Spend (USD)</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border-subtle/40">
+                {Object.values(telemetry.providers)
+                  .sort((a, b) => b.total_requests - a.total_requests)
+                  .map((p) => (
+                    <tr key={p.provider} className="hover:bg-surface-hover/30 transition-colors">
+                      <td className="px-6 py-3">
+                        <Badge variant="provider" provider={p.provider} size="sm">
+                          {p.provider}
+                        </Badge>
+                      </td>
+                      <td className="px-6 py-3 font-mono text-brand-title">{p.total_requests.toLocaleString()}</td>
+                      <td className="px-6 py-3 font-mono">
+                        <span className={p.error_rate > 0.05 ? 'text-status-danger' : 'text-status-success'}>
+                          {(p.error_rate * 100).toFixed(2)}% ({p.error_count})
+                        </span>
+                      </td>
+                      <td className="px-6 py-3 font-mono text-brand-body">
+                        {p.avg_latency_ms.toFixed(0)} / {p.p95_latency_ms} / {p.p99_latency_ms} ms
+                      </td>
+                      <td className="px-6 py-3 font-mono text-brand-muted">{p.avg_ttft_ms.toFixed(0)} ms</td>
+                      <td className="px-6 py-3 font-mono text-brand-body">{p.total_tokens.toLocaleString()}</td>
+                      <td className="px-6 py-3 font-mono text-brand-title">
+                        ${(p.total_cost_micros / 1_000_000).toFixed(4)}
+                      </td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Deployment Health & Live Traffic Grid */}
+      {(() => {
+        const probed = healthData?.data ?? [];
+        const liveMap = telemetry?.deployments ?? {};
+        const seenIds = new Set(probed.map((h) => h.deployment_id));
+        const liveOnly = Object.values(liveMap).filter((d) => !seenIds.has(d.deployment_id));
+        const totalRows = probed.length + liveOnly.length;
+
+        return (
+          <div className="rounded-xl border border-border-subtle bg-surface-base/90 overflow-hidden">
+            <div className="px-6 py-4 border-b border-border-subtle flex items-center justify-between bg-surface-elevated/30">
+              <div>
+                <h2 className="text-sm font-semibold text-brand-title">Upstream Deployment Health & Live Traffic</h2>
+                <p className="text-xs text-brand-muted mt-0.5">
+                  Synthetic liveness probes merged with sliding-window pod traffic per deployment
+                </p>
+              </div>
+              <div className="text-xs text-brand-muted font-mono">
+                Deployments monitored: {totalRows}
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className={THEAD_CLS}>
+                  <tr>
+                    <th className="px-6 py-3">Deployment</th>
+                    <th className="px-6 py-3">Provider & Model</th>
+                    <th className="px-6 py-3">Probe Status</th>
+                    <th className="px-6 py-3">Probe / Fails</th>
+                    <th className="px-6 py-3">Live Reqs / Err%</th>
+                    <th className="px-6 py-3">Live P95 / Avg</th>
+                    <th className="px-6 py-3">Last Checked</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border-subtle/40">
+                  {isHealthLoading ? (
+                    <tr>
+                      <td colSpan={7} className="px-6 py-8 text-center text-brand-muted">
+                        Loading health reports...
+                      </td>
+                    </tr>
+                  ) : totalRows > 0 ? (
+                    <>
+                      {probed.map((h) => {
+                        const live = liveMap[h.deployment_id];
+                        return (
+                          <tr key={h.deployment_id} className="hover:bg-surface-hover/30 transition-colors">
+                            <td className="px-6 py-3 font-medium text-brand-title">
+                              <div>{h.deployment_name || h.deployment_id}</div>
+                              <div className="text-[10px] font-mono text-brand-muted">{h.deployment_id}</div>
+                            </td>
+                            <td className="px-6 py-3">
+                              <div className="flex items-center gap-1.5">
+                                <Badge variant="provider" provider={h.provider} size="sm">
+                                  {h.provider}
+                                </Badge>
+                                <span className="font-mono text-brand-body">{h.model}</span>
+                              </div>
+                            </td>
+                            <td className="px-6 py-3">
+                              {h.status === 'healthy' ? (
+                                <span className="inline-flex items-center gap-1.5 text-status-success font-medium">
+                                  <CheckCircle2 className="w-3.5 h-3.5" />
+                                  Healthy
+                                </span>
+                              ) : h.status === 'degraded' ? (
+                                <span className="inline-flex items-center gap-1.5 text-status-warning font-medium">
+                                  <AlertTriangle className="w-3.5 h-3.5" />
+                                  Degraded
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1.5 text-status-danger font-medium">
+                                  <XCircle className="w-3.5 h-3.5" />
+                                  Unhealthy
+                                </span>
+                              )}
+                              {h.last_error && (
+                                <div className="text-[10px] text-status-danger font-mono mt-0.5 max-w-xs truncate" title={h.last_error}>
+                                  {h.last_error}
+                                </div>
+                              )}
+                            </td>
+                            <td className="px-6 py-3 font-mono text-brand-body">
+                              <span>{h.probe_latency_ms} ms</span>
+                              <span className={h.consecutive_failures > 0 ? ' text-status-danger font-bold' : ' text-brand-muted'}>
+                                {' '}· {h.consecutive_failures} fail
+                              </span>
+                            </td>
+                            <td className="px-6 py-3 font-mono">
+                              {live ? (
+                                <span>
+                                  <span className="text-brand-title">{live.total_requests.toLocaleString()}</span>
+                                  {' · '}
+                                  <span className={live.error_rate > 0.05 ? 'text-status-danger' : 'text-status-success'}>
+                                    {(live.error_rate * 100).toFixed(1)}%
+                                  </span>
+                                </span>
+                              ) : (
+                                <span className="text-brand-muted">—</span>
+                              )}
+                            </td>
+                            <td className="px-6 py-3 font-mono text-brand-body">
+                              {live ? `${live.p95_latency_ms} / ${live.avg_latency_ms.toFixed(0)} ms` : <span className="text-brand-muted">—</span>}
+                            </td>
+                            <td className="px-6 py-3 font-mono text-brand-muted text-[11px]">
+                              {new Date(h.last_checked_at).toLocaleTimeString()}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {liveOnly.map((live) => (
+                        <tr key={live.deployment_id} className="hover:bg-surface-hover/30 transition-colors">
+                          <td className="px-6 py-3 font-medium text-brand-title">
+                            <div>{live.deployment_name || live.deployment_id}</div>
+                            <div className="text-[10px] font-mono text-brand-muted">{live.deployment_id}</div>
+                          </td>
+                          <td className="px-6 py-3">
+                            <div className="flex items-center gap-1.5">
+                              <Badge variant="provider" provider={live.provider} size="sm">
+                                {live.provider}
+                              </Badge>
+                              <span className="font-mono text-brand-body">{live.model}</span>
+                            </div>
+                          </td>
+                          <td className="px-6 py-3">
+                            <Badge variant="neutral" size="sm">Traffic Only</Badge>
+                          </td>
+                          <td className="px-6 py-3 font-mono text-brand-muted">—</td>
+                          <td className="px-6 py-3 font-mono">
+                            <span className="text-brand-title">{live.total_requests.toLocaleString()}</span>
+                            {' · '}
+                            <span className={live.error_rate > 0.05 ? 'text-status-danger' : 'text-status-success'}>
+                              {(live.error_rate * 100).toFixed(1)}%
+                            </span>
+                          </td>
+                          <td className="px-6 py-3 font-mono text-brand-body">
+                            {live.p95_latency_ms} / {live.avg_latency_ms.toFixed(0)} ms
+                          </td>
+                          <td className="px-6 py-3 font-mono text-brand-muted text-[11px]">—</td>
+                        </tr>
+                      ))}
+                    </>
+                  ) : (
+                    <tr>
+                      <td colSpan={7} className="px-6 py-8 text-center text-brand-muted">
+                        No deployments configured or probed yet. Click "Probe Upstreams" to trigger health checks.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Cache Purge Modal */}
       <Modal

@@ -51,6 +51,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "[ai-gateway] failed to load config: %v\n", err)
 		os.Exit(1)
 	}
+	if cfg.OTel.ServiceVersion == "" {
+		cfg.OTel.ServiceVersion = version
+	}
 
 	// Initialize the centralized enterprise structured logger
 	l := logger.Init(logger.Config{

@@ -45,7 +45,7 @@ Run in-memory tests first:
 go test -race -count=1 ./internal/storage/... ./internal/ratelimit/... ./internal/finops/...
 ```
 
-When Docker is available, verify the full `0001..NNNN` forward + rollback lifecycle against live PostgreSQL 16 and Redis 7:
+When Docker is available, verify the full `0001..NNNN` forward + rollback lifecycle against live PostgreSQL 16 and Redis 8:
 
 ```bash
 make test-live-up

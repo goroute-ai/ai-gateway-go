@@ -922,6 +922,18 @@ ${goHdrs}  resp, err := http.DefaultClient.Do(req); if err != nil { panic(err) }
                   </span>
                 </div>
               )}
+              {lastRequestMetrics.headers?.traceId && (
+                <div className="flex justify-between items-center text-brand-muted">
+                  <span>Trace ID:</span>
+                  <span
+                    className="text-accent-primary text-[11px] truncate max-w-[150px] cursor-pointer hover:underline"
+                    title={lastRequestMetrics.headers.traceparent || lastRequestMetrics.headers.traceId}
+                    onClick={() => copyToClipboard(lastRequestMetrics.headers!.traceId!)}
+                  >
+                    {lastRequestMetrics.headers.traceId.slice(0, 16)}...
+                  </span>
+                </div>
+              )}
               {[
                 lastRequestMetrics.headers?.provider && ['Upstream Provider:', lastRequestMetrics.headers.provider, 'text-brand-body capitalize font-medium'],
                 ['Target Model:', lastRequestMetrics.model, 'text-accent-primary font-medium'],

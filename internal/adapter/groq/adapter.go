@@ -16,6 +16,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/sse"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/observability"
 	"github.com/goroute-ai/ai-gateway-go/internal/openapi/providers"
 	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 )
@@ -108,6 +109,7 @@ func applyBearerAuth(req *http.Request, dep *domain.Deployment) (*domain.Provide
 			AuthFailure: true,
 		}
 	}
+	observability.InjectTraceHeaders(req.Context(), req)
 	return cred, nil
 }
 
@@ -555,6 +557,7 @@ func (a *Adapter) ListModels(ctx context.Context, cred *domain.ProviderCredentia
 	if err := (&adapter.BearerAuthStrategy{}).ApplyAuth(httpReq, cred); err != nil {
 		return nil, err
 	}
+	observability.InjectTraceHeaders(ctx, httpReq)
 	resp, err := a.client.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("groq list models: %w", err)
