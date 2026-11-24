@@ -154,64 +154,75 @@ func main() {
 	}
 	mux.HandleFunc("/llm/eu/", handleRegionLLM("eu-gdpr", "eu-deployment-ok"))
 	mux.HandleFunc("/llm/us/", handleRegionLLM("us-east", "us-deployment-ok"))
-
-	// Real Streamable HTTP MCP Server (/mcp)
-	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-		var rpc struct {
-			JSONRPC string         `json:"jsonrpc"`
-			ID      any            `json:"id"`
-			Method  string         `json:"method"`
-			Params  map[string]any `json:"params"`
-		}
-		_ = json.Unmarshal(body, &rpc)
-		switch rpc.Method {
-		case "initialize":
-			writeJSON(w, http.StatusOK, map[string]any{
-				"jsonrpc": "2.0",
-				"id":      rpc.ID,
-				"result": map[string]any{
-					"protocolVersion": "2026-07-28",
-					"capabilities":    map[string]any{"tools": map[string]any{}},
-					"serverInfo":      map[string]any{"name": "prod-fixture-mcp", "version": "1.0.0"},
-				},
-			})
-		case "notifications/initialized":
-			w.WriteHeader(http.StatusAccepted)
-		case "tools/list":
-			writeJSON(w, http.StatusOK, map[string]any{
-				"jsonrpc": "2.0",
-				"id":      rpc.ID,
-				"result": map[string]any{
-					"tools": []map[string]any{
-						{"name": "get_issue", "description": "Read GitHub issue metadata", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"id": map[string]any{"type": "string"}}}},
-						{"name": "list_files", "description": "List repository files", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}}}},
-						{"name": "delete_repo", "description": "Permanently delete repository", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"repo": map[string]any{"type": "string"}}}},
-						{"name": "admin_wipe", "description": "Wipe tenant workspace", "inputSchema": map[string]any{"type": "object"}},
-					},
-				},
-			})
-		case "tools/call":
-			toolName, _ := rpc.Params["name"].(string)
-			args, _ := json.Marshal(rpc.Params["arguments"])
-			writeJSON(w, http.StatusOK, map[string]any{
-				"jsonrpc": "2.0",
-				"id":      rpc.ID,
-				"result": map[string]any{
-					"content": []map[string]any{{
-						"type": "text",
-						"text": fmt.Sprintf("fixture-mcp-ok tool=%s args=%s", toolName, string(args)),
-					}},
-				},
-			})
-		default:
-			writeJSON(w, http.StatusOK, map[string]any{
-				"jsonrpc": "2.0",
-				"id":      rpc.ID,
-				"error":   map[string]any{"code": -32601, "message": "method not found: " + rpc.Method},
-			})
-		}
+	mux.HandleFunc("/llm/slow/", func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(600 * time.Millisecond)
+		handleRegionLLM("slow-pool", "slow-deployment-ok")(w, r)
 	})
+
+	// Real Streamable HTTP MCP Server (/mcp) and Secondary MCP Server (/mcp-slack)
+	handleMCPServer := func(serverName string, tools []map[string]any) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+			var rpc struct {
+				JSONRPC string         `json:"jsonrpc"`
+				ID      any            `json:"id"`
+				Method  string         `json:"method"`
+				Params  map[string]any `json:"params"`
+			}
+			_ = json.Unmarshal(body, &rpc)
+			switch rpc.Method {
+			case "initialize":
+				writeJSON(w, http.StatusOK, map[string]any{
+					"jsonrpc": "2.0",
+					"id":      rpc.ID,
+					"result": map[string]any{
+						"protocolVersion": "2026-07-28",
+						"capabilities":    map[string]any{"tools": map[string]any{}},
+						"serverInfo":      map[string]any{"name": serverName, "version": "1.0.0"},
+					},
+				})
+			case "notifications/initialized":
+				w.WriteHeader(http.StatusAccepted)
+			case "tools/list":
+				writeJSON(w, http.StatusOK, map[string]any{
+					"jsonrpc": "2.0",
+					"id":      rpc.ID,
+					"result": map[string]any{
+						"tools": tools,
+					},
+				})
+			case "tools/call":
+				toolName, _ := rpc.Params["name"].(string)
+				args, _ := json.Marshal(rpc.Params["arguments"])
+				writeJSON(w, http.StatusOK, map[string]any{
+					"jsonrpc": "2.0",
+					"id":      rpc.ID,
+					"result": map[string]any{
+						"content": []map[string]any{{
+							"type": "text",
+							"text": fmt.Sprintf("fixture-mcp-ok server=%s tool=%s args=%s", serverName, toolName, string(args)),
+						}},
+					},
+				})
+			default:
+				writeJSON(w, http.StatusOK, map[string]any{
+					"jsonrpc": "2.0",
+					"id":      rpc.ID,
+					"error":   map[string]any{"code": -32601, "message": "method not found: " + rpc.Method},
+				})
+			}
+		}
+	}
+	mux.HandleFunc("/mcp", handleMCPServer("prod-fixture-mcp", []map[string]any{
+		{"name": "get_issue", "description": "Read GitHub issue metadata", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"id": map[string]any{"type": "string"}}}},
+		{"name": "list_files", "description": "List repository files", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}}}},
+		{"name": "delete_repo", "description": "Permanently delete repository", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"repo": map[string]any{"type": "string"}}}},
+		{"name": "admin_wipe", "description": "Wipe tenant workspace", "inputSchema": map[string]any{"type": "object"}},
+	}))
+	mux.HandleFunc("/mcp-slack", handleMCPServer("prod-fixture-slack", []map[string]any{
+		{"name": "list_channels", "description": "List Slack channels", "inputSchema": map[string]any{"type": "object"}},
+		{"name": "post_message", "description": "Post a Slack message", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"channel": map[string]any{"type": "string"}}}},
+	}))
 
 	// Real A2A Agent (/a2a)
 	mux.HandleFunc("/a2a/.well-known/agent-card.json", func(w http.ResponseWriter, _ *http.Request) {
@@ -252,6 +263,10 @@ func main() {
 			"action":        req["action"],
 			"resource_type": req["resource_type"],
 			"resource_id":   req["resource_id"],
+			"model":         req["model"],
+			"mcp_server":    req["mcp_server"],
+			"mcp_tool":      req["mcp_tool"],
+			"a2a_agent":     req["a2a_agent"],
 			"http_path":     req["http_path"],
 			"hmac_verified": true,
 		})
