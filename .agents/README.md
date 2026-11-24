@@ -15,6 +15,8 @@ This directory follows the open **`.agents/` + `AGENTS.md` + Agent Skills (`agen
 │   └── operator-web-ui.md             # [glob: web/**, internal/ui/**, tests/ui-e2e/**]
 └── skills/                            # On-demand procedural runbooks (Agent Skills spec)
     ├── goroute-codebase-navigator/    # Fast subsystem routing + references/subsystem-map.md
+    ├── goroute-go-quality/            # Go 1.26 code quality, safety, concurrency, testing & lint
+    ├── goroute-go-docs/               # Go godoc, package docs, Example tests & docs alignment
     ├── goroute-openapi-contract/      # OpenAPI 3.1 + MCP/A2A contract generation runbook
     ├── goroute-db-migration/          # PostgreSQL migrations, repo parity & Redis cluster slots
     ├── goroute-operator-ui/           # React SPA build, CSP, bundle budget & Playwright E2E
