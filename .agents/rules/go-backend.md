@@ -16,4 +16,9 @@ description: "Go backend architecture, public SDK isolation, router performance,
   - Preserve explicit tri-state capabilities (`supported`, `unsupported`, `unknown`); never downgrade `unknown` to `unsupported` without verification.
   - Keep model pricing history append-only.
 - **Strict 4-Provider Surface**: Only `openai`, `anthropic`, `groq`, and `openrouter` adapters are first-class OpenAPI-first providers.
+- **Code Quality & Documentation**:
+  - Exported APIs (especially `pkg/gateway/`) require intent-focused godoc comments starting with the symbol name and ending with a period (`revive: exported`, `godot`).
+  - Wrap errors with `%w`, inspect with `errors.Is`/`errors.As`, pass `context.Context` as the first argument, and close HTTP bodies and SQL rows (`errorlint`, `noctx`, `bodyclose`, `sqlclosecheck`, `rowserrcheck`).
+  - Prefer Go 1.26 idioms (`modernize`, `intrange`, `slices`/`maps`, `t.Helper()`, `t.Context()`); every `//nolint` directive must specify the linter name and a rationale (`nolintlint`).
+  - Load the `goroute-go-quality` and `goroute-go-docs` skills when conducting Go code reviews, refactoring, or authoring documentation.
 - **Verification**: Before finishing Go edits, run read-only `gofmt -l .`, `go vet ./...`, and `go test -race -count=1` on modified packages (plus `./tests/guardrails/...` when touching inference, MCP, A2A, or guardrails).
