@@ -1,0 +1,35 @@
+{
+  admin off
+  auto_https off
+}
+
+https://gateway.prod.test:19443, https://127.0.0.1:19443 {
+  tls /certs/server.crt /certs/server.key
+  reverse_proxy ai-gateway-1:8080 ai-gateway-2:8080 {
+    lb_policy round_robin
+    header_up Host {http.request.host}
+    header_up X-Forwarded-Proto https
+    header_up X-Forwarded-Host {http.request.host}
+    header_up X-Forwarded-For {http.request.remote.host}
+  }
+}
+
+https://gateway.prod.test:19444 {
+  tls /certs/server.crt /certs/server.key
+  reverse_proxy ai-gateway-1:8080 {
+    header_up Host gateway.prod.test:19443
+    header_up X-Forwarded-Proto https
+    header_up X-Forwarded-Host gateway.prod.test:19443
+    header_up X-Forwarded-For {http.request.remote.host}
+  }
+}
+
+https://gateway.prod.test:19445 {
+  tls /certs/server.crt /certs/server.key
+  reverse_proxy ai-gateway-2:8080 {
+    header_up Host gateway.prod.test:19443
+    header_up X-Forwarded-Proto https
+    header_up X-Forwarded-Host gateway.prod.test:19443
+    header_up X-Forwarded-For {http.request.remote.host}
+  }
+}

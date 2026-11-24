@@ -217,7 +217,6 @@ router:
     #    utterances:
     #      - "Write a Go function to parse JSON"
     #      - "Debug this failing SQL query"
-  cache_aware_routing: false
   bandit:
     enabled: false
     default_alpha: 1.0
@@ -286,8 +285,27 @@ discovery:
 
 cache:
   enabled: true
+  type: "local"              # "local" (in-memory LRU), "redis" (Redis KV exact-match), or "redis-semantic" (Redis 8+ Vector Search)
   default_ttl: 1h
-  max_l1_entries: 4096
+  namespace: "gw:cache"
+  max_entries: 4096          # Bounded LRU capacity when type == "local"
+  max_item_bytes: 1048576    # 1 MiB max cached entry payload size
+  excluded_call_types: ["embedding"] # Default excludes embeddings to protect shared Redis maxmemory; set [] to opt in
+  # Optional dedicated Redis for response caching (defaults to storage.redis_* when empty; recommended for semantic or embedding caches):
+  # redis_addr: "cache-redis:6379"
+  # redis_addrs: []
+  # redis_master_name: ""
+  # redis_pass: "os.environ/CACHE_REDIS_PASSWORD"
+  # redis_db: 0
+  # redis_tls: false                          # Set true to require TLS 1.2+ on the dedicated cache Redis connection
+  # semantic:
+  #   embedding_model: "text-embedding-3-small" # Model alias/name routed via gateway embeddings
+  #   similarity_threshold: 0.90                # Cosine similarity in (0, 1]
+  #   index_name: "gw_semantic_cache_idx"
+  #   vector_algorithm: "HNSW"                  # "HNSW" (default, O(log N)) or "FLAT"
+  #   embedding_timeout: 2s
+  #   max_messages: 4                           # Skip semantic cache on longer multi-turn conversations (-1 = unlimited)
+  #   max_input_chars: 8000
 
 guardrails:
   scanners: []

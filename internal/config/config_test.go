@@ -454,7 +454,6 @@ router:
       - name: "coding"
         target_model: "coding"
         utterances: ["write unit tests"]
-  cache_aware_routing: true
   bandit:
     enabled: true
     default_alpha: 2.0
@@ -527,8 +526,8 @@ model_list:
 	if cfg.Router.PreRouterMode != "semantic" || !cfg.Router.SemanticRouter.Enabled || len(cfg.Router.SemanticRouter.Routes) != 1 {
 		t.Fatalf("unexpected semantic router config: %+v", cfg.Router.SemanticRouter)
 	}
-	if !cfg.Router.CacheAwareRouting || !cfg.Router.Bandit.Enabled || cfg.Router.Bandit.DefaultAlpha != 2.0 {
-		t.Fatalf("unexpected cache/bandit config: %+v", cfg.Router.Bandit)
+	if !cfg.Router.Bandit.Enabled || cfg.Router.Bandit.DefaultAlpha != 2.0 {
+		t.Fatalf("unexpected bandit config: %+v", cfg.Router.Bandit)
 	}
 	if cfg.Router.HedgeDelayMs != 150 || cfg.Router.MaxHedgeConcurrency != 3 || !cfg.Router.Scheduler.Enabled || cfg.Router.Scheduler.MaxQueueDepth != 512 {
 		t.Fatalf("unexpected hedge/scheduler config: %+v", cfg.Router.Scheduler)
@@ -1085,5 +1084,125 @@ auth:
 	goodCORS.Server.CORSAllowedOrigins = []string{"https://console.example.com", "https://portal.example.com:8443"}
 	if err := goodCORS.Validate(); err != nil {
 		t.Fatalf("expected production Validate() to accept valid HTTPS CORS origins, got: %v", err)
+	}
+}
+
+func TestCacheConfig_TypesAliasDefaultsAndEnvOverrides(t *testing.T) {
+	// 1. Default config uses local cache and excludes embeddings by default.
+	def := config.Default()
+	def.Server.Environment = "development"
+	if err := def.Validate(); err != nil {
+		t.Fatalf("default config validate: %v", err)
+	}
+	if def.Cache.Type != config.CacheTypeLocal {
+		t.Fatalf("default cache.type = %q, want %q", def.Cache.Type, config.CacheTypeLocal)
+	}
+	if len(def.Cache.ExcludedCallTypes) != 1 || def.Cache.ExcludedCallTypes[0] != "embedding" {
+		t.Fatalf("default excluded_call_types = %v, want [embedding]", def.Cache.ExcludedCallTypes)
+	}
+	if def.Cache.Semantic.VectorAlgorithm != config.VectorAlgorithmHNSW {
+		t.Fatalf("default vector_algorithm = %q, want HNSW", def.Cache.Semantic.VectorAlgorithm)
+	}
+
+	// 2. Deprecated max_l1_entries YAML alias maps silently to max_entries, and excluded_call_types: [] opts in.
+	tmpYAML := t.TempDir() + "/cache_alias.yaml"
+	yamlBody := `
+server:
+  environment: development
+cache:
+  enabled: true
+  type: local
+  max_l1_entries: 2048
+  excluded_call_types: []
+`
+	if err := os.WriteFile(tmpYAML, []byte(yamlBody), 0o600); err != nil {
+		t.Fatalf("write temp yaml: %v", err)
+	}
+	loaded, err := config.Load(tmpYAML)
+	if err != nil {
+		t.Fatalf("load alias yaml: %v", err)
+	}
+	if loaded.Cache.MaxEntries != 2048 {
+		t.Fatalf("MaxEntries = %d, want 2048 from deprecated max_l1_entries", loaded.Cache.MaxEntries)
+	}
+	if len(loaded.Cache.ExcludedCallTypes) != 0 {
+		t.Fatalf("explicit empty excluded_call_types should opt in to embeddings, got %v", loaded.Cache.ExcludedCallTypes)
+	}
+
+	// 3. Invalid cache.type rejected.
+	badType := config.Default()
+	badType.Server.Environment = "development"
+	badType.Cache.Type = "memcached"
+	if err := badType.Validate(); err == nil {
+		t.Fatalf("expected error for unknown cache.type")
+	}
+
+	// 4. redis-semantic requires embedding_model and valid threshold/algorithm.
+	semCfg := config.Default()
+	semCfg.Server.Environment = "development"
+	semCfg.Cache.Type = config.CacheTypeRedisSemantic
+	if err := semCfg.Validate(); err == nil {
+		t.Fatalf("expected error when semantic.embedding_model is missing")
+	}
+	semCfg.Cache.Semantic.EmbeddingModel = "gemini-embedding-001"
+	semCfg.Cache.Semantic.SimilarityThreshold = 1.5
+	if err := semCfg.Validate(); err == nil {
+		t.Fatalf("expected error for similarity_threshold > 1.0")
+	}
+	semCfg.Cache.Semantic.SimilarityThreshold = 0.90
+	semCfg.Cache.Semantic.VectorAlgorithm = "INVALID"
+	if err := semCfg.Validate(); err == nil {
+		t.Fatalf("expected error for invalid vector_algorithm")
+	}
+	semCfg.Cache.Semantic.VectorAlgorithm = config.VectorAlgorithmHNSW
+	semCfg.Cache.Semantic.MaxMessages = -2
+	if err := semCfg.Validate(); err == nil {
+		t.Fatalf("expected error for max_messages < -1")
+	}
+	semCfg.Cache.Semantic.MaxMessages = -1 // Unlimited turns (H4)
+	if err := semCfg.Validate(); err != nil {
+		t.Fatalf("valid redis-semantic config with max_messages=-1 failed: %v", err)
+	}
+
+	// Unresolved env refs for redis_pass must fail fast (L1).
+	badPass := config.Default()
+	badPass.Server.Environment = "development"
+	badPass.Cache.RedisPass = "os.environ/MISSING_CACHE_PASS"
+	if err := badPass.Validate(); err == nil {
+		t.Fatalf("expected error for unresolved cache.redis_pass")
+	}
+	badStoragePass := config.Default()
+	badStoragePass.Server.Environment = "development"
+	badStoragePass.Storage.RedisPass = "${MISSING_STORAGE_PASS}"
+	if err := badStoragePass.Validate(); err == nil {
+		t.Fatalf("expected error for unresolved storage.redis_pass")
+	}
+
+	// 5. GATEWAY_CACHE_* environment overrides work cleanly.
+	t.Setenv("GATEWAY_CACHE_TYPE", "redis-semantic")
+	t.Setenv("GATEWAY_CACHE_DEFAULT_TTL", "15m")
+	t.Setenv("GATEWAY_CACHE_MAX_ENTRIES", "1024")
+	t.Setenv("GATEWAY_CACHE_EXCLUDED_CALL_TYPES", "")
+	t.Setenv("GATEWAY_CACHE_REDIS_TLS", "true")
+	t.Setenv("GATEWAY_CACHE_SEMANTIC_EMBEDDING_MODEL", "gemini-embedding-001")
+	t.Setenv("GATEWAY_CACHE_SEMANTIC_SIMILARITY_THRESHOLD", "0.88")
+	t.Setenv("GATEWAY_CACHE_SEMANTIC_VECTOR_ALGORITHM", "FLAT")
+	t.Setenv("GATEWAY_CACHE_SEMANTIC_MAX_MESSAGES", "-1")
+	envYAML := t.TempDir() + "/empty.yaml"
+	if err := os.WriteFile(envYAML, []byte("server:\n  environment: development\n"), 0o600); err != nil {
+		t.Fatalf("write env yaml: %v", err)
+	}
+	envCfg, err := config.Load(envYAML)
+	if err != nil {
+		t.Fatalf("load with cache env overrides: %v", err)
+	}
+	if envCfg.Cache.Type != config.CacheTypeRedisSemantic || envCfg.Cache.DefaultTTL != 15*time.Minute ||
+		envCfg.Cache.MaxEntries != 1024 || len(envCfg.Cache.ExcludedCallTypes) != 0 ||
+		!envCfg.Cache.RedisTLS ||
+		envCfg.Cache.Semantic.EmbeddingModel != "gemini-embedding-001" ||
+		envCfg.Cache.Semantic.SimilarityThreshold != 0.88 ||
+		envCfg.Cache.Semantic.VectorAlgorithm != config.VectorAlgorithmFLAT ||
+		envCfg.Cache.Semantic.MaxMessages != -1 {
+		t.Fatalf("unexpected env-overridden cache config: %+v", envCfg.Cache)
 	}
 }

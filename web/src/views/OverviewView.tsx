@@ -17,9 +17,11 @@ import {
 } from 'lucide-react';
 
 export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({ onNavigateToPlayground }) => {
-  const { adminKey, isUnlocked, activeOrgId } = useAuth();
+  const { adminKey, isUnlocked, activeOrgId, operator } = useAuth();
+  const isPlatformAdmin = operator?.role === 'platform_admin';
   const queryClient = useQueryClient();
   const [showPurgeModal, setShowPurgeModal] = useState(false);
+  const [purgeScope, setPurgeScope] = useState<'org' | 'global'>('org');
   const [purgeModel, setPurgeModel] = useState('');
   const [purgeResult, setPurgeResult] = useState<{ purged_entries: number; namespace_version: number } | null>(null);
 
@@ -71,7 +73,7 @@ export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({
   const handlePurgeSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     invalidateMutation.mutate({
-      org_id: activeOrgId !== 'org_default' ? activeOrgId : undefined,
+      org_id: purgeScope === 'global' && isPlatformAdmin ? undefined : activeOrgId || undefined,
       model: purgeModel.trim() || undefined,
     });
   };
@@ -117,6 +119,7 @@ export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({
           <button
             onClick={() => {
               setPurgeResult(null);
+              setPurgeScope('org');
               setShowPurgeModal(true);
             }}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border-subtle hover:border-status-danger/40 bg-surface-elevated hover:bg-status-danger/10 text-xs font-medium text-brand-body hover:text-status-danger transition-colors"
@@ -194,17 +197,60 @@ export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({
         </div>
 
         <div className="p-4 rounded-xl border border-border-subtle bg-surface-base/80">
-          <div className="flex items-center justify-between text-brand-muted mb-2">
-            <span className="text-xs font-medium">Exact Response Cache</span>
-            <CheckCircle2 className="w-4 h-4 text-status-success" />
+          <div className="flex items-center justify-between text-brand-muted mb-2 gap-1">
+            <span className="text-xs font-medium">Response Cache</span>
+            <div className="flex items-center gap-1.5">
+              {telemetry?.cache_type && (
+                <Badge
+                  variant={
+                    telemetry.cache_status === 'degraded'
+                      ? 'warning'
+                      : telemetry.cache_enabled === false
+                        ? 'neutral'
+                        : 'primary'
+                  }
+                  size="sm"
+                >
+                  {telemetry.cache_enabled === false ? 'disabled' : telemetry.cache_type}
+                </Badge>
+              )}
+              {telemetry?.cache_status === 'degraded' ? (
+                <AlertTriangle className="w-4 h-4 text-status-warning shrink-0" />
+              ) : (
+                <CheckCircle2 className="w-4 h-4 text-status-success shrink-0" />
+              )}
+            </div>
           </div>
           <div className="text-2xl font-bold font-mono text-brand-title tracking-tight">
-            {isTelemetryLoading ? '...' : `${((telemetry?.cache_hit_rate ?? 0) * 100).toFixed(1)}%`}
+            {isTelemetryLoading
+              ? '...'
+              : telemetry?.cache_enabled === false
+                ? 'Off'
+                : `${((telemetry?.cache_hit_rate ?? 0) * 100).toFixed(1)}%`}
           </div>
           <div className="text-[11px] text-brand-muted mt-1 flex items-center justify-between font-mono">
-            <span>Hits: {telemetry?.cache_hits ?? 0}</span>
+            <span>
+              Hits: {telemetry?.cache_hits ?? 0}
+              {(telemetry?.cache_semantic_hits ?? 0) > 0 && ` (sem: ${telemetry?.cache_semantic_hits})`}
+            </span>
             <span>Misses: {telemetry?.cache_misses ?? 0}</span>
           </div>
+          {(telemetry?.cache_status === 'degraded' ||
+            (telemetry?.cache_errors ?? 0) > 0 ||
+            (telemetry?.cache_type === 'local' && telemetry?.cache_entries !== undefined)) && (
+            <div className="text-[10px] font-mono mt-1 flex items-center justify-between text-brand-muted">
+              {telemetry?.cache_status === 'degraded' ? (
+                <span className="text-status-warning font-semibold">Cache Redis degraded (fail-open)</span>
+              ) : telemetry?.cache_type === 'local' ? (
+                <span>Entries: {telemetry?.cache_entries ?? 0}</span>
+              ) : (
+                <span />
+              )}
+              {(telemetry?.cache_errors ?? 0) > 0 && (
+                <span className="text-status-warning">Err: {telemetry?.cache_errors}</span>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -309,13 +355,33 @@ export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({
         isOpen={showPurgeModal}
         onClose={() => setShowPurgeModal(false)}
         title="Invalidate Response Cache"
-        description="Purges cached exact-match completions and increments the cache epoch namespace version across the cluster."
+        description="Purges cached responses from the active cache backend (local, Redis KV, or Redis semantic vector cache)."
         maxWidth="md"
       >
         <form onSubmit={handlePurgeSubmit} className="space-y-4">
           {invalidateMutation.isError && (
             <ErrorAlert error={invalidateMutation.error} title="Failed to purge response cache" />
           )}
+          <div>
+            <label className="block text-xs font-medium text-brand-body mb-1">
+              Invalidation Scope
+            </label>
+            <select
+              aria-label="Invalidation Scope"
+              value={purgeScope}
+              onChange={(e) => setPurgeScope(e.target.value as 'org' | 'global')}
+              className={`${INPUT_CLS} font-mono`}
+            >
+              <option value="org">Current Organization ({activeOrgId})</option>
+              {isPlatformAdmin && <option value="global">All Organizations (Global)</option>}
+            </select>
+            {purgeScope === 'global' && isPlatformAdmin && (
+              <p className="text-[11px] text-status-warning mt-1">
+                Purges cached responses across every organization on this gateway cluster.
+              </p>
+            )}
+          </div>
+
           <div>
             <label className="block text-xs font-medium text-brand-body mb-1">
               Target Model (Optional)
@@ -331,7 +397,7 @@ export const OverviewView: React.FC<{ onNavigateToPlayground: () => void }> = ({
 
           {purgeResult && (
             <div className="p-3 rounded-lg status-success border text-xs font-mono">
-              ✓ Cache purged successfully! Entries purged: {purgeResult.purged_entries}, New epoch version: {purgeResult.namespace_version}
+              ✓ Cache purged successfully! Entries purged: {purgeResult.purged_entries}, Invalidation revision: {purgeResult.namespace_version}
             </div>
           )}
 

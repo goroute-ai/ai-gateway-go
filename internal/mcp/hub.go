@@ -326,28 +326,6 @@ func (h *Hub) CallTool(ctx context.Context, idCtx *domain.IdentityContext, input
 		return nil, fmt.Errorf("guardrail blocked tool call: %w", err)
 	}
 
-	var cacheKey string
-	if h.cache != nil {
-		keyPrefix := ""
-		if idCtx != nil {
-			keyPrefix = idCtx.KeyPrefix
-		}
-		argsBytes, _ := json.Marshal(input.Arguments)
-		cacheKey = h.cache.ComputeCacheKey(orgID, keyPrefix, targetServer.Slug, "tools/call:"+input.ToolName, argsBytes, targetServer.ConfigVersion)
-		if cachedResp, ok := h.cache.Get(ctx, cacheKey); ok {
-			callResp, err := extractCallToolResponse(cachedResp.Result)
-			if err == nil {
-				h.recordAudit(ctx, idCtx, "mcp.tool.call", "mcp_tool", targetServer.Slug+"/"+input.ToolName, map[string]any{
-					"server_slug": targetServer.Slug,
-					"tool_name":   input.ToolName,
-					"cache_hit":   true,
-					"is_error":    callResp.IsError,
-				})
-				return callResp, nil
-			}
-		}
-	}
-
 	reqHeaders, authCtx, strat := h.resolveUpstreamAuth(ctx, idCtx, orgID, targetServer, meta.CallerMetadata, nil)
 	paramsMap := map[string]any{"name": input.ToolName}
 	if input.Arguments != nil {
@@ -378,12 +356,8 @@ func (h *Hub) CallTool(ctx context.Context, idCtx *domain.IdentityContext, input
 		return nil, fmt.Errorf("guardrail result inspection failed: %w", err)
 	}
 
-	// Do not cache a success until FinOps accounting is durable.
 	if err := h.recordMCPToolSpend(ctx, idCtx, orgID, reqID, targetServer, targetTool); err != nil {
 		return nil, err
-	}
-	if cacheKey != "" && h.cache != nil && ShouldCache("tools/call", resp) {
-		_ = h.cache.Set(ctx, cacheKey, resp, 5*time.Minute)
 	}
 
 	callResp, err := extractCallToolResponse(resp.Result)

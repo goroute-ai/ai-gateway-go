@@ -817,9 +817,8 @@ func TestRouting_DeploymentBudgets_Semantic_QualityCache_Bandit_Scheduler(t *tes
 		assert.Equal(t, "semantic:route:coding", rec.Header().Get("X-Gateway-Route-Reason"))
 	})
 
-	t.Run("quality_cache_aware_bandit_and_scheduler", func(t *testing.T) {
+	t.Run("quality_bandit_and_scheduler", func(t *testing.T) {
 		h := newRoutingHarness(t, func(cfg *config.Config) {
-			cfg.Router.CacheAwareRouting = true
 			cfg.Router.PromptCacheAffinity = true
 			cfg.Router.Bandit = config.BanditConfig{
 				Enabled:         true,
@@ -848,7 +847,7 @@ func TestRouting_DeploymentBudgets_Semantic_QualityCache_Bandit_Scheduler(t *tes
 
 		require.NotNil(t, h.gw.IntelligentRouter().Bandit())
 
-		// 1. Seed exact cache on "router/quality" with temperature=0 and verify QualityPreRouter cache_hit resolution.
+		// 1. Seed exact cache on "router/quality" with temperature=0 and verify MISS -> HIT at handler layer.
 		zero := 0.0
 		reqPayload := map[string]any{
 			"model":       "router/quality",
@@ -861,13 +860,12 @@ func TestRouting_DeploymentBudgets_Semantic_QualityCache_Bandit_Scheduler(t *tes
 		require.Equal(t, http.StatusOK, recMiss.Code, recMiss.Body.String())
 		assert.Equal(t, "MISS", recMiss.Header().Get("X-Gateway-Cache"))
 
-		dec, err := h.gw.IntelligentRouter().ResolveGroup(h.ctx, h.org.ID, &domain.CanonicalChatRequest{
-			Model:       "router/quality",
-			Temperature: &zero,
-			Messages:    []domain.CanonicalMessage{{Role: "user", Content: "Use reasoning to prove this theorem"}},
-		})
-		require.NoError(t, err)
-		assert.Equal(t, "quality:cache_hit", dec.Reason)
+		recHit := h.doRequest(http.MethodPost, "/v1/chat/completions", map[string]string{
+			"X-Gateway-Priority": "0",
+		}, reqPayload)
+		require.Equal(t, http.StatusOK, recHit.Code, recHit.Body.String())
+		assert.Equal(t, "HIT", recHit.Header().Get("X-Gateway-Cache"))
+		assert.Equal(t, "exact", recHit.Header().Get("X-Gateway-Cache-Type"))
 
 		// 2. Concurrent adaptive bandit requests under -race.
 		var wg sync.WaitGroup

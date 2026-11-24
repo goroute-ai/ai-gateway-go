@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '../context/AuthContext';
 import { adminApi } from '../api/admin';
 import { isPlatformAdminForbidden } from '../components/common/ErrorAlert';
-import { streamChatCompletion, ChatStreamChunk, ChatStreamHeaders } from '../api/sse';
+import { streamChatCompletion, sendChatCompletion, ChatStreamChunk, ChatStreamHeaders } from '../api/sse';
 import type { GoRouteExtensions } from '../types';
 import { Badge } from '../components/common/Badge';
 import { CodeBlock } from '../components/common/CodeBlock';
@@ -57,10 +57,17 @@ export const PlaygroundView: React.FC = () => {
   );
   const [isSystemOpen, setIsSystemOpen] = useState<boolean>(false);
 
-  // Hyperparameters
+  // Hyperparameters & Execution Mode
+  const [streamMode, setStreamMode] = useState<boolean>(true);
   const [temperature, setTemperature] = useState<number>(0.7);
   const [maxTokens, setMaxTokens] = useState<number>(2048);
   const [topP, setTopP] = useState<number>(1.0);
+
+  // Cache Controls (v0.1 non-streaming response cache)
+  const [isCacheOpen, setIsCacheOpen] = useState<boolean>(false);
+  const [cacheMode, setCacheMode] = useState<'default' | 'enabled' | 'bypass'>('default');
+  const [seedInput, setSeedInput] = useState<string>('');
+  const [similarityOverride, setSimilarityOverride] = useState<string>('');
 
   // Routing Hint Controls (goroute_extensions)
   const [isHintsOpen, setIsHintsOpen] = useState<boolean>(false);
@@ -81,6 +88,8 @@ export const PlaygroundView: React.FC = () => {
     latencyMs: number;
     ttftMs?: number;
     chunkCount: number;
+    streamed: boolean;
+    usage?: ChatStreamChunk['usage'];
     model: string;
     headers?: ChatStreamHeaders;
   } | null>(null);
@@ -154,6 +163,24 @@ export const PlaygroundView: React.FC = () => {
     return Object.keys(ext).length > 0 ? ext : undefined;
   };
 
+  const buildCacheHeaders = (): Record<string, string> => {
+    const hdrs: Record<string, string> = {};
+    if (cacheMode === 'enabled') hdrs['X-Gateway-Cache-Control'] = 'enabled';
+    else if (cacheMode === 'bypass') hdrs['Cache-Control'] = 'no-cache';
+    const sim = parseFloat(similarityOverride.trim());
+    if (similarityOverride.trim() !== '' && !isNaN(sim) && sim > 0 && sim <= 1) {
+      hdrs['X-Gateway-Cache-Similarity'] = similarityOverride.trim();
+    }
+    return hdrs;
+  };
+
+  const parsedSeed = (): number | undefined => {
+    const trimmed = seedInput.trim();
+    if (!trimmed) return undefined;
+    const n = parseInt(trimmed, 10);
+    return Number.isInteger(n) ? n : undefined;
+  };
+
   const handleSendMessage = async () => {
     if (!userInput.trim() || isStreaming) return;
     if (!virtualKey.trim()) {
@@ -202,66 +229,98 @@ export const PlaygroundView: React.FC = () => {
     }
 
     const ext = buildExtensions();
+    const seed = parsedSeed();
+    const extraHeaders = buildCacheHeaders();
     const payload: Record<string, any> = {
       model: activeModel,
       messages: apiMessages,
       temperature,
       max_tokens: maxTokens,
       top_p: topP,
-      stream: true,
+      stream: streamMode,
+      ...(seed !== undefined ? { seed } : {}),
       ...(ext ? { goroute_extensions: ext } : {}),
     };
 
     try {
-      await streamChatCompletion(
-        '/v1/chat/completions',
-        virtualKey.trim(),
-        payload,
-        (chunk: ChatStreamChunk) => {
-          chunksReceived++;
-          if (firstTokenTime === undefined && (chunk.content || chunk.reasoning_content)) {
-            firstTokenTime = performance.now() - startTime;
-          }
+      let responseUsage: ChatStreamChunk['usage'] | undefined;
+      if (streamMode) {
+        await streamChatCompletion(
+          '/v1/chat/completions',
+          virtualKey.trim(),
+          payload,
+          (chunk: ChatStreamChunk) => {
+            chunksReceived++;
+            if (chunk.usage) responseUsage = chunk.usage;
+            if (firstTokenTime === undefined && (chunk.content || chunk.reasoning_content)) {
+              firstTokenTime = performance.now() - startTime;
+            }
 
-          setMessages((prev) =>
-            prev.map((msg) => {
-              if (msg.id !== assistantMsgId) return msg;
+            setMessages((prev) =>
+              prev.map((msg) => {
+                if (msg.id !== assistantMsgId) return msg;
 
-              let updatedContent = msg.content;
-              if (chunk.content) {
-                updatedContent += chunk.content;
-              }
+                let updatedContent = msg.content;
+                if (chunk.content) {
+                  updatedContent += chunk.content;
+                }
 
-              let updatedReasoning = msg.reasoning_content;
-              if (chunk.reasoning_content) {
-                updatedReasoning = (updatedReasoning || '') + chunk.reasoning_content;
-              }
+                let updatedReasoning = msg.reasoning_content;
+                if (chunk.reasoning_content) {
+                  updatedReasoning = (updatedReasoning || '') + chunk.reasoning_content;
+                }
 
-              let updatedToolCalls = msg.tool_calls;
-              if (chunk.tool_calls) {
-                updatedToolCalls = chunk.tool_calls;
-              }
+                let updatedToolCalls = msg.tool_calls;
+                if (chunk.tool_calls) {
+                  updatedToolCalls = chunk.tool_calls;
+                }
 
-              return {
-                ...msg,
-                content: updatedContent,
-                reasoning_content: updatedReasoning,
-                tool_calls: updatedToolCalls,
-              };
-            })
-          );
-        },
-        controller.signal,
-        (headers) => {
-          capturedHeaders = headers;
-        }
-      );
+                return {
+                  ...msg,
+                  content: updatedContent,
+                  reasoning_content: updatedReasoning,
+                  tool_calls: updatedToolCalls,
+                };
+              })
+            );
+          },
+          controller.signal,
+          (headers) => {
+            capturedHeaders = headers;
+          },
+          extraHeaders
+        );
+      } else {
+        const res = await sendChatCompletion(
+          '/v1/chat/completions',
+          virtualKey.trim(),
+          payload,
+          controller.signal,
+          extraHeaders
+        );
+        capturedHeaders = res.headers;
+        responseUsage = res.usage;
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === assistantMsgId
+              ? {
+                  ...msg,
+                  content: res.content,
+                  reasoning_content: res.reasoning_content,
+                  tool_calls: res.tool_calls,
+                }
+              : msg
+          )
+        );
+      }
 
       const totalLatency = performance.now() - startTime;
       setLastRequestMetrics({
         latencyMs: Math.round(totalLatency),
         ttftMs: firstTokenTime ? Math.round(firstTokenTime) : undefined,
         chunkCount: chunksReceived,
+        streamed: streamMode,
+        usage: responseUsage,
         model: activeModel,
         headers: capturedHeaders,
       });
@@ -315,45 +374,74 @@ export const PlaygroundView: React.FC = () => {
     }
 
     const ext = buildExtensions();
+    const seed = parsedSeed();
+    const cacheHdrs = buildCacheHeaders();
     const reqBody = {
       model: activeModel,
       messages: msgs,
       temperature,
       max_tokens: maxTokens,
-      stream: true,
+      stream: streamMode,
+      ...(seed !== undefined ? { seed } : {}),
       ...(ext ? { goroute_extensions: ext } : {}),
     };
 
     switch (lang) {
-      case 'curl':
+      case 'curl': {
+        const extraHdrLines = Object.entries(cacheHdrs)
+          .map(([k, v]) => `  -H ${escapeShellSingle(`${k}: ${v}`)} \\\n`)
+          .join('');
         return `curl -X POST ${escapeShellSingle(endpoint)} \\
   -H ${escapeShellSingle(`Authorization: Bearer ${key}`)} \\
   -H 'Content-Type: application/json' \\
-  -d ${escapeShellSingle(JSON.stringify(reqBody, null, 2))}`;
+${extraHdrLines}  -d ${escapeShellSingle(JSON.stringify(reqBody, null, 2))}`;
+      }
 
-      case 'python':
+      case 'python': {
+        const hdrArg = Object.keys(cacheHdrs).length > 0 ? `, extra_headers=${JSON.stringify(cacheHdrs)}` : '';
+        const seedArg = seed !== undefined ? `, seed=${seed}` : '';
+        if (!streamMode) {
+          return `from openai import OpenAI
+client = OpenAI(api_key=${JSON.stringify(key)}, base_url=${JSON.stringify(baseUrl)})
+resp = client.chat.completions.create(model=${JSON.stringify(activeModel)}, messages=${JSON.stringify(msgs)}, temperature=${temperature}, max_tokens=${maxTokens}, stream=False${seedArg}${hdrArg})
+print(resp.choices[0].message.content)`;
+        }
         return `from openai import OpenAI
 client = OpenAI(api_key=${JSON.stringify(key)}, base_url=${JSON.stringify(baseUrl)})
-for c in client.chat.completions.create(model=${JSON.stringify(activeModel)}, messages=${JSON.stringify(msgs)}, temperature=${temperature}, max_tokens=${maxTokens}, stream=True):
+for c in client.chat.completions.create(model=${JSON.stringify(activeModel)}, messages=${JSON.stringify(msgs)}, temperature=${temperature}, max_tokens=${maxTokens}, stream=True${seedArg}${hdrArg}):
     print(c.choices[0].delta.content or "", end="", flush=True)`;
+      }
 
-      case 'ts':
+      case 'ts': {
+        const seedProp = seed !== undefined ? `, seed: ${seed}` : '';
+        const optsArg = Object.keys(cacheHdrs).length > 0 ? `, { headers: ${JSON.stringify(cacheHdrs)} }` : '';
+        if (!streamMode) {
+          return `import OpenAI from 'openai';
+const client = new OpenAI({ apiKey: ${JSON.stringify(key)}, baseURL: ${JSON.stringify(baseUrl)} });
+const resp = await client.chat.completions.create({ model: ${JSON.stringify(activeModel)}, messages: ${JSON.stringify(msgs)}, temperature: ${temperature}, max_tokens: ${maxTokens}, stream: false${seedProp} }${optsArg});
+console.log(resp.choices[0]?.message?.content || '');`;
+        }
         return `import OpenAI from 'openai';
 const client = new OpenAI({ apiKey: ${JSON.stringify(key)}, baseURL: ${JSON.stringify(baseUrl)} });
-const stream = await client.chat.completions.create({ model: ${JSON.stringify(activeModel)}, messages: ${JSON.stringify(msgs)}, temperature: ${temperature}, max_tokens: ${maxTokens}, stream: true });
+const stream = await client.chat.completions.create({ model: ${JSON.stringify(activeModel)}, messages: ${JSON.stringify(msgs)}, temperature: ${temperature}, max_tokens: ${maxTokens}, stream: true${seedProp} }${optsArg});
 for await (const c of stream) process.stdout.write(c.choices[0]?.delta?.content || '');`;
+      }
 
-      case 'go':
+      case 'go': {
+        const goHdrs = Object.entries(cacheHdrs)
+          .map(([k, v]) => `  req.Header.Set(${JSON.stringify(k)}, ${JSON.stringify(v)})\n`)
+          .join('');
         return `package main
 import ("bytes"; "encoding/json"; "io"; "net/http"; "os")
 func main() {
-  body, _ := json.Marshal(map[string]any{"model": ${JSON.stringify(activeModel)}, "messages": ${JSON.stringify(msgs)}, "temperature": ${temperature}})
+  body, _ := json.Marshal(map[string]any{"model": ${JSON.stringify(activeModel)}, "messages": ${JSON.stringify(msgs)}, "temperature": ${temperature}, "stream": ${streamMode}${seed !== undefined ? `, "seed": ${seed}` : ''}})
   req, _ := http.NewRequest("POST", ${JSON.stringify(endpoint)}, bytes.NewBuffer(body))
   req.Header.Set("Authorization", "Bearer "+${JSON.stringify(key)})
   req.Header.Set("Content-Type", "application/json")
-  resp, err := http.DefaultClient.Do(req); if err != nil { panic(err) }
+${goHdrs}  resp, err := http.DefaultClient.Do(req); if err != nil { panic(err) }
   defer resp.Body.Close(); io.Copy(os.Stdout, resp.Body)
 }`;
+      }
     }
   };
 
@@ -668,6 +756,40 @@ func main() {
             </div>
           </div>
 
+          {/* Execution Mode Toggle (Streaming SSE vs Cacheable JSON) */}
+          <div className="space-y-1.5 pt-2 border-t border-border-subtle text-xs font-mono">
+            <label className="text-[11px] text-brand-muted">Response Mode:</label>
+            <div className="grid grid-cols-2 gap-1.5">
+              <button
+                type="button"
+                onClick={() => setStreamMode(true)}
+                className={`px-2 py-1.5 rounded text-[11px] font-mono transition ${
+                  streamMode
+                    ? 'bg-accent-soft text-accent-primary border border-accent-primary/40 font-bold'
+                    : 'bg-surface-elevated text-brand-muted border border-border-subtle hover:text-brand-title'
+                }`}
+              >
+                Stream SSE
+              </button>
+              <button
+                type="button"
+                onClick={() => setStreamMode(false)}
+                className={`px-2 py-1.5 rounded text-[11px] font-mono transition ${
+                  !streamMode
+                    ? 'bg-accent-soft text-accent-primary border border-accent-primary/40 font-bold'
+                    : 'bg-surface-elevated text-brand-muted border border-border-subtle hover:text-brand-title'
+                }`}
+              >
+                JSON (Cacheable)
+              </button>
+            </div>
+            {streamMode && cacheMode !== 'default' && (
+              <p className="text-[10px] text-status-warning">
+                Switch to JSON (Cacheable) to exercise v0.1 response cache hits.
+              </p>
+            )}
+          </div>
+
           {/* Sliders */}
           <div className="space-y-3 pt-2 border-t border-border-subtle text-xs font-mono">
             {[
@@ -691,6 +813,65 @@ func main() {
                 />
               </div>
             ))}
+          </div>
+
+          {/* Cache Controls */}
+          <div className="pt-2 border-t border-border-subtle text-xs font-mono">
+            <button
+              type="button"
+              onClick={() => setIsCacheOpen(!isCacheOpen)}
+              className="w-full flex items-center justify-between text-brand-muted hover:text-brand-title transition py-1"
+            >
+              <span>Cache Controls</span>
+              <ChevronDown className={`w-3.5 h-3.5 transition-transform ${isCacheOpen ? '' : '-rotate-90'}`} />
+            </button>
+            {isCacheOpen && (() => {
+              const cc = 'w-full px-2 py-1 text-[11px] bg-surface-input border border-border-subtle rounded text-brand-body placeholder-brand-muted focus:outline-none focus:border-accent-primary';
+              return (
+                <div className="space-y-2 pt-2">
+                  <div>
+                    <label className="block text-[10px] text-brand-muted mb-0.5">Cache Mode</label>
+                    <select
+                      aria-label="Cache Mode"
+                      value={cacheMode}
+                      onChange={(e) => setCacheMode(e.target.value as 'default' | 'enabled' | 'bypass')}
+                      className={cc}
+                    >
+                      <option value="default">Default (temp=0 or seed)</option>
+                      <option value="enabled">Force Enable (X-Gateway-Cache-Control)</option>
+                      <option value="bypass">Bypass (Cache-Control: no-cache)</option>
+                    </select>
+                  </div>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <div>
+                      <label className="block text-[10px] text-brand-muted mb-0.5">Seed</label>
+                      <input
+                        type="number"
+                        aria-label="Seed"
+                        value={seedInput}
+                        onChange={(e) => setSeedInput(e.target.value)}
+                        placeholder="e.g. 42"
+                        className={cc}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-brand-muted mb-0.5">Similarity (0-1)</label>
+                      <input
+                        type="number"
+                        aria-label="Semantic Similarity"
+                        min={0.01}
+                        max={1}
+                        step={0.01}
+                        value={similarityOverride}
+                        onChange={(e) => setSimilarityOverride(e.target.value)}
+                        placeholder="e.g. 0.90"
+                        className={cc}
+                      />
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
 
           {/* Routing Hints */}
@@ -744,7 +925,8 @@ func main() {
               {[
                 lastRequestMetrics.headers?.provider && ['Upstream Provider:', lastRequestMetrics.headers.provider, 'text-brand-body capitalize font-medium'],
                 ['Target Model:', lastRequestMetrics.model, 'text-accent-primary font-medium'],
-                lastRequestMetrics.headers?.cache && ['Exact Cache:', lastRequestMetrics.headers.cache, lastRequestMetrics.headers.cache === 'HIT' ? 'text-status-success font-bold' : 'text-brand-muted'],
+                lastRequestMetrics.headers?.cache && ['Response Cache:', lastRequestMetrics.headers.cacheType ? `${lastRequestMetrics.headers.cache} (${lastRequestMetrics.headers.cacheType})` : lastRequestMetrics.headers.cache, lastRequestMetrics.headers.cache === 'HIT' ? 'text-status-success font-bold' : 'text-brand-muted'],
+                lastRequestMetrics.headers?.cacheSimilarity && ['Cache Similarity:', lastRequestMetrics.headers.cacheSimilarity, 'text-status-success font-medium'],
                 lastRequestMetrics.headers?.tokenEstimate !== undefined && ['Estimated Tokens:', String(lastRequestMetrics.headers.tokenEstimate), 'text-brand-body'],
                 lastRequestMetrics.headers?.costMicros !== undefined && ['Estimated Cost:', `$${(lastRequestMetrics.headers.costMicros / 1_000_000).toFixed(6)} (${lastRequestMetrics.headers.costMicros} µ$)`, 'text-status-success font-bold'],
                 lastRequestMetrics.headers?.guardrailAction && ['Guardrail Action:', lastRequestMetrics.headers.guardrailAction, 'text-status-warning font-semibold uppercase'],
@@ -755,7 +937,10 @@ func main() {
                 lastRequestMetrics.headers?.tierStepdowns !== undefined && !isNaN(lastRequestMetrics.headers.tierStepdowns) && ['Tier Stepdowns:', String(lastRequestMetrics.headers.tierStepdowns), 'text-brand-body'],
                 ['Total Latency:', `${lastRequestMetrics.latencyMs} ms`, 'text-brand-body font-bold'],
                 lastRequestMetrics.ttftMs && ['Time-To-First-Token:', `${lastRequestMetrics.ttftMs} ms`, 'text-status-success font-bold'],
-                ['Stream Chunks:', `${lastRequestMetrics.chunkCount} SSE events`, 'text-brand-body'],
+                lastRequestMetrics.usage && ['Tokens (P/C/Tot):', `${lastRequestMetrics.usage.prompt_tokens}/${lastRequestMetrics.usage.completion_tokens}/${lastRequestMetrics.usage.total_tokens}`, 'text-brand-body'],
+                lastRequestMetrics.streamed
+                  ? ['Stream Chunks:', `${lastRequestMetrics.chunkCount} SSE events`, 'text-brand-body']
+                  : ['Response Mode:', 'JSON (non-streaming)', 'text-brand-body'],
               ].filter((x): x is [string, string, string] => Boolean(x)).map(([label, val, cls]) => (
                 <div key={label} className="flex justify-between text-brand-muted">
                   <span>{label}</span>

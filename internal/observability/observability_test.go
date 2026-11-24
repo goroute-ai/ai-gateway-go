@@ -109,6 +109,38 @@ func TestCollectorSnapshotAndPrometheusExposition(t *testing.T) {
 	if strings.Contains(body, "deployment_id=") || strings.Contains(body, "name=") {
 		t.Fatalf("Prometheus labels must not expose unbounded deployment identifiers: %s", body)
 	}
+	if !strings.Contains(body, "# HELP gateway_cache_hits_total Total response cache hits (exact and semantic).") {
+		t.Fatalf("expected updated cache hits HELP text, got:\n%s", body)
+	}
+
+	// Authoritative cache metrics provider overrides Collector's per-request approximation (M8).
+	col.SetCacheMetricsProvider(func() (hits, misses int64) { return 3, 1 })
+	snapWithProvider := col.Snapshot()
+	if snapWithProvider.CacheHits != 3 || snapWithProvider.CacheMisses != 1 || snapWithProvider.CacheHitRate != 0.75 {
+		t.Fatalf("expected provider cache metrics (3, 1, 0.75), got (%d, %d, %v)", snapWithProvider.CacheHits, snapWithProvider.CacheMisses, snapWithProvider.CacheHitRate)
+	}
+
+	// Rich CacheTelemetry provider populates backend type, status, semantic hits, errors, entries, evictions.
+	col.SetCacheTelemetryProvider(func() CacheTelemetry {
+		return CacheTelemetry{
+			Enabled:      true,
+			Type:         "redis-semantic",
+			Status:       "ok",
+			Hits:         9,
+			Misses:       1,
+			SemanticHits: 6,
+			Errors:       2,
+			Entries:      42,
+			Evictions:    3,
+		}
+	})
+	snapRich := col.Snapshot()
+	if !snapRich.CacheEnabled || snapRich.CacheType != "redis-semantic" || snapRich.CacheStatus != "ok" ||
+		snapRich.CacheHits != 9 || snapRich.CacheMisses != 1 || snapRich.CacheSemanticHits != 6 ||
+		snapRich.CacheErrors != 2 || snapRich.CacheEntries != 42 || snapRich.CacheEvictions != 3 ||
+		snapRich.CacheHitRate != 0.9 {
+		t.Fatalf("unexpected rich cache telemetry snapshot: %+v", snapRich)
+	}
 
 	// Verify W3C traceparent middleware
 	handler := TraceMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

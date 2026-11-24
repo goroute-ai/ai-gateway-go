@@ -1,257 +1,410 @@
 package cache
 
 import (
-	"container/list"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
+	"log/slog"
 	"maps"
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
-	"github.com/redis/go-redis/v9"
 )
 
-type cacheEpochs struct {
-	Global       int64 `json:"global"`
-	Organization int64 `json:"organization"`
-	Model        int64 `json:"model"`
+// RequestCacheOptions captures normalized per-request cache control directives parsed from
+// HTTP Cache-Control, X-Gateway-Cache-Control, and X-Gateway-Cache-Similarity headers.
+type RequestCacheOptions struct {
+	Bypass             bool
+	Force              bool
+	Enabled            bool
+	SimilarityOverride float64
 }
 
-type cacheEntry struct {
-	Response           *domain.CanonicalChatResponse       `json:"response,omitempty"`
-	CompletionResponse *domain.CanonicalCompletionResponse `json:"completion_response,omitempty"`
-	EmbeddingResponse  *domain.CanonicalEmbeddingResponse  `json:"embedding_response,omitempty"`
-	StreamChunks       []domain.CanonicalStreamChunk       `json:"stream_chunks,omitempty"`
-	OrgID              string                              `json:"org_id"`
-	Model              string                              `json:"model"`
-	Epochs             cacheEpochs                         `json:"epochs"`
-	ExpiresAt          time.Time                           `json:"expires_at"`
-}
-
-// ResponseCache provides tenant-isolated exact-match response caching. Every hit validates
-// shared invalidation epochs before returning either an L1 or Redis entry.
-type ResponseCache struct {
-	enabled bool
-	ttl     time.Duration
-	redis   *storage.RedisFabric
-	l1      boundedL1
-
-	epochMu     sync.RWMutex
-	globalEpoch int64
-	orgEpochs   map[string]int64
-	modelEpochs map[string]int64
-	revision    int64
-	l1Hits      atomic.Uint64
-	l1Misses    atomic.Uint64
-	l2Hits      atomic.Uint64
-	epochChecks atomic.Uint64
-	epochNanos  atomic.Uint64
-}
-
-// MetricsSnapshot captures point-in-time cache hit, miss, and epoch-check counters.
-type MetricsSnapshot struct {
-	L1Hits      uint64
-	L1Misses    uint64
-	L2Hits      uint64
-	EpochChecks uint64
-	EpochNanos  uint64
-}
-
-const defaultL1Capacity = 4096
-
-type l1Item struct {
-	key   string
-	entry cacheEntry
-}
-
-// boundedL1 is a process-local LRU. TTL-only deletion would retain expired
-// entries forever when callers continuously use unique keys.
-type boundedL1 struct {
-	mu       sync.Mutex
-	capacity int
-	items    map[string]*list.Element
-	order    *list.List
-	evicted  uint64
-}
-
-func newBoundedL1(capacity int) boundedL1 {
-	if capacity <= 0 {
-		capacity = defaultL1Capacity
-	}
-	return boundedL1{capacity: capacity, items: make(map[string]*list.Element, capacity), order: list.New()}
-}
-
-func (l *boundedL1) load(key string) (cacheEntry, bool) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	elem, ok := l.items[key]
-	if !ok {
-		return cacheEntry{}, false
-	}
-	l.order.MoveToFront(elem)
-	return elem.Value.(l1Item).entry, true
-}
-
-func (l *boundedL1) store(key string, entry cacheEntry) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if elem, ok := l.items[key]; ok {
-		elem.Value = l1Item{key: key, entry: entry}
-		l.order.MoveToFront(elem)
-		return
-	}
-	if len(l.items) >= l.capacity {
-		oldest := l.order.Back()
-		if oldest != nil {
-			delete(l.items, oldest.Value.(l1Item).key)
-			l.order.Remove(oldest)
-			l.evicted++
+// ParseCacheControl parses standard Cache-Control, X-Gateway-Cache-Control, and optional
+// X-Gateway-Cache-Similarity headers case-insensitively. Disabling directives always win.
+func ParseCacheControl(cacheControl, gatewayCacheControl, similarityHeader string) RequestCacheOptions {
+	var opts RequestCacheOptions
+	combined := strings.TrimSpace(cacheControl)
+	if gw := strings.TrimSpace(gatewayCacheControl); gw != "" {
+		if combined != "" {
+			combined += "," + gw
+		} else {
+			combined = gw
 		}
 	}
-	l.items[key] = l.order.PushFront(l1Item{key: key, entry: entry})
-}
-
-func (l *boundedL1) delete(key string) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if elem, ok := l.items[key]; ok {
-		delete(l.items, key)
-		l.order.Remove(elem)
-	}
-}
-
-func (l *boundedL1) purge(orgID, model string) int {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	purged := 0
-	for elem := l.order.Back(); elem != nil; {
-		prev := elem.Prev()
-		item := elem.Value.(l1Item)
-		matchScope := orgID == "" && model == ""
-		if matchScope || (orgID != "" && item.entry.OrgID == orgID) || (model != "" && item.entry.Model == model) {
-			delete(l.items, item.key)
-			l.order.Remove(elem)
-			purged++
-		}
-		elem = prev
-	}
-	return purged
-}
-
-func (l *boundedL1) stats() (size, capacity int, evicted uint64) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return len(l.items), l.capacity, l.evicted
-}
-
-// NewResponseCache creates a ResponseCache with the default L1 capacity and optional Redis L2 backing.
-func NewResponseCache(enabled bool, ttl time.Duration, redisFabric *storage.RedisFabric) *ResponseCache {
-	return NewResponseCacheWithL1Capacity(enabled, ttl, defaultL1Capacity, redisFabric)
-}
-
-// NewResponseCacheWithL1Capacity creates a ResponseCache with an explicit bounded L1 LRU capacity.
-func NewResponseCacheWithL1Capacity(enabled bool, ttl time.Duration, maxL1Entries int, redisFabric *storage.RedisFabric) *ResponseCache {
-	if ttl <= 0 {
-		ttl = time.Hour
-	}
-	return &ResponseCache{
-		enabled:     enabled,
-		ttl:         ttl,
-		redis:       redisFabric,
-		l1:          newBoundedL1(maxL1Entries),
-		orgEpochs:   make(map[string]int64),
-		modelEpochs: make(map[string]int64),
-	}
-}
-
-// IsCacheable reports whether a ChatCompletion request is eligible for exact-match caching.
-func (c *ResponseCache) IsCacheable(req *domain.CanonicalChatRequest, cacheControlHeader string) bool {
-	if c == nil || !c.enabled || req == nil || req.Stream {
-		return false
-	}
-	if cacheControlHeader == "no-cache" || cacheControlHeader == "bypass" {
-		return false
-	}
-	if cacheControlHeader == "enabled" || cacheControlHeader == "force" {
-		return true
-	}
-	return req.Temperature != nil && *req.Temperature == 0
-}
-
-// IsStreamCacheable reports whether a streaming ChatCompletion request is eligible
-// for exact-match SSE chunk caching.
-//
-// Stream caching is strictly OPT-IN ONLY: unlike non-streaming IsCacheable (which
-// defaults to enabled when temperature == 0), streaming requests are never cached
-// unless the caller explicitly opts in via the Cache-Control (or X-Gateway-Cache-Control)
-// header using an explicit opt-in directive such as "Cache-Control: gateway-stream-cache",
-// "Cache-Control: max-age=<N>" (N > 0), "only-if-cached", "enabled", or "force".
-// Directives "no-cache", "no-store", "bypass", or "max-age=0" always disable caching.
-// Unless "force" is specified, non-deterministic requests with a non-zero temperature
-// (Temperature != nil && *Temperature != 0) are not cached.
-func (c *ResponseCache) IsStreamCacheable(req *domain.CanonicalChatRequest, cacheControlHeader string) bool {
-	if c == nil || !c.enabled || req == nil || !req.Stream {
-		return false
-	}
-	optIn, force := parseStreamCacheControl(cacheControlHeader)
-	if !optIn {
-		return false
-	}
-	if force {
-		return true
-	}
-	return req.Temperature == nil || *req.Temperature == 0
-}
-
-func parseStreamCacheControl(header string) (optIn bool, force bool) {
-	if strings.TrimSpace(header) == "" {
-		return false, false
-	}
-	for _, rawPart := range strings.Split(header, ",") {
-		part := strings.ToLower(strings.TrimSpace(rawPart))
-		if part == "" {
-			continue
-		}
-		switch part {
-		case "no-cache", "no-store", "bypass", "max-age=0":
-			return false, false
-		case "force":
-			optIn = true
-			force = true
-		case "gateway-stream-cache", "enabled", "only-if-cached":
-			optIn = true
-		default:
-			if strings.HasPrefix(part, "max-age=") {
-				valStr := strings.TrimSpace(strings.TrimPrefix(part, "max-age="))
-				valStr = strings.Trim(valStr, `"`)
-				n, err := strconv.Atoi(valStr)
-				if err != nil || n <= 0 {
-					return false, false
-				}
-				optIn = true
+	if combined != "" {
+		for _, rawPart := range strings.Split(combined, ",") {
+			part := strings.ToLower(strings.TrimSpace(rawPart))
+			switch part {
+			case "":
+				continue
+			case "no-cache", "no-store", "bypass", "max-age=0":
+				opts.Bypass = true
+				opts.Force = false
+				opts.Enabled = false
+				return opts
+			case "force":
+				opts.Force = true
+				opts.Enabled = true
+			case "enabled":
+				opts.Enabled = true
 			}
 		}
 	}
-	return optIn, force
+	if simStr := strings.TrimSpace(similarityHeader); simStr != "" {
+		if f, err := strconv.ParseFloat(simStr, 64); err == nil && f > 0 && f <= 1.0 {
+			opts.SimilarityOverride = f
+		}
+	}
+	return opts
 }
 
-// ComputeKey generates a collision-resistant SHA-256 cache key scoped to the organization and request.
+// ChatLookupResult captures the outcome of a chat cache lookup, carrying pre-computed keys
+// and (for semantic mode) the prompt embedding so a miss can be stored with zero extra embeds.
+type ChatLookupResult struct {
+	Eligible   bool
+	Hit        bool
+	CacheType  string // "exact" or "semantic"
+	Similarity float64
+	Response   *domain.CanonicalChatResponse
+
+	exactKey       string
+	requestedModel string
+	scopeHash      string
+	prompt         string
+	embedding      []float32
+}
+
+// MetricsSnapshot captures backend-agnostic response cache counters and local occupancy stats.
+type MetricsSnapshot struct {
+	BackendType  string
+	Hits         uint64
+	Misses       uint64
+	SemanticHits uint64
+	Errors       uint64
+	Entries      int
+	Capacity     int
+	Evictions    uint64
+}
+
+// ResponseCache provides tenant-isolated response caching backed by one explicit Backend
+// ("local", "redis", or "redis-semantic").
+type ResponseCache struct {
+	enabled     bool
+	ttl         time.Duration
+	backend     Backend
+	semantic    SemanticBackend
+	excluded    map[string]bool
+	maxMessages int
+
+	revision     atomic.Int64
+	hits         atomic.Uint64
+	misses       atomic.Uint64
+	semanticHits atomic.Uint64
+	errors       atomic.Uint64
+}
+
+// NewResponseCacheFromConfig constructs a ResponseCache with the configured backend type
+// ("local", "redis", or "redis-semantic").
+func NewResponseCacheFromConfig(cfg config.CacheConfig, redisFabric *storage.RedisFabric, embedFn EmbedFunc) *ResponseCache {
+	ttl := cfg.DefaultTTL
+	if ttl <= 0 {
+		ttl = time.Hour
+	}
+	maxEntries := cfg.MaxEntries
+	if maxEntries <= 0 && cfg.MaxL1Entries > 0 {
+		maxEntries = cfg.MaxL1Entries
+	}
+	if maxEntries <= 0 {
+		maxEntries = defaultLocalMaxEntries
+	}
+	maxItemBytes := cfg.MaxItemBytes
+	if maxItemBytes <= 0 {
+		maxItemBytes = defaultLocalMaxItemBytes
+	}
+	cacheType := strings.ToLower(strings.TrimSpace(cfg.Type))
+	if cacheType == "" {
+		cacheType = config.CacheTypeLocal
+	}
+
+	var backend Backend
+	var semBackend SemanticBackend
+	switch cacheType {
+	case config.CacheTypeRedis:
+		if redisFabric != nil && redisFabric.Client() != nil {
+			backend = NewRedisBackend(redisFabric, cfg.Namespace, maxItemBytes)
+		} else {
+			slog.Warn("cache: cache.type=redis configured without active Redis client; falling back to local in-memory cache")
+			backend = NewLocalBackend(maxEntries, maxItemBytes)
+		}
+	case config.CacheTypeRedisSemantic:
+		if redisFabric != nil && redisFabric.Client() != nil {
+			sb := NewRedisSemanticBackend(redisFabric, cfg.Namespace, maxItemBytes, cfg.Semantic, embedFn)
+			backend = sb
+			semBackend = sb
+		} else {
+			slog.Warn("cache: cache.type=redis-semantic configured without active Redis client; falling back to local in-memory cache")
+			backend = NewLocalBackend(maxEntries, maxItemBytes)
+		}
+	default:
+		backend = NewLocalBackend(maxEntries, maxItemBytes)
+	}
+
+	excluded := make(map[string]bool, len(cfg.ExcludedCallTypes))
+	for _, ct := range cfg.ExcludedCallTypes {
+		if norm := normalizeCallType(ct); norm != "" {
+			excluded[norm] = true
+		}
+	}
+
+	return &ResponseCache{
+		enabled:     cfg.Enabled,
+		ttl:         ttl,
+		backend:     backend,
+		semantic:    semBackend,
+		excluded:    excluded,
+		maxMessages: cfg.Semantic.MaxMessages,
+	}
+}
+
+// NewResponseCacheWithBackend creates a ResponseCache around an explicit Backend (useful for tests).
+func NewResponseCacheWithBackend(enabled bool, ttl time.Duration, backend Backend, excludedCallTypes []string, maxMessages int) *ResponseCache {
+	if ttl <= 0 {
+		ttl = time.Hour
+	}
+	excluded := make(map[string]bool, len(excludedCallTypes))
+	for _, ct := range excludedCallTypes {
+		if norm := normalizeCallType(ct); norm != "" {
+			excluded[norm] = true
+		}
+	}
+	sem, _ := backend.(SemanticBackend)
+	return &ResponseCache{
+		enabled:     enabled,
+		ttl:         ttl,
+		backend:     backend,
+		semantic:    sem,
+		excluded:    excluded,
+		maxMessages: maxMessages,
+	}
+}
+
+// NewLocalResponseCache creates an in-memory ResponseCache with default settings.
+func NewLocalResponseCache(enabled bool, ttl time.Duration, maxEntries int) *ResponseCache {
+	return NewResponseCacheWithBackend(enabled, ttl, NewLocalBackend(maxEntries, defaultLocalMaxItemBytes), []string{"embedding"}, 4)
+}
+
+func normalizeCallType(ct string) string {
+	switch strings.ToLower(strings.TrimSpace(ct)) {
+	case "chat", "chat_completion", "completion_chat", "messages", "responses":
+		return "chat"
+	case "completion", "text_completion", "legacy_completion":
+		return "completion"
+	case "embedding", "embeddings", "aembedding":
+		return "embedding"
+	default:
+		return strings.ToLower(strings.TrimSpace(ct))
+	}
+}
+
+func (c *ResponseCache) isCallTypeExcluded(callType string) bool {
+	if c == nil || len(c.excluded) == 0 {
+		return false
+	}
+	return c.excluded[normalizeCallType(callType)]
+}
+
+// Enabled reports whether response caching is enabled.
+func (c *ResponseCache) Enabled() bool {
+	return c != nil && c.enabled
+}
+
+// Type returns the active backend type ("local", "redis", or "redis-semantic").
+func (c *ResponseCache) Type() string {
+	if c == nil || c.backend == nil {
+		return config.CacheTypeLocal
+	}
+	return c.backend.Type()
+}
+
+// IsCacheable reports whether a synchronous ChatCompletion request is eligible for caching.
+func (c *ResponseCache) IsCacheable(req *domain.CanonicalChatRequest, opts RequestCacheOptions) bool {
+	if c == nil || !c.enabled || req == nil || req.Stream || c.isCallTypeExcluded("chat") {
+		return false
+	}
+	if opts.Bypass {
+		return false
+	}
+	if opts.Enabled || opts.Force {
+		return true
+	}
+	// Semantic cache is explicitly enabled to match paraphrased prompts (unless bypassed or streaming);
+	// exact-match cache requires temperature == 0 or a non-nil seed by default for deterministic outputs.
+	if c.semantic != nil {
+		return req.Temperature == nil || *req.Temperature == 0 || hasNonNilExtraParam(req.ExtraParams, "seed")
+	}
+	return (req.Temperature != nil && *req.Temperature == 0) || hasNonNilExtraParam(req.ExtraParams, "seed")
+}
+
+func hasNonNilExtraParam(extra map[string]any, key string) bool {
+	if len(extra) == 0 {
+		return false
+	}
+	v, ok := extra[key]
+	return ok && v != nil
+}
+
+// LookupChat checks the configured backend (exact or semantic) for a cached chat response.
+func (c *ResponseCache) LookupChat(
+	ctx context.Context,
+	orgID, teamID, allowedModelScope string,
+	req *domain.CanonicalChatRequest,
+	opts RequestCacheOptions,
+) ChatLookupResult {
+	if !c.IsCacheable(req, opts) {
+		return ChatLookupResult{}
+	}
+
+	exactKey := c.ComputeKeyWithScope(orgID, teamID, allowedModelScope, req)
+	if exactKey == "" {
+		return ChatLookupResult{}
+	}
+	res := ChatLookupResult{
+		Eligible:       true,
+		exactKey:       exactKey,
+		requestedModel: req.Model,
+	}
+
+	// Semantic mode: attempt exact KV fast-path first (zero embedding cost on identical repeat),
+	// then fall back to Redis Vector Similarity Search if eligible by max_messages.
+	if c.semantic != nil {
+		if raw, hit, err := c.backend.Get(ctx, orgID, exactKey); err == nil && hit {
+			var resp domain.CanonicalChatResponse
+			if json.Unmarshal(raw, &resp) == nil {
+				c.hits.Add(1)
+				res.Hit = true
+				res.CacheType = CacheHitTypeExact
+				res.Response = cloneResponse(&resp)
+				return res
+			}
+		} else if err != nil {
+			c.errors.Add(1)
+			slog.Warn("cache: exact lookup failed (failing open)", "backend", c.Type(), "org_id", orgID, "error", err)
+		}
+
+		if prompt, priorTurns, ok := extractSemanticPrompt(req, c.maxMessages); ok {
+			scopeHash := computeSemanticScopeHash(orgID, teamID, allowedModelScope, req, priorTurns)
+			if scopeHash != "" {
+				res.scopeHash = scopeHash
+				res.prompt = prompt
+				outcome, err := c.semantic.SearchSemantic(ctx, SemanticLookup{
+					OrgID:             orgID,
+					ScopeHash:         scopeHash,
+					Prompt:            prompt,
+					ThresholdOverride: opts.SimilarityOverride,
+				})
+				res.embedding = outcome.Embedding
+				if err != nil {
+					c.errors.Add(1)
+					c.misses.Add(1)
+					slog.Warn("cache: semantic lookup failed (failing open)", "backend", c.Type(), "org_id", orgID, "error", err)
+					return res
+				}
+				if outcome.Hit && len(outcome.Payload) > 0 {
+					var resp domain.CanonicalChatResponse
+					if json.Unmarshal(outcome.Payload, &resp) == nil {
+						c.hits.Add(1)
+						c.semanticHits.Add(1)
+						res.Hit = true
+						res.CacheType = CacheHitTypeSemantic
+						res.Similarity = outcome.Similarity
+						res.Response = cloneResponse(&resp)
+						return res
+					}
+				}
+			}
+		}
+		c.misses.Add(1)
+		return res
+	}
+
+	// Exact-match mode ("local" or "redis").
+	raw, hit, err := c.backend.Get(ctx, orgID, exactKey)
+	if err != nil {
+		c.errors.Add(1)
+		c.misses.Add(1)
+		slog.Warn("cache: exact lookup failed (failing open)", "backend", c.Type(), "org_id", orgID, "error", err)
+		return res
+	}
+	if !hit || len(raw) == 0 {
+		c.misses.Add(1)
+		return res
+	}
+	var resp domain.CanonicalChatResponse
+	if json.Unmarshal(raw, &resp) != nil {
+		c.misses.Add(1)
+		return res
+	}
+	c.hits.Add(1)
+	res.Hit = true
+	res.CacheType = CacheHitTypeExact
+	res.Response = cloneResponse(&resp)
+	return res
+}
+
+// StoreChat persists a chat response in the active backend, reusing any embedding computed
+// during LookupChat so semantic cache writes never trigger a duplicate embedding API call.
+func (c *ResponseCache) StoreChat(ctx context.Context, lookup ChatLookupResult, orgID string, resp *domain.CanonicalChatResponse) {
+	if c == nil || !c.enabled || !lookup.Eligible || lookup.exactKey == "" || resp == nil {
+		return
+	}
+	raw, err := json.Marshal(cloneResponse(resp))
+	if err != nil {
+		return
+	}
+	meta := EntryMeta{
+		OrgID:          orgID,
+		Model:          resp.Model,
+		RequestedModel: lookup.requestedModel,
+		Modality:       "chat",
+	}
+	if err := c.backend.Set(ctx, orgID, lookup.exactKey, raw, meta, c.ttl); err != nil {
+		c.errors.Add(1)
+		slog.Warn("cache: exact store failed", "backend", c.Type(), "org_id", orgID, "error", err)
+	}
+	if c.semantic != nil && lookup.scopeHash != "" && lookup.prompt != "" {
+		if err := c.semantic.StoreSemantic(ctx, SemanticStore{
+			OrgID:          orgID,
+			Model:          resp.Model,
+			RequestedModel: lookup.requestedModel,
+			ScopeHash:      lookup.scopeHash,
+			Prompt:         lookup.prompt,
+			Payload:        raw,
+			Embedding:      lookup.embedding,
+			TTL:            c.ttl,
+		}); err != nil {
+			c.errors.Add(1)
+			slog.Warn("cache: semantic store failed", "backend", c.Type(), "org_id", orgID, "error", err)
+		}
+	}
+}
+
+// ComputeKey generates a collision-resistant SHA-256 cache key scoped to orgID and req.
 func (c *ResponseCache) ComputeKey(orgID string, req *domain.CanonicalChatRequest) string {
 	return c.ComputeKeyWithScope(orgID, "", "", req)
 }
 
-// ComputeKeyWithScope generates a collision-resistant SHA-256 cache key scoped to the
-// organization, and when model == "auto", also scoped to teamID and effectiveModel.
-func (c *ResponseCache) ComputeKeyWithScope(orgID, teamID, effectiveModel string, req *domain.CanonicalChatRequest) string {
+// ComputeKeyWithScope generates a collision-resistant SHA-256 cache key scoped to orgID,
+// and for all virtual router aliases ("auto" and "router/*"), also scoped to teamID and
+// allowedModelScope so distinct keys/teams never share aliased cache entries across allowlists.
+func (c *ResponseCache) ComputeKeyWithScope(orgID, teamID, allowedModelScope string, req *domain.CanonicalChatRequest) string {
 	type keyPayload struct {
 		OrgID          string                       `json:"org_id"`
 		TeamID         string                       `json:"team_id,omitempty"`
@@ -261,9 +414,6 @@ func (c *ResponseCache) ComputeKeyWithScope(orgID, teamID, effectiveModel string
 	if req == nil {
 		return ""
 	}
-	// RequestID is per-call observability metadata. Stream requests are not
-	// cacheable, so omitting it avoids irrelevant key differences. All other
-	// canonical fields participate, including provider and modality extensions.
 	canonical := *req
 	canonical.RequestID = ""
 	canonical.Stream = false
@@ -271,154 +421,171 @@ func (c *ResponseCache) ComputeKeyWithScope(orgID, teamID, effectiveModel string
 		OrgID:   orgID,
 		Request: &canonical,
 	}
-	if req.Model == "auto" {
+	if isVirtualModelAlias(req.Model) {
 		payload.TeamID = teamID
-		if effectiveModel != "" {
-			payload.EffectiveModel = effectiveModel
+		if allowedModelScope != "" {
+			payload.EffectiveModel = allowedModelScope
 		} else {
 			payload.EffectiveModel = req.ResolvedModel
 		}
 	}
 	h := sha256.New()
 	if err := json.NewEncoder(h).Encode(payload); err != nil {
-		// An unencodable extension value must disable caching, never collapse to
-		// the same empty-payload digest as another request.
 		return ""
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// Get retrieves a cached chat completion from L1 or Redis L2 if unexpired and matching current invalidation epochs.
-func (c *ResponseCache) Get(ctx context.Context, key string) (*domain.CanonicalChatResponse, bool) {
-	if c == nil || key == "" {
-		return nil, false
+func isVirtualModelAlias(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	return m == "auto" || strings.HasPrefix(m, "router/")
+}
+
+// extractSemanticPrompt extracts the final user prompt and any preceding non-system turns for
+// semantic vector caching. Returns ok=false when the conversation exceeds maxMessages (when > 0;
+// maxMessages < 0 is unlimited), when any message contains non-text multimodal parts (images,
+// documents, audio) or tool/tool_calls content, or when the final non-system turn is not a user message.
+func extractSemanticPrompt(req *domain.CanonicalChatRequest, maxMessages int) (string, []domain.CanonicalMessage, bool) {
+	if req == nil || len(req.Messages) == 0 {
+		return "", nil, false
 	}
-	now := time.Now()
-	if entry, ok := c.l1.load(key); ok {
-		if entry.Response != nil && now.Before(entry.ExpiresAt) {
-			current, err := c.currentEpochs(ctx, entry.OrgID, entry.Model)
-			if err != nil {
-				c.l1Misses.Add(1)
-				return nil, false
+	var nonSystem []domain.CanonicalMessage
+	for _, msg := range req.Messages {
+		if messageHasNonTextMultimodalParts(msg) {
+			return "", nil, false
+		}
+		role := strings.ToLower(strings.TrimSpace(msg.Role))
+		if role == "tool" || len(msg.ToolCalls) > 0 || strings.TrimSpace(msg.ToolCallID) != "" {
+			return "", nil, false
+		}
+		if role != "system" && role != "developer" {
+			nonSystem = append(nonSystem, msg)
+		}
+	}
+	if len(nonSystem) == 0 {
+		return "", nil, false
+	}
+	if maxMessages > 0 && len(nonSystem) > maxMessages {
+		return "", nil, false
+	}
+	last := nonSystem[len(nonSystem)-1]
+	if strings.ToLower(strings.TrimSpace(last.Role)) != "user" {
+		return "", nil, false
+	}
+	lastUser := extractMessageText(last)
+	if strings.TrimSpace(lastUser) == "" {
+		return "", nil, false
+	}
+	var priorTurns []domain.CanonicalMessage
+	if len(nonSystem) > 1 {
+		priorTurns = nonSystem[:len(nonSystem)-1]
+	}
+	return lastUser, priorTurns, true
+}
+
+func messageHasNonTextMultimodalParts(msg domain.CanonicalMessage) bool {
+	for _, p := range msg.Parts {
+		if p.ImageURL != nil || p.Document != nil {
+			return true
+		}
+		pt := strings.ToLower(strings.TrimSpace(p.Type))
+		if pt != "" && pt != "text" && pt != "input_text" {
+			return true
+		}
+	}
+	return false
+}
+
+func extractMessageText(msg domain.CanonicalMessage) string {
+	if t := strings.TrimSpace(msg.Content); t != "" {
+		return t
+	}
+	var sb strings.Builder
+	for _, p := range msg.Parts {
+		if p.Type == "text" && strings.TrimSpace(p.Text) != "" {
+			if sb.Len() > 0 {
+				sb.WriteByte('\n')
 			}
-			if current == entry.Epochs {
-				c.l1Hits.Add(1)
-				return cloneResponse(entry.Response), true
-			}
-		}
-		if entry.Response != nil {
-			c.l1.delete(key)
+			sb.WriteString(strings.TrimSpace(p.Text))
 		}
 	}
-	c.l1Misses.Add(1)
-
-	if c.redis == nil || c.redis.Client() == nil {
-		return nil, false
-	}
-	res, err := c.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-		return rdb.Get(ctx, "gw:cache:resp:"+key).Result()
-	})
-	if err != nil {
-		return nil, false
-	}
-	raw, ok := res.(string)
-	if !ok || raw == "" {
-		return nil, false
-	}
-	var entry cacheEntry
-	if json.Unmarshal([]byte(raw), &entry) != nil || entry.Response == nil {
-		return nil, false
-	}
-	if !now.Before(entry.ExpiresAt) {
-		return nil, false
-	}
-	current, err := c.currentEpochs(ctx, entry.OrgID, entry.Model)
-	if err != nil || current != entry.Epochs {
-		return nil, false
-	}
-	c.l2Hits.Add(1)
-	c.l1.store(key, entry)
-	return cloneResponse(entry.Response), true
+	return sb.String()
 }
 
-// Set stores resp in the response cache without an explicit organization scope.
-func (c *ResponseCache) Set(ctx context.Context, key string, resp *domain.CanonicalChatResponse) {
-	c.SetWithMeta(ctx, key, "", resp)
+// computeSemanticScopeHash binds tenant identity, model, system instructions, prior multi-turn
+// conversation context, tools, extra provider params, and generation parameters into a hex TAG
+// so vector similarity never leaks across scopes or conversation contexts.
+func computeSemanticScopeHash(orgID, teamID, allowedModelScope string, req *domain.CanonicalChatRequest, priorTurns []domain.CanonicalMessage) string {
+	type scopePayload struct {
+		OrgID             string                    `json:"org_id"`
+		TeamID            string                    `json:"team_id,omitempty"`
+		AllowedModelScope string                    `json:"allowed_model_scope,omitempty"`
+		Model             string                    `json:"model"`
+		SystemMessages    []string                  `json:"system_messages,omitempty"`
+		PriorTurns        []domain.CanonicalMessage `json:"prior_turns,omitempty"`
+		Tools             []domain.CanonicalTool    `json:"tools,omitempty"`
+		ToolChoice        any                       `json:"tool_choice,omitempty"`
+		ResponseFormat    *domain.ResponseFormat    `json:"response_format,omitempty"`
+		ReasoningEffort   string                    `json:"reasoning_effort,omitempty"`
+		Temperature       *float64                  `json:"temperature,omitempty"`
+		TopP              *float64                  `json:"top_p,omitempty"`
+		MaxTokens         *int                      `json:"max_tokens,omitempty"`
+		Stop              []string                  `json:"stop,omitempty"`
+		User              string                    `json:"user,omitempty"`
+		ExtraParams       map[string]any            `json:"extra_params,omitempty"`
+	}
+	if req == nil {
+		return ""
+	}
+	var sysMsgs []string
+	for _, msg := range req.Messages {
+		role := strings.ToLower(strings.TrimSpace(msg.Role))
+		if role == "system" || role == "developer" {
+			sysMsgs = append(sysMsgs, role+":"+extractMessageText(msg))
+		}
+	}
+	sp := scopePayload{
+		OrgID:           orgID,
+		Model:           req.Model,
+		SystemMessages:  sysMsgs,
+		PriorTurns:      priorTurns,
+		Tools:           req.Tools,
+		ToolChoice:      req.ToolChoice,
+		ResponseFormat:  req.ResponseFormat,
+		ReasoningEffort: req.ReasoningEffort,
+		Temperature:     req.Temperature,
+		TopP:            req.TopP,
+		MaxTokens:       req.MaxTokens,
+		Stop:            req.Stop,
+		User:            req.User,
+		ExtraParams:     req.ExtraParams,
+	}
+	if isVirtualModelAlias(req.Model) {
+		sp.TeamID = teamID
+		sp.AllowedModelScope = allowedModelScope
+	}
+	h := sha256.New()
+	if err := json.NewEncoder(h).Encode(sp); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(h.Sum(nil))[:32]
 }
 
-// SetWithMeta stores resp in L1 and Redis L2 tagged with the current orgID and model invalidation epochs.
-func (c *ResponseCache) SetWithMeta(ctx context.Context, key, orgID string, resp *domain.CanonicalChatResponse) {
-	if c == nil || key == "" || resp == nil {
-		return
-	}
-	model := resp.Model
-	epochs, err := c.currentEpochs(ctx, orgID, model)
-	if err != nil {
-		return
-	}
-	entry := cacheEntry{
-		Response:  cloneResponse(resp),
-		OrgID:     orgID,
-		Model:     model,
-		Epochs:    epochs,
-		ExpiresAt: time.Now().Add(c.ttl),
-	}
-	if c.redis != nil && c.redis.Client() != nil {
-		b, err := json.Marshal(entry)
-		if err != nil {
-			return
-		}
-		if _, err := c.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-			return rdb.Set(ctx, "gw:cache:resp:"+key, b, c.ttl).Result()
-		}); err != nil {
-			return
-		}
-	}
-	c.l1.store(key, entry)
-}
-
-// IsCompletionCacheable reports whether a legacy text completion request is eligible for exact-match caching.
-func (c *ResponseCache) IsCompletionCacheable(req *domain.CanonicalCompletionRequest, cacheControlHeader string) bool {
-	if c == nil || !c.enabled || req == nil || req.Stream {
+// IsCompletionCacheable reports whether a synchronous legacy completion request is cacheable.
+func (c *ResponseCache) IsCompletionCacheable(req *domain.CanonicalCompletionRequest, opts RequestCacheOptions) bool {
+	if c == nil || !c.enabled || req == nil || req.Stream || c.isCallTypeExcluded("completion") {
 		return false
 	}
-	if cacheControlHeader == "no-cache" || cacheControlHeader == "bypass" {
+	if opts.Bypass {
 		return false
 	}
-	if cacheControlHeader == "enabled" || cacheControlHeader == "force" {
+	if opts.Enabled || opts.Force {
 		return true
 	}
 	return req.Temperature != nil && *req.Temperature == 0
 }
 
-// IsCompletionStreamCacheable reports whether a streaming legacy text completion
-// request is eligible for exact-match SSE chunk caching.
-//
-// Like IsStreamCacheable, stream caching is strictly OPT-IN ONLY and requires an
-// explicit Cache-Control (or X-Gateway-Cache-Control) opt-in directive such as
-// "Cache-Control: gateway-stream-cache", "Cache-Control: max-age=<N>" (N > 0),
-// "only-if-cached", "enabled", or "force".
-func (c *ResponseCache) IsCompletionStreamCacheable(req *domain.CanonicalCompletionRequest, cacheControlHeader string) bool {
-	if c == nil || !c.enabled || req == nil || !req.Stream {
-		return false
-	}
-	optIn, force := parseStreamCacheControl(cacheControlHeader)
-	if !optIn {
-		return false
-	}
-	if force {
-		return true
-	}
-	return req.Temperature == nil || *req.Temperature == 0
-}
-
-// ComputeCompletionKey generates a collision-resistant SHA-256 cache key for `/v1/completions` scoped to orgID.
-func (c *ResponseCache) ComputeCompletionKey(orgID string, req *domain.CanonicalCompletionRequest) string {
-	return c.ComputeCompletionKeyWithScope(orgID, "", "", req)
-}
-
-// ComputeCompletionKeyWithScope generates a collision-resistant SHA-256 cache key for `/v1/completions`
-// scoped by orgID, teamID, and effectiveModel.
+// ComputeCompletionKeyWithScope generates a SHA-256 key for `/v1/completions`.
 func (c *ResponseCache) ComputeCompletionKeyWithScope(orgID, teamID, effectiveModel string, req *domain.CanonicalCompletionRequest) string {
 	type completionKeyPayload struct {
 		Modality       string                             `json:"modality"`
@@ -437,125 +604,82 @@ func (c *ResponseCache) ComputeCompletionKeyWithScope(orgID, teamID, effectiveMo
 	if effModel == "" {
 		effModel = req.ResolvedModel
 	}
-	payload := completionKeyPayload{
+	h := sha256.New()
+	if err := json.NewEncoder(h).Encode(completionKeyPayload{
 		Modality:       "completion",
 		OrgID:          orgID,
 		TeamID:         teamID,
 		EffectiveModel: effModel,
 		Request:        &canonical,
-	}
-	h := sha256.New()
-	if err := json.NewEncoder(h).Encode(payload); err != nil {
+	}); err != nil {
 		return ""
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// GetCompletion retrieves a cached `/v1/completions` response from L1 or L2 Redis, validating shared epochs.
-func (c *ResponseCache) GetCompletion(ctx context.Context, key string) (*domain.CanonicalCompletionResponse, bool) {
-	if c == nil || key == "" {
+// GetCompletion retrieves a cached `/v1/completions` response.
+func (c *ResponseCache) GetCompletion(ctx context.Context, orgID, key string) (*domain.CanonicalCompletionResponse, bool) {
+	if c == nil || !c.enabled || key == "" {
 		return nil, false
 	}
-	now := time.Now()
-	if entry, ok := c.l1.load(key); ok {
-		if entry.CompletionResponse != nil && now.Before(entry.ExpiresAt) {
-			current, err := c.currentEpochs(ctx, entry.OrgID, entry.Model)
-			if err != nil {
-				c.l1Misses.Add(1)
-				return nil, false
-			}
-			if current == entry.Epochs {
-				c.l1Hits.Add(1)
-				return cloneCompletionResponse(entry.CompletionResponse), true
-			}
-		}
-		c.l1.delete(key)
-	}
-	c.l1Misses.Add(1)
-
-	if c.redis == nil || c.redis.Client() == nil {
-		return nil, false
-	}
-	res, err := c.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-		return rdb.Get(ctx, "gw:cache:cmpl:"+key).Result()
-	})
+	raw, hit, err := c.backend.Get(ctx, orgID, "cmpl:"+key)
 	if err != nil {
+		c.errors.Add(1)
+		c.misses.Add(1)
+		slog.Warn("cache: completion lookup failed (failing open)", "backend", c.Type(), "org_id", orgID, "error", err)
 		return nil, false
 	}
-	raw, ok := res.(string)
-	if !ok || raw == "" {
+	if !hit || len(raw) == 0 {
+		c.misses.Add(1)
 		return nil, false
 	}
-	var entry cacheEntry
-	if json.Unmarshal([]byte(raw), &entry) != nil || entry.CompletionResponse == nil {
+	var resp domain.CanonicalCompletionResponse
+	if json.Unmarshal(raw, &resp) != nil {
+		c.misses.Add(1)
 		return nil, false
 	}
-	if !now.Before(entry.ExpiresAt) {
-		return nil, false
-	}
-	current, err := c.currentEpochs(ctx, entry.OrgID, entry.Model)
-	if err != nil || current != entry.Epochs {
-		return nil, false
-	}
-	c.l2Hits.Add(1)
-	c.l1.store(key, entry)
-	return cloneCompletionResponse(entry.CompletionResponse), true
+	c.hits.Add(1)
+	return cloneCompletionResponse(&resp), true
 }
 
-// SetCompletion stores a `/v1/completions` response in L1 and L2 Redis.
-func (c *ResponseCache) SetCompletion(ctx context.Context, key string, resp *domain.CanonicalCompletionResponse) {
-	c.SetCompletionWithMeta(ctx, key, "", resp)
-}
-
-// SetCompletionWithMeta stores a `/v1/completions` response scoped by orgID and model epochs in L1 and L2 Redis.
-func (c *ResponseCache) SetCompletionWithMeta(ctx context.Context, key, orgID string, resp *domain.CanonicalCompletionResponse) {
-	if c == nil || key == "" || resp == nil {
+// SetCompletionWithMeta stores a `/v1/completions` response, optionally recording the caller's
+// requested ModelGroup alias so scoped invalidation matches both alias and resolved upstream model.
+func (c *ResponseCache) SetCompletionWithMeta(ctx context.Context, key, orgID string, resp *domain.CanonicalCompletionResponse, requestedModel ...string) {
+	if c == nil || !c.enabled || key == "" || resp == nil {
 		return
 	}
-	model := resp.Model
-	epochs, err := c.currentEpochs(ctx, orgID, model)
+	raw, err := json.Marshal(cloneCompletionResponse(resp))
 	if err != nil {
 		return
 	}
-	entry := cacheEntry{
-		CompletionResponse: cloneCompletionResponse(resp),
-		OrgID:              orgID,
-		Model:              model,
-		Epochs:             epochs,
-		ExpiresAt:          time.Now().Add(c.ttl),
+	reqModel := ""
+	if len(requestedModel) > 0 {
+		reqModel = requestedModel[0]
 	}
-	if c.redis != nil && c.redis.Client() != nil {
-		b, err := json.Marshal(entry)
-		if err != nil {
-			return
-		}
-		if _, err := c.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-			return rdb.Set(ctx, "gw:cache:cmpl:"+key, b, c.ttl).Result()
-		}); err != nil {
-			return
-		}
+	if err := c.backend.Set(ctx, orgID, "cmpl:"+key, raw, EntryMeta{
+		OrgID:          orgID,
+		Model:          resp.Model,
+		RequestedModel: reqModel,
+		Modality:       "completion",
+	}, c.ttl); err != nil {
+		c.errors.Add(1)
+		slog.Warn("cache: completion store failed", "backend", c.Type(), "org_id", orgID, "error", err)
 	}
-	c.l1.store(key, entry)
 }
 
-// IsEmbeddingCacheable reports whether a `/v1/embeddings` request is eligible for exact-match caching.
-func (c *ResponseCache) IsEmbeddingCacheable(req *domain.CanonicalEmbeddingRequest, cacheControlHeader string) bool {
-	if c == nil || !c.enabled || req == nil || len(req.Input) == 0 {
+// IsEmbeddingCacheable reports whether a `/v1/embeddings` request is cacheable.
+// Embeddings are excluded by default via cache.excluded_call_types=["embedding"] unless opted in.
+func (c *ResponseCache) IsEmbeddingCacheable(req *domain.CanonicalEmbeddingRequest, opts RequestCacheOptions) bool {
+	if c == nil || !c.enabled || req == nil || len(req.Input) == 0 || c.isCallTypeExcluded("embedding") {
 		return false
 	}
-	if cacheControlHeader == "no-cache" || cacheControlHeader == "bypass" {
+	if opts.Bypass {
 		return false
 	}
 	return true
 }
 
-// ComputeEmbeddingKey generates a collision-resistant SHA-256 cache key for `/v1/embeddings` scoped to orgID.
-func (c *ResponseCache) ComputeEmbeddingKey(orgID string, req *domain.CanonicalEmbeddingRequest) string {
-	return c.ComputeEmbeddingKeyWithScope(orgID, "", "", req)
-}
-
-// ComputeEmbeddingKeyWithScope generates a collision-resistant SHA-256 cache key for `/v1/embeddings`
-// scoped by orgID, teamID, and effectiveModel.
+// ComputeEmbeddingKeyWithScope generates a SHA-256 key for `/v1/embeddings`.
 func (c *ResponseCache) ComputeEmbeddingKeyWithScope(orgID, teamID, effectiveModel string, req *domain.CanonicalEmbeddingRequest) string {
 	type embeddingKeyPayload struct {
 		Modality       string                            `json:"modality"`
@@ -573,309 +697,104 @@ func (c *ResponseCache) ComputeEmbeddingKeyWithScope(orgID, teamID, effectiveMod
 	if effModel == "" {
 		effModel = req.ResolvedModel
 	}
-	payload := embeddingKeyPayload{
+	h := sha256.New()
+	if err := json.NewEncoder(h).Encode(embeddingKeyPayload{
 		Modality:       "embedding",
 		OrgID:          orgID,
 		TeamID:         teamID,
 		EffectiveModel: effModel,
 		Request:        &canonical,
-	}
-	h := sha256.New()
-	if err := json.NewEncoder(h).Encode(payload); err != nil {
+	}); err != nil {
 		return ""
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// GetEmbedding retrieves a cached `/v1/embeddings` response from L1 or L2 Redis, validating shared epochs.
-func (c *ResponseCache) GetEmbedding(ctx context.Context, key string) (*domain.CanonicalEmbeddingResponse, bool) {
-	if c == nil || key == "" {
+// GetEmbedding retrieves a cached `/v1/embeddings` response.
+func (c *ResponseCache) GetEmbedding(ctx context.Context, orgID, key string) (*domain.CanonicalEmbeddingResponse, bool) {
+	if c == nil || !c.enabled || key == "" {
 		return nil, false
 	}
-	now := time.Now()
-	if entry, ok := c.l1.load(key); ok {
-		if entry.EmbeddingResponse != nil && now.Before(entry.ExpiresAt) {
-			current, err := c.currentEpochs(ctx, entry.OrgID, entry.Model)
-			if err != nil {
-				c.l1Misses.Add(1)
-				return nil, false
-			}
-			if current == entry.Epochs {
-				c.l1Hits.Add(1)
-				return cloneEmbeddingResponse(entry.EmbeddingResponse), true
-			}
-		}
-		c.l1.delete(key)
-	}
-	c.l1Misses.Add(1)
-
-	if c.redis == nil || c.redis.Client() == nil {
-		return nil, false
-	}
-	res, err := c.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-		return rdb.Get(ctx, "gw:cache:emb:"+key).Result()
-	})
+	raw, hit, err := c.backend.Get(ctx, orgID, "emb:"+key)
 	if err != nil {
+		c.errors.Add(1)
+		c.misses.Add(1)
+		slog.Warn("cache: embedding lookup failed (failing open)", "backend", c.Type(), "org_id", orgID, "error", err)
 		return nil, false
 	}
-	raw, ok := res.(string)
-	if !ok || raw == "" {
+	if !hit || len(raw) == 0 {
+		c.misses.Add(1)
 		return nil, false
 	}
-	var entry cacheEntry
-	if json.Unmarshal([]byte(raw), &entry) != nil || entry.EmbeddingResponse == nil {
+	var resp domain.CanonicalEmbeddingResponse
+	if json.Unmarshal(raw, &resp) != nil {
+		c.misses.Add(1)
 		return nil, false
 	}
-	if !now.Before(entry.ExpiresAt) {
-		return nil, false
-	}
-	current, err := c.currentEpochs(ctx, entry.OrgID, entry.Model)
-	if err != nil || current != entry.Epochs {
-		return nil, false
-	}
-	c.l2Hits.Add(1)
-	c.l1.store(key, entry)
-	return cloneEmbeddingResponse(entry.EmbeddingResponse), true
+	c.hits.Add(1)
+	return cloneEmbeddingResponse(&resp), true
 }
 
-// SetEmbedding stores a `/v1/embeddings` response in L1 and L2 Redis.
-func (c *ResponseCache) SetEmbedding(ctx context.Context, key string, resp *domain.CanonicalEmbeddingResponse) {
-	c.SetEmbeddingWithMeta(ctx, key, "", resp)
-}
-
-// SetEmbeddingWithMeta stores a `/v1/embeddings` response scoped by orgID and model epochs in L1 and L2 Redis.
-func (c *ResponseCache) SetEmbeddingWithMeta(ctx context.Context, key, orgID string, resp *domain.CanonicalEmbeddingResponse) {
-	if c == nil || key == "" || resp == nil {
+// SetEmbeddingWithMeta stores a `/v1/embeddings` response, optionally recording the caller's
+// requested ModelGroup alias so scoped invalidation matches both alias and resolved upstream model.
+func (c *ResponseCache) SetEmbeddingWithMeta(ctx context.Context, key, orgID string, resp *domain.CanonicalEmbeddingResponse, requestedModel ...string) {
+	if c == nil || !c.enabled || key == "" || resp == nil {
 		return
 	}
-	model := resp.Model
-	epochs, err := c.currentEpochs(ctx, orgID, model)
+	raw, err := json.Marshal(cloneEmbeddingResponse(resp))
 	if err != nil {
 		return
 	}
-	entry := cacheEntry{
-		EmbeddingResponse: cloneEmbeddingResponse(resp),
-		OrgID:             orgID,
-		Model:             model,
-		Epochs:            epochs,
-		ExpiresAt:         time.Now().Add(c.ttl),
+	reqModel := ""
+	if len(requestedModel) > 0 {
+		reqModel = requestedModel[0]
 	}
-	if c.redis != nil && c.redis.Client() != nil {
-		b, err := json.Marshal(entry)
-		if err != nil {
-			return
-		}
-		if _, err := c.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-			return rdb.Set(ctx, "gw:cache:emb:"+key, b, c.ttl).Result()
-		}); err != nil {
-			return
-		}
+	if err := c.backend.Set(ctx, orgID, "emb:"+key, raw, EntryMeta{
+		OrgID:          orgID,
+		Model:          resp.Model,
+		RequestedModel: reqModel,
+		Modality:       "embedding",
+	}, c.ttl); err != nil {
+		c.errors.Add(1)
+		slog.Warn("cache: embedding store failed", "backend", c.Type(), "org_id", orgID, "error", err)
 	}
-	c.l1.store(key, entry)
 }
 
-// GetStreamChunks retrieves cached streaming SSE chunks from L1 (`"stream:" + key`) or L2 Redis (`gw:cache:stream:`),
-// validating shared epochs and returning a deep copy safe for concurrent replay/redaction.
-func (c *ResponseCache) GetStreamChunks(ctx context.Context, key string) ([]domain.CanonicalStreamChunk, bool) {
-	if c == nil || key == "" {
-		return nil, false
-	}
-	l1Key := "stream:" + key
-	now := time.Now()
-	if entry, ok := c.l1.load(l1Key); ok {
-		if len(entry.StreamChunks) > 0 && now.Before(entry.ExpiresAt) {
-			current, err := c.currentEpochs(ctx, entry.OrgID, entry.Model)
-			if err != nil {
-				c.l1Misses.Add(1)
-				return nil, false
-			}
-			if current == entry.Epochs {
-				c.l1Hits.Add(1)
-				return cloneStreamChunks(entry.StreamChunks), true
-			}
-		}
-		if len(entry.StreamChunks) > 0 {
-			c.l1.delete(l1Key)
-		}
-	}
-	c.l1Misses.Add(1)
-
-	if c.redis == nil || c.redis.Client() == nil {
-		return nil, false
-	}
-	res, err := c.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-		return rdb.Get(ctx, "gw:cache:stream:"+key).Result()
-	})
-	if err != nil {
-		return nil, false
-	}
-	raw, ok := res.(string)
-	if !ok || raw == "" {
-		return nil, false
-	}
-	var entry cacheEntry
-	if json.Unmarshal([]byte(raw), &entry) != nil || len(entry.StreamChunks) == 0 {
-		return nil, false
-	}
-	if !now.Before(entry.ExpiresAt) {
-		return nil, false
-	}
-	current, err := c.currentEpochs(ctx, entry.OrgID, entry.Model)
-	if err != nil || current != entry.Epochs {
-		return nil, false
-	}
-	c.l2Hits.Add(1)
-	c.l1.store(l1Key, entry)
-	return cloneStreamChunks(entry.StreamChunks), true
-}
-
-// SetStreamChunks stores a slice of streaming SSE chunks in L1 (`"stream:" + key`) and L2 Redis (`gw:cache:stream:`)
-// scoped by orgID and model invalidation epochs.
-func (c *ResponseCache) SetStreamChunks(ctx context.Context, key string, orgID string, model string, chunks []domain.CanonicalStreamChunk) {
-	if c == nil || key == "" || len(chunks) == 0 {
-		return
-	}
-	if model == "" {
-		for _, ch := range chunks {
-			if ch.Model != "" {
-				model = ch.Model
-				break
-			}
-		}
-	}
-	epochs, err := c.currentEpochs(ctx, orgID, model)
-	if err != nil {
-		return
-	}
-	entry := cacheEntry{
-		StreamChunks: cloneStreamChunks(chunks),
-		OrgID:        orgID,
-		Model:        model,
-		Epochs:       epochs,
-		ExpiresAt:    time.Now().Add(c.ttl),
-	}
-	if c.redis != nil && c.redis.Client() != nil {
-		b, err := json.Marshal(entry)
-		if err != nil {
-			return
-		}
-		if _, err := c.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-			return rdb.Set(ctx, "gw:cache:stream:"+key, b, c.ttl).Result()
-		}); err != nil {
-			return
-		}
-	}
-	c.l1.store("stream:"+key, entry)
-}
-
-// Invalidate advances shared global, organization, and/or model epochs and removes matching local entries.
-// The returned revision is monotonic across all invalidation operations.
+// Invalidate purges cached entries matching orgID and/or model from the active backend.
 func (c *ResponseCache) Invalidate(ctx context.Context, orgID, model string) (int, int64, error) {
-	var revision int64
-	if c.redis != nil && c.redis.Client() != nil {
-		keys := []string{cacheRevisionKey()}
-		if orgID == "" && model == "" {
-			keys = append(keys, cacheGlobalEpochKey())
-		} else {
-			if orgID != "" {
-				keys = append(keys, cacheOrgEpochKey(orgID))
-			}
-			if model != "" {
-				keys = append(keys, cacheModelEpochKey(model))
-			}
-		}
-		res, err := c.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-			return invalidateCacheEpochsScript.Run(ctx, rdb, keys).Int64()
-		})
-		if err != nil {
-			return 0, 0, err
-		}
-		var ok bool
-		revision, ok = res.(int64)
-		if !ok {
-			return 0, 0, fmt.Errorf("cache invalidation returned unexpected revision")
-		}
-	} else {
-		c.epochMu.Lock()
-		c.revision++
-		revision = c.revision
-		if orgID == "" && model == "" {
-			c.globalEpoch++
-		} else {
-			if orgID != "" {
-				c.orgEpochs[orgID]++
-			}
-			if model != "" {
-				c.modelEpochs[model]++
-			}
-		}
-		c.epochMu.Unlock()
+	if c == nil || c.backend == nil {
+		return 0, 0, nil
 	}
-
-	purged := c.l1.purge(orgID, model)
-	return purged, revision, nil
+	purged, err := c.backend.Invalidate(ctx, orgID, model)
+	if err != nil {
+		c.errors.Add(1)
+		return 0, 0, err
+	}
+	rev := c.revision.Add(1)
+	return purged, rev, nil
 }
 
-// L1Stats returns the current bounded process-local entry count and lifetime
-// eviction count for operator diagnostics.
-func (c *ResponseCache) L1Stats() (size, capacity int, evicted uint64) {
-	if c == nil {
-		return 0, 0, 0
-	}
-	return c.l1.stats()
-}
-
-// Metrics returns cumulative cache-hit and shared-epoch lookup measurements.
+// Metrics returns backend-agnostic hit, miss, semantic hit, error, and local occupancy stats.
 func (c *ResponseCache) Metrics() MetricsSnapshot {
 	if c == nil {
 		return MetricsSnapshot{}
 	}
+	var stats BackendStats
+	backendType := config.CacheTypeLocal
+	if c.backend != nil {
+		stats = c.backend.Stats()
+		backendType = c.backend.Type()
+	}
 	return MetricsSnapshot{
-		L1Hits:      c.l1Hits.Load(),
-		L1Misses:    c.l1Misses.Load(),
-		L2Hits:      c.l2Hits.Load(),
-		EpochChecks: c.epochChecks.Load(),
-		EpochNanos:  c.epochNanos.Load(),
+		BackendType:  backendType,
+		Hits:         c.hits.Load(),
+		Misses:       c.misses.Load(),
+		SemanticHits: c.semanticHits.Load(),
+		Errors:       c.errors.Load(),
+		Entries:      stats.Entries,
+		Capacity:     stats.Capacity,
+		Evictions:    stats.Evictions,
 	}
-}
-
-func (c *ResponseCache) currentEpochs(ctx context.Context, orgID, model string) (cacheEpochs, error) {
-	started := time.Now()
-	defer func() {
-		c.epochChecks.Add(1)
-		c.epochNanos.Add(uint64(time.Since(started)))
-	}()
-	if c.redis == nil || c.redis.Client() == nil {
-		c.epochMu.RLock()
-		defer c.epochMu.RUnlock()
-		return cacheEpochs{Global: c.globalEpoch, Organization: c.orgEpochs[orgID], Model: c.modelEpochs[model]}, nil
-	}
-	keys := []string{cacheGlobalEpochKey(), cacheOrgEpochKey(orgID), cacheModelEpochKey(model)}
-	res, err := c.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-		return rdb.MGet(ctx, keys...).Result()
-	})
-	if err != nil {
-		return cacheEpochs{}, err
-	}
-	values, ok := res.([]any)
-	if !ok || len(values) != len(keys) {
-		return cacheEpochs{}, fmt.Errorf("cache epoch lookup returned unexpected values")
-	}
-	parsed := make([]int64, len(values))
-	for i, value := range values {
-		if value == nil {
-			continue
-		}
-		text, ok := value.(string)
-		if !ok {
-			return cacheEpochs{}, fmt.Errorf("cache epoch %d has unexpected type %T", i, value)
-		}
-		parsed[i], err = strconv.ParseInt(text, 10, 64)
-		if err != nil {
-			return cacheEpochs{}, fmt.Errorf("parse cache epoch %d: %w", i, err)
-		}
-	}
-	return cacheEpochs{Global: parsed[0], Organization: parsed[1], Model: parsed[2]}, nil
 }
 
 func cloneResponse(resp *domain.CanonicalChatResponse) *domain.CanonicalChatResponse {
@@ -924,43 +843,6 @@ func cloneEmbeddingResponse(resp *domain.CanonicalEmbeddingResponse) *domain.Can
 	return &cp
 }
 
-func cloneStreamChunks(chunks []domain.CanonicalStreamChunk) []domain.CanonicalStreamChunk {
-	if len(chunks) == 0 {
-		return nil
-	}
-	out := make([]domain.CanonicalStreamChunk, len(chunks))
-	for i, ch := range chunks {
-		out[i] = ch
-		if ch.Usage != nil {
-			u := *ch.Usage
-			out[i].Usage = &u
-		}
-		if ch.Choices != nil {
-			choices := make([]domain.CanonicalStreamChoice, len(ch.Choices))
-			for j, choice := range ch.Choices {
-				choices[j] = choice
-				if choice.FinishReason != nil {
-					fr := *choice.FinishReason
-					choices[j].FinishReason = &fr
-				}
-				if choice.Delta.ToolCalls != nil {
-					tcs := make([]domain.CanonicalToolCall, len(choice.Delta.ToolCalls))
-					for k, tc := range choice.Delta.ToolCalls {
-						tcs[k] = tc
-						if tc.Index != nil {
-							idx := *tc.Index
-							tcs[k].Index = &idx
-						}
-					}
-					choices[j].Delta.ToolCalls = tcs
-				}
-			}
-			out[i].Choices = choices
-		}
-	}
-	return out
-}
-
 func cloneMessage(msg domain.CanonicalMessage) domain.CanonicalMessage {
 	if msg.ToolCalls != nil {
 		msg.ToolCalls = slices.Clone(msg.ToolCalls)
@@ -1000,15 +882,4 @@ func cloneMessage(msg domain.CanonicalMessage) domain.CanonicalMessage {
 		msg.Annotations = anns
 	}
 	return msg
-}
-
-func cacheGlobalEpochKey() string { return "gw:cache:{epochs}:global" }
-func cacheRevisionKey() string    { return "gw:cache:{epochs}:revision" }
-
-func cacheOrgEpochKey(orgID string) string {
-	return fmt.Sprintf("gw:cache:{epochs}:org:%x", sha256.Sum256([]byte(orgID)))
-}
-
-func cacheModelEpochKey(model string) string {
-	return fmt.Sprintf("gw:cache:{epochs}:model:%x", sha256.Sum256([]byte(model)))
 }

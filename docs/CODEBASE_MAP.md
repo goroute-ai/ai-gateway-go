@@ -16,6 +16,7 @@ Use this page to find the implementation and the source of truth for a change. P
 | Model management, lifecycle discovery, and pricing provenance | `internal/modelmgmt/` | `internal/modelmgmt/*_test.go` |
 | Configuration loading, defaults, and provider normalization | `internal/config/` | `internal/config/config_test.go`, `configs/config.example.yaml` |
 | Persistence interfaces, PostgreSQL (+ RDS IAM), Redis Cluster/Sentinel, spend outbox, audit cursor, and memory implementations | `internal/storage/` (`repository.go`, `memory*.go`, `postgres*.go`, `redis.go`, `rds_iam.go`, `audit_cursor.go`) | `internal/storage/*_test.go`, `migrations/` (`0001`–`0041`) |
+| Single-backend response caching (`local`, `redis`, `redis-semantic` on Redis 8+) | `internal/cache/` (`backend.go`, `local_backend.go`, `redis_backend.go`, `redis_semantic_backend.go`, `response_cache.go`) | `internal/cache/*_test.go`, `tests/e2e/cache_semantic_test.go`, `tests/cache-prod-docker/` |
 | MCP codegen, spec profiles, transports, aggregation, and tool execution | `cmd/mcpgen/`, `internal/mcp/spec/`, `internal/mcp/` | `internal/mcp/*_test.go`, `docs/specs/mcp/` |
 | A2A HTTP/gRPC service, task durability, and streaming | `internal/a2a/` | `internal/a2a/*_test.go`, `docs/specs/a2a/v1.0/` |
 | Outbound URL and network policy (SSRF prevention) | `internal/security/network/` | `internal/security/network/network_test.go` |
@@ -26,7 +27,7 @@ Use this page to find the implementation and the source of truth for a change. P
 | Public embeddable Go SDK (`CustomAuthenticator`, `CustomAuthorizer`) | `pkg/gateway/` (`sdk.go`, `auth.go`, `authz.go`, `routing.go`, `types.go`, `guardrails.go`) | `pkg/gateway/*_test.go` |
 | Embedded Operator Web UI & Playground | `internal/ui/` (HTTP embed handler), `web/` (`src/views/org/`, `Allowlist3State.tsx`, `JsonDiffViewer.tsx`) | `internal/ui/*_test.go`, `web/scripts/check-budget.mjs`, `tests/ui-e2e/` |
 | Executables and contract generation | `cmd/gateway/`, `cmd/goroute/`, `cmd/specgen/`, `cmd/mcpgen/`, `cmd/catalog-sync/`, `internal/openapi/`, `internal/mcp/spec/` | Check each command's `main.go`, generation directives, and the Makefile |
-| Release E2E, Playwright UI E2E, production Docker OIDC suites, K8s manifests, and Helm chart | `tests/e2e/`, `tests/guardrails/`, `tests/ui-e2e/`, `tests/prod-docker/`, `deployments/k8s/`, `deployments/helm/goroute/` | `deployments/docker-compose.test.yml`, `deployments/prod-test/`, `Makefile`, [Testing Guide](./TESTING.md) |
+| Release E2E, Playwright UI E2E, production Docker OIDC & Caching suites, K8s manifests, and Helm chart | `tests/e2e/`, `tests/guardrails/`, `tests/ui-e2e/`, `tests/prod-docker/`, `tests/cache-prod-docker/`, `deployments/k8s/`, `deployments/helm/goroute/` | `deployments/docker-compose.test.yml`, `deployments/prod-test/`, `deployments/cache-prod-test/`, `Makefile`, [Testing Guide](./TESTING.md) |
 | Release upgrading & testing guides | `docs/UPGRADING.md`, `docs/TESTING.md` | [Upgrade Guide](./UPGRADING.md), [Testing Guide](./TESTING.md) |
 
 ## Sources of truth

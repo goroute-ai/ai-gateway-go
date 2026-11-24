@@ -75,6 +75,7 @@ export const FinOpsView: React.FC = () => {
   const [selectedSpendEvent, setSelectedSpendEvent] = useState<SpendEvent | null>(null);
   const [selectedAuditLog, setSelectedAuditLog] = useState<AuditLog | null>(null);
   const [searchFilter, setSearchFilter] = useState('');
+  const [spendFilterMode, setSpendFilterMode] = useState<'all' | 'cache_hits' | 'semantic_embed'>('all');
   const [auditActor, setAuditActor] = useState('');
   const [auditAction, setAuditAction] = useState('');
   const [auditResource, setAuditResource] = useState('');
@@ -137,9 +138,11 @@ export const FinOpsView: React.FC = () => {
   const term = searchFilter.trim().toLowerCase();
   const matchTerm = (...vals: (string | undefined)[]) =>
     !term || vals.some((v) => v?.toLowerCase().includes(term));
-  const filteredSpendLogs = spendLogs.filter((e) =>
-    matchTerm(e.request_id, e.provider, e.resolved_model, e.virtual_key_id)
-  );
+  const filteredSpendLogs = spendLogs.filter((e) => {
+    if (spendFilterMode === 'cache_hits' && !e.cache_hit) return false;
+    if (spendFilterMode === 'semantic_embed' && e.endpoint !== '_internal/semantic_cache') return false;
+    return matchTerm(e.request_id, e.provider, e.resolved_model, e.virtual_key_id, e.endpoint);
+  });
   const filteredAuditLogs = auditLogs.filter((l) =>
     matchTerm(l.action, l.resource, l.resource_id, l.actor_id)
   );
@@ -266,14 +269,36 @@ export const FinOpsView: React.FC = () => {
           </div>
 
           {activeTab !== 'quotas' && (
-            <div className="flex items-center gap-3 pb-2">
+            <div className="flex flex-wrap items-center gap-2 pb-2">
+              {activeTab === 'spend' && (
+                <div className="inline-flex rounded border border-border-subtle bg-surface-input p-0.5 text-[11px] font-mono">
+                  {([
+                    ['all', 'All'],
+                    ['cache_hits', 'Cache Hits'],
+                    ['semantic_embed', 'Semantic Cache'],
+                  ] as const).map(([mode, label]) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => setSpendFilterMode(mode)}
+                      className={`px-2 py-0.5 rounded transition ${
+                        spendFilterMode === mode
+                          ? 'bg-accent-soft text-accent-primary font-semibold'
+                          : 'text-brand-muted hover:text-brand-title'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
               <div className="relative">
                 <Search className="w-3.5 h-3.5 text-brand-muted absolute left-2.5 top-1/2 -translate-y-1/2" />
                 <input
                   type="text"
                   value={searchFilter}
                   onChange={(e) => setSearchFilter(e.target.value)}
-                  placeholder={activeTab === 'spend' ? 'Filter by request, model...' : 'Filter by action, resource...'}
+                  placeholder={activeTab === 'spend' ? 'Filter by request, model, endpoint...' : 'Filter by action, resource...'}
                   className="pl-8 pr-3 py-1 text-xs bg-surface-input border border-border-subtle rounded text-brand-body placeholder-brand-muted focus:outline-none focus:border-accent-primary font-mono w-56"
                 />
               </div>
@@ -348,6 +373,11 @@ export const FinOpsView: React.FC = () => {
                         {evt.requested_model && evt.requested_model !== evt.resolved_model && (
                           <span className="block text-[10px] text-brand-muted">via {evt.requested_model}</span>
                         )}
+                        {evt.endpoint === '_internal/semantic_cache' && (
+                          <span className="mt-0.5 inline-block">
+                            <Badge variant="info" size="sm">semantic cache</Badge>
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-brand-muted capitalize">
                         <Badge variant="neutral">{evt.provider || 'unknown'}</Badge>
@@ -359,7 +389,10 @@ export const FinOpsView: React.FC = () => {
                         </span>
                       </td>
                       <td className="px-4 py-3 text-status-success whitespace-nowrap">
-                        <span className="font-bold">{formatMicroDollars(evt.cost_micros)}</span>
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-bold">{formatMicroDollars(evt.cost_micros)}</span>
+                          {evt.cache_hit && <Badge variant="success" size="sm">CACHE HIT</Badge>}
+                        </div>
                         <span className="block text-[10px] text-brand-muted">
                           {evt.cost_micros?.toLocaleString() || 0} µ$
                         </span>
@@ -474,6 +507,8 @@ export const FinOpsView: React.FC = () => {
               ['Cost (USD):', formatMicroDollars(selectedSpendEvent!.cost_micros)],
               ['Provider:', selectedSpendEvent!.provider],
               ['Resolved Model:', selectedSpendEvent!.resolved_model],
+              ['Endpoint:', selectedSpendEvent!.endpoint || '—'],
+              ['Cache Hit:', selectedSpendEvent!.cache_hit ? 'Yes ($0)' : 'No'],
               ['Latency:', selectedSpendEvent!.latency_ms ? `${selectedSpendEvent!.latency_ms.toFixed(1)} ms` : '-'],
             ]
           : [

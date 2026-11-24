@@ -1883,6 +1883,48 @@ func (e RemoveModelAccessGroupMemberParamsMemberType) Valid() bool {
 	}
 }
 
+// Defines values for GetObservabilityMetrics200JSONResponseBodyCacheStatus.
+const (
+	GetObservabilityMetrics200JSONResponseBodyCacheStatusDegraded GetObservabilityMetrics200JSONResponseBodyCacheStatus = "degraded"
+	GetObservabilityMetrics200JSONResponseBodyCacheStatusDisabled GetObservabilityMetrics200JSONResponseBodyCacheStatus = "disabled"
+	GetObservabilityMetrics200JSONResponseBodyCacheStatusOk       GetObservabilityMetrics200JSONResponseBodyCacheStatus = "ok"
+)
+
+// Valid indicates whether the value is a known member of the GetObservabilityMetrics200JSONResponseBodyCacheStatus enum.
+func (e GetObservabilityMetrics200JSONResponseBodyCacheStatus) Valid() bool {
+	switch e {
+	case GetObservabilityMetrics200JSONResponseBodyCacheStatusDegraded:
+		return true
+	case GetObservabilityMetrics200JSONResponseBodyCacheStatusDisabled:
+		return true
+	case GetObservabilityMetrics200JSONResponseBodyCacheStatusOk:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GetObservabilityMetrics200JSONResponseBodyCacheType.
+const (
+	Local         GetObservabilityMetrics200JSONResponseBodyCacheType = "local"
+	Redis         GetObservabilityMetrics200JSONResponseBodyCacheType = "redis"
+	RedisSemantic GetObservabilityMetrics200JSONResponseBodyCacheType = "redis-semantic"
+)
+
+// Valid indicates whether the value is a known member of the GetObservabilityMetrics200JSONResponseBodyCacheType enum.
+func (e GetObservabilityMetrics200JSONResponseBodyCacheType) Valid() bool {
+	switch e {
+	case Local:
+		return true
+	case Redis:
+		return true
+	case RedisSemantic:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for CreateSelfServiceKeyJSONBodyKeyType.
 const (
 	CreateSelfServiceKeyJSONBodyKeyTypeDefault        CreateSelfServiceKeyJSONBodyKeyType = "default"
@@ -4155,6 +4197,46 @@ type ListModelGroupsParams struct {
 	OrgId *string `form:"org_id,omitempty" json:"org_id,omitempty"`
 }
 
+// GetObservabilityMetrics200JSONResponseBodyCacheStatus defines parameters for GetObservabilityMetrics.
+type GetObservabilityMetrics200JSONResponseBodyCacheStatus string
+
+// GetObservabilityMetrics200JSONResponseBodyCacheType defines parameters for GetObservabilityMetrics.
+type GetObservabilityMetrics200JSONResponseBodyCacheType string
+
+// GetObservabilityMetrics200JSONResponseBody defines parameters for GetObservabilityMetrics.
+type GetObservabilityMetrics200JSONResponseBody struct {
+	// CacheEnabled Whether response caching is enabled on this gateway instance.
+	CacheEnabled *bool `json:"cache_enabled,omitempty"`
+
+	// CacheEntries Current in-memory entry count (local mode).
+	CacheEntries *int64 `json:"cache_entries,omitempty"`
+
+	// CacheErrors Total fail-open response cache backend or embedding errors.
+	CacheErrors *int64 `json:"cache_errors,omitempty"`
+
+	// CacheEvictions Total LRU evictions (local mode).
+	CacheEvictions *int64 `json:"cache_evictions,omitempty"`
+
+	// CacheHitRate Ratio of eligible response cache hits to total eligible cache lookups (0..1).
+	CacheHitRate *float64 `json:"cache_hit_rate,omitempty"`
+
+	// CacheHits Authoritative eligible response cache hits (exact and semantic).
+	CacheHits *int64 `json:"cache_hits,omitempty"`
+
+	// CacheMisses Authoritative eligible response cache misses.
+	CacheMisses *int64 `json:"cache_misses,omitempty"`
+
+	// CacheSemanticHits Subset of response cache hits served via Redis semantic vector similarity search.
+	CacheSemanticHits *int64 `json:"cache_semantic_hits,omitempty"`
+
+	// CacheStatus Live health status of the active response cache backend.
+	CacheStatus *GetObservabilityMetrics200JSONResponseBodyCacheStatus `json:"cache_status,omitempty"`
+
+	// CacheType Active single-backend response cache mode.
+	CacheType            *GetObservabilityMetrics200JSONResponseBodyCacheType `json:"cache_type,omitempty"`
+	AdditionalProperties map[string]interface{}                               `json:"-"`
+}
+
 // ListGuardrailBindingsParams defines parameters for ListGuardrailBindings.
 type ListGuardrailBindingsParams struct {
 	GuardrailId   *string `form:"guardrail_id,omitempty" json:"guardrail_id,omitempty"`
@@ -4797,6 +4879,209 @@ func (a AudioTranscriptionResponse) MarshalJSON() ([]byte, error) {
 	object["text"], err = json.Marshal(a.Text)
 	if err != nil {
 		return nil, fmt.Errorf("error marshaling 'text': %w", err)
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
+
+// Getter for additional properties for GetObservabilityMetrics200JSONResponseBody. Returns the specified
+// element and whether it was found
+func (a GetObservabilityMetrics200JSONResponseBody) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for GetObservabilityMetrics200JSONResponseBody
+func (a *GetObservabilityMetrics200JSONResponseBody) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for GetObservabilityMetrics200JSONResponseBody to handle AdditionalProperties
+func (a *GetObservabilityMetrics200JSONResponseBody) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["cache_enabled"]; found {
+		err = json.Unmarshal(raw, &a.CacheEnabled)
+		if err != nil {
+			return fmt.Errorf("error reading 'cache_enabled': %w", err)
+		}
+		delete(object, "cache_enabled")
+	}
+
+	if raw, found := object["cache_entries"]; found {
+		err = json.Unmarshal(raw, &a.CacheEntries)
+		if err != nil {
+			return fmt.Errorf("error reading 'cache_entries': %w", err)
+		}
+		delete(object, "cache_entries")
+	}
+
+	if raw, found := object["cache_errors"]; found {
+		err = json.Unmarshal(raw, &a.CacheErrors)
+		if err != nil {
+			return fmt.Errorf("error reading 'cache_errors': %w", err)
+		}
+		delete(object, "cache_errors")
+	}
+
+	if raw, found := object["cache_evictions"]; found {
+		err = json.Unmarshal(raw, &a.CacheEvictions)
+		if err != nil {
+			return fmt.Errorf("error reading 'cache_evictions': %w", err)
+		}
+		delete(object, "cache_evictions")
+	}
+
+	if raw, found := object["cache_hit_rate"]; found {
+		err = json.Unmarshal(raw, &a.CacheHitRate)
+		if err != nil {
+			return fmt.Errorf("error reading 'cache_hit_rate': %w", err)
+		}
+		delete(object, "cache_hit_rate")
+	}
+
+	if raw, found := object["cache_hits"]; found {
+		err = json.Unmarshal(raw, &a.CacheHits)
+		if err != nil {
+			return fmt.Errorf("error reading 'cache_hits': %w", err)
+		}
+		delete(object, "cache_hits")
+	}
+
+	if raw, found := object["cache_misses"]; found {
+		err = json.Unmarshal(raw, &a.CacheMisses)
+		if err != nil {
+			return fmt.Errorf("error reading 'cache_misses': %w", err)
+		}
+		delete(object, "cache_misses")
+	}
+
+	if raw, found := object["cache_semantic_hits"]; found {
+		err = json.Unmarshal(raw, &a.CacheSemanticHits)
+		if err != nil {
+			return fmt.Errorf("error reading 'cache_semantic_hits': %w", err)
+		}
+		delete(object, "cache_semantic_hits")
+	}
+
+	if raw, found := object["cache_status"]; found {
+		err = json.Unmarshal(raw, &a.CacheStatus)
+		if err != nil {
+			return fmt.Errorf("error reading 'cache_status': %w", err)
+		}
+		delete(object, "cache_status")
+	}
+
+	if raw, found := object["cache_type"]; found {
+		err = json.Unmarshal(raw, &a.CacheType)
+		if err != nil {
+			return fmt.Errorf("error reading 'cache_type': %w", err)
+		}
+		delete(object, "cache_type")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for GetObservabilityMetrics200JSONResponseBody to handle AdditionalProperties
+func (a GetObservabilityMetrics200JSONResponseBody) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	if a.CacheEnabled != nil {
+		object["cache_enabled"], err = json.Marshal(a.CacheEnabled)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'cache_enabled': %w", err)
+		}
+	}
+
+	if a.CacheEntries != nil {
+		object["cache_entries"], err = json.Marshal(a.CacheEntries)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'cache_entries': %w", err)
+		}
+	}
+
+	if a.CacheErrors != nil {
+		object["cache_errors"], err = json.Marshal(a.CacheErrors)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'cache_errors': %w", err)
+		}
+	}
+
+	if a.CacheEvictions != nil {
+		object["cache_evictions"], err = json.Marshal(a.CacheEvictions)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'cache_evictions': %w", err)
+		}
+	}
+
+	if a.CacheHitRate != nil {
+		object["cache_hit_rate"], err = json.Marshal(a.CacheHitRate)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'cache_hit_rate': %w", err)
+		}
+	}
+
+	if a.CacheHits != nil {
+		object["cache_hits"], err = json.Marshal(a.CacheHits)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'cache_hits': %w", err)
+		}
+	}
+
+	if a.CacheMisses != nil {
+		object["cache_misses"], err = json.Marshal(a.CacheMisses)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'cache_misses': %w", err)
+		}
+	}
+
+	if a.CacheSemanticHits != nil {
+		object["cache_semantic_hits"], err = json.Marshal(a.CacheSemanticHits)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'cache_semantic_hits': %w", err)
+		}
+	}
+
+	if a.CacheStatus != nil {
+		object["cache_status"], err = json.Marshal(a.CacheStatus)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'cache_status': %w", err)
+		}
+	}
+
+	if a.CacheType != nil {
+		object["cache_type"], err = json.Marshal(a.CacheType)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'cache_type': %w", err)
+		}
 	}
 
 	for fieldName, field := range a.AdditionalProperties {
@@ -14054,7 +14339,7 @@ type GetObservabilityMetricsResponseObject interface {
 	VisitGetObservabilityMetricsResponse(w http.ResponseWriter) error
 }
 
-type GetObservabilityMetrics200JSONResponse map[string]interface{}
+type GetObservabilityMetrics200JSONResponse = GetObservabilityMetrics200JSONResponseBody
 
 func (response GetObservabilityMetrics200JSONResponse) VisitGetObservabilityMetricsResponse(w http.ResponseWriter) error {
 
@@ -15604,15 +15889,33 @@ type CreateOpenAIDirectResponseResponseObject interface {
 	VisitCreateOpenAIDirectResponseResponse(w http.ResponseWriter) error
 }
 
-type CreateOpenAIDirectResponse200JSONResponse ResponsesAPIResponse
+type CreateOpenAIDirectResponse200ResponseHeaders struct {
+	XGatewayCache           *string
+	XGatewayCacheSimilarity *string
+	XGatewayCacheType       *string
+}
+
+type CreateOpenAIDirectResponse200JSONResponse struct {
+	Body    ResponsesAPIResponse
+	Headers CreateOpenAIDirectResponse200ResponseHeaders
+}
 
 func (response CreateOpenAIDirectResponse200JSONResponse) VisitCreateOpenAIDirectResponseResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.XGatewayCache != nil {
+		w.Header().Set("X-Gateway-Cache", fmt.Sprint(*response.Headers.XGatewayCache))
+	}
+	if response.Headers.XGatewayCacheSimilarity != nil {
+		w.Header().Set("X-Gateway-Cache-Similarity", fmt.Sprint(*response.Headers.XGatewayCacheSimilarity))
+	}
+	if response.Headers.XGatewayCacheType != nil {
+		w.Header().Set("X-Gateway-Cache-Type", fmt.Sprint(*response.Headers.XGatewayCacheType))
+	}
 	w.WriteHeader(200)
 	_, err := buf.WriteTo(w)
 	return err
@@ -15887,15 +16190,33 @@ type CreateChatCompletionResponseObject interface {
 	VisitCreateChatCompletionResponse(w http.ResponseWriter) error
 }
 
-type CreateChatCompletion200JSONResponse ChatCompletionResponse
+type CreateChatCompletion200ResponseHeaders struct {
+	XGatewayCache           *string
+	XGatewayCacheSimilarity *string
+	XGatewayCacheType       *string
+}
+
+type CreateChatCompletion200JSONResponse struct {
+	Body    ChatCompletionResponse
+	Headers CreateChatCompletion200ResponseHeaders
+}
 
 func (response CreateChatCompletion200JSONResponse) VisitCreateChatCompletionResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.XGatewayCache != nil {
+		w.Header().Set("X-Gateway-Cache", fmt.Sprint(*response.Headers.XGatewayCache))
+	}
+	if response.Headers.XGatewayCacheSimilarity != nil {
+		w.Header().Set("X-Gateway-Cache-Similarity", fmt.Sprint(*response.Headers.XGatewayCacheSimilarity))
+	}
+	if response.Headers.XGatewayCacheType != nil {
+		w.Header().Set("X-Gateway-Cache-Type", fmt.Sprint(*response.Headers.XGatewayCacheType))
+	}
 	w.WriteHeader(200)
 	_, err := buf.WriteTo(w)
 	return err
@@ -15903,6 +16224,7 @@ func (response CreateChatCompletion200JSONResponse) VisitCreateChatCompletionRes
 
 type CreateChatCompletion200TexteventStreamResponse struct {
 	Body          io.Reader
+	Headers       CreateChatCompletion200ResponseHeaders
 	ContentLength int64
 }
 
@@ -15911,6 +16233,15 @@ func (response CreateChatCompletion200TexteventStreamResponse) VisitCreateChatCo
 	w.Header().Set("Content-Type", "text/event-stream")
 	if response.ContentLength != 0 {
 		w.Header().Set("Content-Length", fmt.Sprint(response.ContentLength))
+	}
+	if response.Headers.XGatewayCache != nil {
+		w.Header().Set("X-Gateway-Cache", fmt.Sprint(*response.Headers.XGatewayCache))
+	}
+	if response.Headers.XGatewayCacheSimilarity != nil {
+		w.Header().Set("X-Gateway-Cache-Similarity", fmt.Sprint(*response.Headers.XGatewayCacheSimilarity))
+	}
+	if response.Headers.XGatewayCacheType != nil {
+		w.Header().Set("X-Gateway-Cache-Type", fmt.Sprint(*response.Headers.XGatewayCacheType))
 	}
 	w.WriteHeader(200)
 
@@ -15952,15 +16283,29 @@ type CreateCompletionResponseObject interface {
 	VisitCreateCompletionResponse(w http.ResponseWriter) error
 }
 
-type CreateCompletion200JSONResponse LegacyCompletionResponse
+type CreateCompletion200ResponseHeaders struct {
+	XGatewayCache     *string
+	XGatewayCacheType *string
+}
+
+type CreateCompletion200JSONResponse struct {
+	Body    LegacyCompletionResponse
+	Headers CreateCompletion200ResponseHeaders
+}
 
 func (response CreateCompletion200JSONResponse) VisitCreateCompletionResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.XGatewayCache != nil {
+		w.Header().Set("X-Gateway-Cache", fmt.Sprint(*response.Headers.XGatewayCache))
+	}
+	if response.Headers.XGatewayCacheType != nil {
+		w.Header().Set("X-Gateway-Cache-Type", fmt.Sprint(*response.Headers.XGatewayCacheType))
+	}
 	w.WriteHeader(200)
 	_, err := buf.WriteTo(w)
 	return err
@@ -15974,15 +16319,29 @@ type CreateEmbeddingResponseObject interface {
 	VisitCreateEmbeddingResponse(w http.ResponseWriter) error
 }
 
-type CreateEmbedding200JSONResponse EmbeddingResponse
+type CreateEmbedding200ResponseHeaders struct {
+	XGatewayCache     *string
+	XGatewayCacheType *string
+}
+
+type CreateEmbedding200JSONResponse struct {
+	Body    EmbeddingResponse
+	Headers CreateEmbedding200ResponseHeaders
+}
 
 func (response CreateEmbedding200JSONResponse) VisitCreateEmbeddingResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.XGatewayCache != nil {
+		w.Header().Set("X-Gateway-Cache", fmt.Sprint(*response.Headers.XGatewayCache))
+	}
+	if response.Headers.XGatewayCacheType != nil {
+		w.Header().Set("X-Gateway-Cache-Type", fmt.Sprint(*response.Headers.XGatewayCacheType))
+	}
 	w.WriteHeader(200)
 	_, err := buf.WriteTo(w)
 	return err
@@ -16220,15 +16579,33 @@ type CreateAnthropicMessageResponseObject interface {
 	VisitCreateAnthropicMessageResponse(w http.ResponseWriter) error
 }
 
-type CreateAnthropicMessage200JSONResponse AnthropicMessagesResponse
+type CreateAnthropicMessage200ResponseHeaders struct {
+	XGatewayCache           *string
+	XGatewayCacheSimilarity *string
+	XGatewayCacheType       *string
+}
+
+type CreateAnthropicMessage200JSONResponse struct {
+	Body    AnthropicMessagesResponse
+	Headers CreateAnthropicMessage200ResponseHeaders
+}
 
 func (response CreateAnthropicMessage200JSONResponse) VisitCreateAnthropicMessageResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.XGatewayCache != nil {
+		w.Header().Set("X-Gateway-Cache", fmt.Sprint(*response.Headers.XGatewayCache))
+	}
+	if response.Headers.XGatewayCacheSimilarity != nil {
+		w.Header().Set("X-Gateway-Cache-Similarity", fmt.Sprint(*response.Headers.XGatewayCacheSimilarity))
+	}
+	if response.Headers.XGatewayCacheType != nil {
+		w.Header().Set("X-Gateway-Cache-Type", fmt.Sprint(*response.Headers.XGatewayCacheType))
+	}
 	w.WriteHeader(200)
 	_, err := buf.WriteTo(w)
 	return err
@@ -16236,6 +16613,7 @@ func (response CreateAnthropicMessage200JSONResponse) VisitCreateAnthropicMessag
 
 type CreateAnthropicMessage200TexteventStreamResponse struct {
 	Body          io.Reader
+	Headers       CreateAnthropicMessage200ResponseHeaders
 	ContentLength int64
 }
 
@@ -16244,6 +16622,15 @@ func (response CreateAnthropicMessage200TexteventStreamResponse) VisitCreateAnth
 	w.Header().Set("Content-Type", "text/event-stream")
 	if response.ContentLength != 0 {
 		w.Header().Set("Content-Length", fmt.Sprint(response.ContentLength))
+	}
+	if response.Headers.XGatewayCache != nil {
+		w.Header().Set("X-Gateway-Cache", fmt.Sprint(*response.Headers.XGatewayCache))
+	}
+	if response.Headers.XGatewayCacheSimilarity != nil {
+		w.Header().Set("X-Gateway-Cache-Similarity", fmt.Sprint(*response.Headers.XGatewayCacheSimilarity))
+	}
+	if response.Headers.XGatewayCacheType != nil {
+		w.Header().Set("X-Gateway-Cache-Type", fmt.Sprint(*response.Headers.XGatewayCacheType))
 	}
 	w.WriteHeader(200)
 
@@ -16365,15 +16752,33 @@ type CreateResponseResponseObject interface {
 	VisitCreateResponseResponse(w http.ResponseWriter) error
 }
 
-type CreateResponse200JSONResponse ResponsesAPIResponse
+type CreateResponse200ResponseHeaders struct {
+	XGatewayCache           *string
+	XGatewayCacheSimilarity *string
+	XGatewayCacheType       *string
+}
+
+type CreateResponse200JSONResponse struct {
+	Body    ResponsesAPIResponse
+	Headers CreateResponse200ResponseHeaders
+}
 
 func (response CreateResponse200JSONResponse) VisitCreateResponseResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.XGatewayCache != nil {
+		w.Header().Set("X-Gateway-Cache", fmt.Sprint(*response.Headers.XGatewayCache))
+	}
+	if response.Headers.XGatewayCacheSimilarity != nil {
+		w.Header().Set("X-Gateway-Cache-Similarity", fmt.Sprint(*response.Headers.XGatewayCacheSimilarity))
+	}
+	if response.Headers.XGatewayCacheType != nil {
+		w.Header().Set("X-Gateway-Cache-Type", fmt.Sprint(*response.Headers.XGatewayCacheType))
+	}
 	w.WriteHeader(200)
 	_, err := buf.WriteTo(w)
 	return err

@@ -16,7 +16,6 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/logger"
 	"github.com/goroute-ai/ai-gateway-go/internal/observability"
 	"github.com/goroute-ai/ai-gateway-go/internal/ratelimit"
-	"github.com/goroute-ai/ai-gateway-go/internal/router"
 )
 
 type anthropicMessagesPayload struct {
@@ -213,42 +212,46 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 	}
 	defer s.settleQuotaOnReturn(quotaSettlement)
 
-	var cacheKey string
-	if s.respCache != nil && s.respCache.IsCacheable(&chatReq, r.Header.Get("X-Gateway-Cache-Control")) {
-		cacheKey = s.respCache.ComputeKeyWithScope(idCtx.OrgID, idCtx.TeamID, cacheAllowedModelScope(idCtx), &chatReq)
-		if cacheKey != "" {
-			if cachedResp, hit := s.respCache.Get(r.Context(), cacheKey); hit {
-				_, sanitizeErr := s.evaluateChatOutputGuardrails(r.Context(), w, prc, cachedResp, "messages")
-				if sanitizeErr != nil {
-					quotaSettlement.actualTokensReconciled = true
-					releaseQuota(0, -2)
-					domain.WriteAnthropicHTTPError(w, sanitizeErr)
-					return
-				}
-				s.GuardrailPipeline().EvaluateLoggingOnly(r.Context(), prc, &chatReq, cachedResp)
+	cacheLookup := s.respCache.LookupChat(r.Context(), idCtx.OrgID, idCtx.TeamID, cacheAllowedModelScope(idCtx), &chatReq, requestCacheOptions(r))
+	if cacheLookup.Eligible {
+		if cacheLookup.Hit && cacheLookup.Response != nil {
+			cachedResp := cacheLookup.Response
+			_, sanitizeErr := s.evaluateChatOutputGuardrails(r.Context(), w, prc, cachedResp, "messages")
+			if sanitizeErr != nil {
 				quotaSettlement.actualTokensReconciled = true
 				releaseQuota(0, -2)
-				s.collector.Record(observability.RequestObservation{
-					Provider:   string(cachedResp.Provider),
-					Model:      cachedResp.Model,
-					StatusCode: http.StatusOK,
-					CacheHit:   true,
-				})
-				logger.SetInferenceMeta(r.Context(), logger.InferenceMeta{
-					Model:            cachedResp.Model,
-					Provider:         string(cachedResp.Provider),
-					PromptTokens:     cachedResp.Usage.PromptTokens,
-					CompletionTokens: cachedResp.Usage.CompletionTokens,
-					CostMicros:       0,
-					CacheHit:         true,
-				})
-				w.Header().Set("X-Gateway-Provider", string(cachedResp.Provider))
-				w.Header().Set("X-Gateway-Cache", "HIT")
-				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(toAnthropicResponse(cachedResp, reqID))
+				domain.WriteAnthropicHTTPError(w, sanitizeErr)
 				return
 			}
+			s.GuardrailPipeline().EvaluateLoggingOnly(r.Context(), prc, &chatReq, cachedResp)
+			quotaSettlement.actualTokensReconciled = true
+			releaseQuota(0, -2)
+			s.collector.Record(observability.RequestObservation{
+				Provider:   string(cachedResp.Provider),
+				Model:      cachedResp.Model,
+				StatusCode: http.StatusOK,
+				CacheHit:   true,
+			})
+			logger.SetInferenceMeta(r.Context(), logger.InferenceMeta{
+				Model:            cachedResp.Model,
+				Provider:         string(cachedResp.Provider),
+				PromptTokens:     cachedResp.Usage.PromptTokens,
+				CompletionTokens: cachedResp.Usage.CompletionTokens,
+				CostMicros:       0,
+				CacheHit:         true,
+			})
+			w.Header().Set("X-Gateway-Provider", string(cachedResp.Provider))
+			w.Header().Set("X-Gateway-Model", cachedResp.Model)
+			w.Header().Set("X-Gateway-Cost-Micros", "0")
+			setCacheHitHeaders(w, cacheLookup.CacheType, cacheLookup.Similarity)
+			w.Header().Set("Content-Type", "application/json")
+			if !s.recordCacheHitSpendAudit(w, r, idCtx, "/v1/messages", domain.ModalityChat, origRequestedModel, reqID, traceID, cachedResp.Provider, cachedResp.Model, cachedResp.Usage) {
+				return
+			}
+			_ = json.NewEncoder(w).Encode(toAnthropicResponse(cachedResp, reqID))
+			return
 		}
+		w.Header().Set("X-Gateway-Cache", "MISS")
 	}
 
 	upstreamCtx, duringHandle, duringInitErr := s.startDuringCallGuardrails(r.Context(), prc, &chatReq)
@@ -304,9 +307,8 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 		return
 	}
 	s.GuardrailPipeline().EvaluateLoggingOnly(r.Context(), prc, &chatReq, resp)
-	if cacheKey != "" {
-		s.respCache.SetWithMeta(r.Context(), cacheKey, idCtx.OrgID, resp)
-		w.Header().Set("X-Gateway-Cache", "MISS")
+	if cacheLookup.Eligible {
+		s.respCache.StoreChat(r.Context(), cacheLookup, idCtx.OrgID, resp)
 	}
 
 	s.collector.Record(observability.RequestObservation{
@@ -435,23 +437,6 @@ func (s *GatewayServer) streamAnthropicMessages(
 		return
 	}
 
-	streamCacheHeader := streamCacheControlHeader(r)
-	var streamCacheKey string
-	var cachedStreamChunks []domain.CanonicalStreamChunk
-	var streamCacheHit bool
-	if s.respCache != nil && s.respCache.IsStreamCacheable(chatReq, streamCacheHeader) {
-		streamCacheKey = s.respCache.ComputeKeyWithScope(idCtx.OrgID, idCtx.TeamID, cacheAllowedModelScope(idCtx), chatReq)
-		if streamCacheKey != "" {
-			cachedStreamChunks, streamCacheHit = s.respCache.GetStreamChunks(r.Context(), streamCacheKey)
-			if streamCacheHit {
-				w.Header().Set("X-Gateway-Cache", "HIT")
-				w.Header().Set("X-Gateway-Cost-Micros", "0")
-			} else {
-				w.Header().Set("X-Gateway-Cache", "MISS")
-			}
-		}
-	}
-
 	startSSE := func() {
 		if streamSession.SSEStarted() {
 			return
@@ -493,9 +478,6 @@ func (s *GatewayServer) streamAnthropicMessages(
 		flusher.Flush()
 	}
 
-	var sanitizedChunks []domain.CanonicalStreamChunk
-	sawTerminalChunk := false
-
 	onChunk := func(chunk *domain.CanonicalStreamChunk) error {
 		if chunk == nil {
 			return nil
@@ -504,11 +486,7 @@ func (s *GatewayServer) streamAnthropicMessages(
 			return checkErr
 		}
 		startSSE()
-		if isTerminalStreamChunk(chunk) {
-			sawTerminalChunk = true
-		}
 		c := cloneSingleStreamChunk(*chunk)
-		hasContent := false
 		for i := range c.Choices {
 			if len(c.Choices[i].Delta.ToolCalls) > 0 {
 				filteredTC, tcErr := streamSession.ProcessToolCalls(r.Context(), c.Choices[i].Delta.ToolCalls)
@@ -516,9 +494,6 @@ func (s *GatewayServer) streamAnthropicMessages(
 					return tcErr
 				}
 				c.Choices[i].Delta.ToolCalls = filteredTC
-				if len(filteredTC) > 0 {
-					hasContent = true
-				}
 			}
 			if c.Choices[i].Delta.Content != "" {
 				txt, procErr := streamSession.ProcessText(r.Context(), c.Choices[i].Delta.Content)
@@ -527,40 +502,21 @@ func (s *GatewayServer) streamAnthropicMessages(
 				}
 				c.Choices[i].Delta.Content = txt
 				if txt != "" {
-					hasContent = true
 					emitDelta(txt)
 				}
-			}
-		}
-		if !streamCacheHit && streamCacheKey != "" {
-			if hasContent || isTerminalStreamChunk(&c) || c.Usage != nil {
-				sanitizedChunks = appendStreamChunkBeforeTerminal(sanitizedChunks, c)
 			}
 		}
 		return nil
 	}
 
 	streamStarted := time.Now()
-	var usage *domain.TokenUsage
-	var meta *router.ExecutionMeta
-	var err error
-	if streamCacheHit {
-		for i := range cachedStreamChunks {
-			if err = onChunk(&cachedStreamChunks[i]); err != nil {
-				break
-			}
-		}
-		u := extractStreamChunksUsage(cachedStreamChunks, estTokens)
-		usage = &u
-	} else {
-		upstreamCtx = attachStreamDroppedParamsObserver(upstreamCtx, w, streamSession.SSEStarted)
-		upstreamCtx = quotaSettlement.trackDispatch(upstreamCtx)
-		usage, meta, err = s.reliability.ExecuteStream(upstreamCtx, idCtx, chatReq, onChunk, func(dep *domain.Deployment) {
-			winningDep = dep
-			quotaSettlement.selectedDep = dep
-			setPreStreamSelectedHeaders(w, dep, streamSession.SSEStarted())
-		})
-	}
+	upstreamCtx = attachStreamDroppedParamsObserver(upstreamCtx, w, streamSession.SSEStarted)
+	upstreamCtx = quotaSettlement.trackDispatch(upstreamCtx)
+	usage, meta, err := s.reliability.ExecuteStream(upstreamCtx, idCtx, chatReq, onChunk, func(dep *domain.Deployment) {
+		winningDep = dep
+		quotaSettlement.selectedDep = dep
+		setPreStreamSelectedHeaders(w, dep, streamSession.SSEStarted())
+	})
 	if !streamSession.SSEStarted() {
 		if duringOut, duringErr := streamSession.WaitDuring(r.Context()); duringErr != nil {
 			s.recordDuringCallBlock(r.Context(), w, prc, duringOut, duringErr, "messages")
@@ -625,18 +581,6 @@ func (s *GatewayServer) streamAnthropicMessages(
 	s.GuardrailPipeline().EvaluateLoggingOnly(r.Context(), prc, chatReq, nil)
 	if flushDelta != "" {
 		emitDelta(flushDelta)
-		if !streamCacheHit && streamCacheKey != "" {
-			sanitizedChunks = appendStreamChunkBeforeTerminal(sanitizedChunks, domain.CanonicalStreamChunk{
-				ID:      reqID,
-				Object:  "chat.completion.chunk",
-				Created: time.Now().Unix(),
-				Model:   chatReq.Model,
-				Choices: []domain.CanonicalStreamChoice{{
-					Index: 0,
-					Delta: domain.CanonicalStreamDelta{Role: "assistant", Content: flushDelta},
-				}},
-			})
-		}
 	}
 
 	totalTokens := estTokens + outputTokens
@@ -657,49 +601,30 @@ func (s *GatewayServer) streamAnthropicMessages(
 	if chatReq.ResolvedModel != "" {
 		resolvedModel = chatReq.ResolvedModel
 	}
-	var costMicros int64
 	var latMs int64
-	if streamCacheHit {
-		quotaSettlement.actualTokensReconciled = true
-		releaseQuota(0, -2)
-		resolvedModel, provider, _ = s.resolveCachedStreamModelMeta(r.Context(), idCtx.OrgID, chatReq.Model, cachedStreamChunks)
-		costMicros = 0
-		s.collector.Record(observability.RequestObservation{
-			Provider:          string(provider),
-			Model:             resolvedModel,
-			StatusCode:        http.StatusOK,
-			CacheHit:          true,
-			GuardrailRedacted: streamSession.Redacted(),
-		})
-	} else {
-		if winningDep == nil && meta != nil && meta.WinningDeployment != nil {
-			winningDep = meta.WinningDeployment
-		}
-		if winningDep != nil {
-			depID = winningDep.ID
-			gm = winningDep.GlobalModel
-			if gm != nil {
-				provider = gm.Provider
-				pricingVer = gm.PricingVersion
-				if gm.ModelName != "" {
-					resolvedModel = gm.ModelName
-				}
+	if winningDep == nil && meta != nil && meta.WinningDeployment != nil {
+		winningDep = meta.WinningDeployment
+	}
+	if winningDep != nil {
+		depID = winningDep.ID
+		gm = winningDep.GlobalModel
+		if gm != nil {
+			provider = gm.Provider
+			pricingVer = gm.PricingVersion
+			if gm.ModelName != "" {
+				resolvedModel = gm.ModelName
 			}
 		}
-		if meta != nil {
-			latMs = meta.LatencyMs
-		}
-		costMicros = finops.CalculateCostMicros(gm, finalUsage)
-		quotaSettlement.actualTokensReconciled = true
-		if releaseUsage != nil {
-			releaseUsage(finalUsage.PromptTokens, finalUsage.CompletionTokens, costMicros)
-		} else {
-			releaseQuota(totalTokens, -2)
-		}
-		if streamCacheKey != "" && !streamSession.Blocked() && sawTerminalChunk && len(sanitizedChunks) > 0 {
-			finalizeStreamChunksForCache(sanitizedChunks, resolvedModel, finalUsage)
-			s.respCache.SetStreamChunks(r.Context(), streamCacheKey, idCtx.OrgID, resolvedModel, sanitizedChunks)
-		}
+	}
+	if meta != nil {
+		latMs = meta.LatencyMs
+	}
+	costMicros := finops.CalculateCostMicros(gm, finalUsage)
+	quotaSettlement.actualTokensReconciled = true
+	if releaseUsage != nil {
+		releaseUsage(finalUsage.PromptTokens, finalUsage.CompletionTokens, costMicros)
+	} else {
+		releaseQuota(totalTokens, -2)
 	}
 	logger.SetInferenceMeta(r.Context(), logger.InferenceMeta{
 		Model:            resolvedModel,
@@ -707,7 +632,7 @@ func (s *GatewayServer) streamAnthropicMessages(
 		PromptTokens:     finalUsage.PromptTokens,
 		CompletionTokens: finalUsage.CompletionTokens,
 		CostMicros:       costMicros,
-		CacheHit:         streamCacheHit,
+		CacheHit:         false,
 	})
 
 	if s.spendWorker != nil {
@@ -728,7 +653,7 @@ func (s *GatewayServer) streamAnthropicMessages(
 			CostMicros:     costMicros,
 			LatencyMs:      latMs,
 			StatusCode:     http.StatusOK,
-			CacheHit:       streamCacheHit,
+			CacheHit:       false,
 			IsStream:       true,
 			Modality:       domain.ModalityChat,
 			CreatedAt:      time.Now().UTC(),

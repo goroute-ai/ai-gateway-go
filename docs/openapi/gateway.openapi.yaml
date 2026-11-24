@@ -22,6 +22,21 @@ components:
       in: cookie
       name: goroute_session
       description: Signed operator session cookie. Cookie-authenticated mutations also require X-CSRF-Token.
+  headers:
+    X-Gateway-Cache:
+      description: "Response cache outcome for eligible non-streaming requests (`HIT` or `MISS`). Omitted when caching is disabled or bypassed."
+      schema:
+        type: string
+        enum: [HIT, MISS]
+    X-Gateway-Cache-Type:
+      description: "Cache match mode emitted on `X-Gateway-Cache: HIT` (`exact` or `semantic`)."
+      schema:
+        type: string
+        enum: [exact, semantic]
+    X-Gateway-Cache-Similarity:
+      description: "Cosine similarity score (0..1) emitted on `X-Gateway-Cache-Type: semantic` hits."
+      schema:
+        type: string
   schemas:
     KEKRotationSummary:
       type: object
@@ -3992,6 +4007,13 @@ paths:
       responses:
         '200':
           description: Chat completion response or SSE stream
+          headers:
+            X-Gateway-Cache:
+              $ref: '#/components/headers/X-Gateway-Cache'
+            X-Gateway-Cache-Type:
+              $ref: '#/components/headers/X-Gateway-Cache-Type'
+            X-Gateway-Cache-Similarity:
+              $ref: '#/components/headers/X-Gateway-Cache-Similarity'
           content:
             application/json:
               schema:
@@ -4012,6 +4034,11 @@ paths:
       responses:
         '200':
           description: Embedding response
+          headers:
+            X-Gateway-Cache:
+              $ref: '#/components/headers/X-Gateway-Cache'
+            X-Gateway-Cache-Type:
+              $ref: '#/components/headers/X-Gateway-Cache-Type'
           content:
             application/json:
               schema:
@@ -4057,6 +4084,11 @@ paths:
       responses:
         '200':
           description: Legacy completion response
+          headers:
+            X-Gateway-Cache:
+              $ref: '#/components/headers/X-Gateway-Cache'
+            X-Gateway-Cache-Type:
+              $ref: '#/components/headers/X-Gateway-Cache-Type'
           content:
             application/json:
               schema:
@@ -4074,6 +4106,13 @@ paths:
       responses:
         '200':
           description: Anthropic message response or event-stream
+          headers:
+            X-Gateway-Cache:
+              $ref: '#/components/headers/X-Gateway-Cache'
+            X-Gateway-Cache-Type:
+              $ref: '#/components/headers/X-Gateway-Cache-Type'
+            X-Gateway-Cache-Similarity:
+              $ref: '#/components/headers/X-Gateway-Cache-Similarity'
           content:
             application/json:
               schema:
@@ -4426,6 +4465,13 @@ paths:
       responses:
         '200':
           description: Response output or SSE stream
+          headers:
+            X-Gateway-Cache:
+              $ref: '#/components/headers/X-Gateway-Cache'
+            X-Gateway-Cache-Type:
+              $ref: '#/components/headers/X-Gateway-Cache-Type'
+            X-Gateway-Cache-Similarity:
+              $ref: '#/components/headers/X-Gateway-Cache-Similarity'
           content:
             application/json:
               schema:
@@ -4451,6 +4497,13 @@ paths:
       responses:
         '200':
           description: Response output or SSE stream
+          headers:
+            X-Gateway-Cache:
+              $ref: '#/components/headers/X-Gateway-Cache'
+            X-Gateway-Cache-Type:
+              $ref: '#/components/headers/X-Gateway-Cache-Type'
+            X-Gateway-Cache-Similarity:
+              $ref: '#/components/headers/X-Gateway-Cache-Similarity'
           content:
             application/json:
               schema:
@@ -5896,6 +5949,46 @@ paths:
             application/json:
               schema:
                 type: object
+                properties:
+                  cache_enabled:
+                    type: boolean
+                    description: Whether response caching is enabled on this gateway instance.
+                  cache_type:
+                    type: string
+                    enum: [local, redis, redis-semantic]
+                    description: Active single-backend response cache mode.
+                  cache_status:
+                    type: string
+                    enum: [ok, degraded, disabled]
+                    description: Live health status of the active response cache backend.
+                  cache_hits:
+                    type: integer
+                    format: int64
+                    description: Authoritative eligible response cache hits (exact and semantic).
+                  cache_misses:
+                    type: integer
+                    format: int64
+                    description: Authoritative eligible response cache misses.
+                  cache_semantic_hits:
+                    type: integer
+                    format: int64
+                    description: Subset of response cache hits served via Redis semantic vector similarity search.
+                  cache_errors:
+                    type: integer
+                    format: int64
+                    description: Total fail-open response cache backend or embedding errors.
+                  cache_entries:
+                    type: integer
+                    format: int64
+                    description: Current in-memory entry count (local mode).
+                  cache_evictions:
+                    type: integer
+                    format: int64
+                    description: Total LRU evictions (local mode).
+                  cache_hit_rate:
+                    type: number
+                    format: double
+                    description: Ratio of eligible response cache hits to total eligible cache lookups (0..1).
                 additionalProperties: true
   /admin/v1/health/deployments:
     get:

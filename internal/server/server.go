@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/google/uuid"
 	"github.com/goroute-ai/ai-gateway-go/internal/a2a"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/anthropic"
@@ -39,6 +41,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 	"github.com/goroute-ai/ai-gateway-go/internal/ui"
 	"github.com/goroute-ai/ai-gateway-go/internal/validation"
+	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -48,6 +51,7 @@ type GatewayServer struct {
 	netPolicy          *network.Policy
 	repo               storage.Repository
 	redisFabric        *storage.RedisFabric
+	ownedCacheRedis    *storage.RedisFabric
 	reg                *adapter.Registry
 	vault              *auth.Vault
 	authSvc            *auth.Service
@@ -127,6 +131,9 @@ func (s *GatewayServer) invalidateLocalRoutingCaches(ev storage.InvalidationEven
 	if s.priorityLimiter != nil {
 		s.priorityLimiter.InvalidateCache(ev)
 	}
+	if ev.EntityType == "response_cache" && s.respCache != nil && s.respCache.Type() == config.CacheTypeLocal {
+		_, _, _ = s.respCache.Invalidate(context.Background(), ev.OrgID, ev.EntityID)
+	}
 	if ev.EntityType == "mcp_spec" && s.mcpHub != nil {
 		if settingsRepo, ok := s.repo.(storage.MCPRuntimeSettingsRepository); ok && settingsRepo != nil {
 			if stored, err := settingsRepo.GetMCPRuntimeSettings(context.Background()); err == nil && stored != nil && stored.ActiveProtocolVersion != "" {
@@ -204,13 +211,11 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	}
 
 	limiter := buildRateLimiter(cfg, repo, redisFabric)
-	respCache := cache.NewResponseCacheWithL1Capacity(cfg.Cache.Enabled, cfg.Cache.DefaultTTL, cfg.Cache.MaxL1Entries, redisFabric)
 	modelMgmtSvc := modelmgmt.NewServiceWithRBAC(repo, authDeps.rbac)
 	discWorker := modelmgmt.NewDiscoveryWorker(repo, reg, authDeps.vault, redisFabric, cfg.Discovery.SyncInterval, cfg.Discovery.AutoApprove)
 
 	collector := observability.NewCollector()
 	budgetStats := &budgetLookupStats{}
-	registerCollectorMetricsProvider(collector, repo, respCache, outboundMetrics, budgetStats, authDeps.keyRotation)
 
 	var metricsExporter *observability.OTLPMetricsExporter
 	if cfg.Tracing.Enabled && strings.TrimSpace(cfg.Tracing.OTLPEndpoint) != "" {
@@ -227,13 +232,21 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	validator.SetFallbackOnUnsupportedParams(cfg.Router.FallbackOnUnsupportedParams)
 	guardrailsEng := guardrails.NewEngine(repo)
 
-	routingDeps := buildRoutingSubsystem(cfg, repo, redisFabric, reg, authDeps.vault, authDeps.rbac, limiter, collector, healthMon, respCache)
+	routingDeps := buildRoutingSubsystem(cfg, repo, redisFabric, reg, authDeps.vault, authDeps.rbac, limiter, collector, healthMon)
 
 	spendWorker := finops.NewSpendWorker(repo, limiter, cfg.FinOps)
 	spendWorker.SetCollector(collector)
 	spendWorker.SetDeploymentSpendRecorder(routingDeps.depBudgets)
 	softBudgetNotifier := finops.NewSoftBudgetNotifier(repo, redisFabric, netPolicy, cfg.FinOps.SoftBudgetWebhookURL, cfg.FinOps.SoftBudgetCooldownSec)
 	spendWorker.SetSoftBudgetNotifier(softBudgetNotifier)
+
+	cacheRedis, ownedCacheRedis := buildCacheRedisFabric(cfg.Cache, redisFabric)
+	var semanticEmbedFn cache.EmbedFunc
+	if cfg.Cache.Type == config.CacheTypeRedisSemantic {
+		semanticEmbedFn = buildSemanticCacheEmbedFunc(routingDeps.relMgr, spendWorker)
+	}
+	respCache := cache.NewResponseCacheFromConfig(cfg.Cache, cacheRedis, semanticEmbedFn)
+	registerCollectorMetricsProvider(collector, repo, respCache, cacheRedis, outboundMetrics, budgetStats, authDeps.keyRotation)
 
 	protoDeps := buildMCPAndA2ASubsystem(cfg, repo, redisFabric, netPolicy, authDeps.vault, authDeps.rbac, limiter, guardrailsEng, spendWorker, routingDeps.relMgr)
 
@@ -247,6 +260,7 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		netPolicy:          netPolicy,
 		repo:               repo,
 		redisFabric:        redisFabric,
+		ownedCacheRedis:    ownedCacheRedis,
 		reg:                reg,
 		vault:              authDeps.vault,
 		authSvc:            authDeps.authSvc,
@@ -568,22 +582,43 @@ func registerCollectorMetricsProvider(
 	collector *observability.Collector,
 	repo storage.Repository,
 	respCache *cache.ResponseCache,
+	cacheRedis *storage.RedisFabric,
 	outboundMetrics *network.HTTPClientMetrics,
 	budgetStats *budgetLookupStats,
 	keyRotation *auth.KeyRotationManager,
 ) {
+	collector.SetCacheTelemetryProvider(func() observability.CacheTelemetry {
+		m := respCache.Metrics()
+		enabled := respCache.Enabled()
+		cacheType := respCache.Type()
+		status := "ok"
+		if !enabled {
+			status = "disabled"
+		} else if cacheType == config.CacheTypeRedis || cacheType == config.CacheTypeRedisSemantic {
+			if cacheRedis == nil || cacheRedis.Client() == nil || cacheRedis.CBStateCode() == 2 {
+				status = "degraded"
+			}
+		}
+		return observability.CacheTelemetry{
+			Enabled:      enabled,
+			Type:         cacheType,
+			Status:       status,
+			Hits:         int64(m.Hits),
+			Misses:       int64(m.Misses),
+			SemanticHits: int64(m.SemanticHits),
+			Errors:       int64(m.Errors),
+			Entries:      int64(m.Entries),
+			Evictions:    int64(m.Evictions),
+		}
+	})
 	collector.SetAdditionalMetricsProvider(func() map[string]float64 {
-		l1Size, l1Capacity, l1Evictions := respCache.L1Stats()
 		cacheMetrics := respCache.Metrics()
 		metrics := map[string]float64{
-			"gateway_response_cache_l1_entries":               float64(l1Size),
-			"gateway_response_cache_l1_capacity":              float64(l1Capacity),
-			"gateway_response_cache_l1_evictions_total":       float64(l1Evictions),
-			"gateway_response_cache_l1_hits_total":            float64(cacheMetrics.L1Hits),
-			"gateway_response_cache_l1_misses_total":          float64(cacheMetrics.L1Misses),
-			"gateway_response_cache_l2_hits_total":            float64(cacheMetrics.L2Hits),
-			"gateway_response_cache_epoch_lookups_total":      float64(cacheMetrics.EpochChecks),
-			"gateway_response_cache_epoch_lookup_seconds_sum": float64(cacheMetrics.EpochNanos) / float64(time.Second),
+			"gateway_cache_misses_total":        float64(cacheMetrics.Misses),
+			"gateway_cache_errors_total":        float64(cacheMetrics.Errors),
+			"gateway_cache_semantic_hits_total": float64(cacheMetrics.SemanticHits),
+			"gateway_cache_entries":             float64(cacheMetrics.Entries),
+			"gateway_cache_evictions_total":     float64(cacheMetrics.Evictions),
 		}
 		if outboundMetrics != nil {
 			snapshot := outboundMetrics.Snapshot()
@@ -632,6 +667,94 @@ func registerCollectorMetricsProvider(
 	})
 }
 
+func buildCacheRedisFabric(cfg config.CacheConfig, primary *storage.RedisFabric) (active *storage.RedisFabric, owned *storage.RedisFabric) {
+	addrs := cfg.RedisAddrs
+	if len(addrs) == 0 && strings.TrimSpace(cfg.RedisAddr) != "" {
+		addrs = []string{strings.TrimSpace(cfg.RedisAddr)}
+	}
+	if len(addrs) == 0 {
+		return primary, nil
+	}
+	opts := &redis.UniversalOptions{
+		Addrs:        addrs,
+		MasterName:   cfg.RedisMasterName,
+		Password:     cfg.RedisPass,
+		DB:           cfg.RedisDB,
+		DialTimeout:  500 * time.Millisecond,
+		ReadTimeout:  500 * time.Millisecond,
+		WriteTimeout: 500 * time.Millisecond,
+		MaxRetries:   1,
+	}
+	if cfg.RedisTLS {
+		opts.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
+	dedicated := storage.NewRedisFabricWithOptions(opts)
+	return dedicated, dedicated
+}
+
+func buildSemanticCacheEmbedFunc(relMgr *router.ReliabilityManager, spendWorker *finops.SpendWorker) cache.EmbedFunc {
+	return func(ctx context.Context, orgID, model, input string) ([]float32, error) {
+		if strings.TrimSpace(model) == "" {
+			return nil, fmt.Errorf("semantic cache embedding_model is required")
+		}
+		resp, meta, err := relMgr.ExecuteEmbeddings(ctx, &domain.IdentityContext{OrgID: orgID}, &domain.CanonicalEmbeddingRequest{
+			Model: model,
+			Input: []string{input},
+		})
+		if err != nil {
+			return nil, err
+		}
+		if resp == nil || len(resp.Data) == 0 || len(resp.Data[0].Embedding) == 0 {
+			return nil, fmt.Errorf("empty embeddings response")
+		}
+		if spendWorker != nil {
+			var gm *domain.GlobalModel
+			var depID string
+			var pricingVer int
+			var provenance string
+			var latencyMs int64
+			if meta != nil {
+				latencyMs = meta.LatencyMs
+				if meta.WinningDeployment != nil {
+					depID = meta.WinningDeployment.ID
+					gm = meta.WinningDeployment.GlobalModel
+					if gm != nil {
+						pricingVer = gm.PricingVersion
+						provenance = gm.PricingProvenanceSource
+					}
+				}
+			}
+			costMicros := finops.CalculateCostMicros(gm, resp.Usage)
+			if recErr := spendWorker.Record(context.Background(), domain.SpendEvent{
+				RequestID:               "semcache_" + uuid.NewString(),
+				OrgID:                   orgID,
+				Endpoint:                "_internal/semantic_cache",
+				Modality:                domain.ModalityEmbedding,
+				RequestedModel:          model,
+				ResolvedModel:           resp.Model,
+				Provider:                resp.Provider,
+				DeploymentID:            depID,
+				PricingVersion:          pricingVer,
+				PricingStatus:           domain.ResolvePricingStatus(gm),
+				PricingProvenanceSource: provenance,
+				Usage:                   resp.Usage,
+				CostMicros:              costMicros,
+				LatencyMs:               latencyMs,
+				StatusCode:              http.StatusOK,
+				CreatedAt:               time.Now().UTC(),
+			}); recErr != nil {
+				slog.Warn("cache: failed to record internal semantic-cache embedding spend event", "org_id", orgID, "model", model, "error", recErr)
+			}
+		}
+		src := resp.Data[0].Embedding
+		vec := make([]float32, len(src))
+		for i, f := range src {
+			vec[i] = float32(f)
+		}
+		return vec, nil
+	}
+}
+
 func buildRoutingSubsystem(
 	cfg *config.Config,
 	repo storage.Repository,
@@ -642,7 +765,6 @@ func buildRoutingSubsystem(
 	limiter *ratelimit.Limiter,
 	collector *observability.Collector,
 	healthMon *health.Monitor,
-	respCache *cache.ResponseCache,
 ) *serverRoutingDeps {
 	ir := router.NewIntelligentRouter(repo, cfg.Router)
 	ir.SetProviderCallable(func(provider domain.ProviderType) bool {
@@ -727,43 +849,6 @@ func buildRoutingSubsystem(
 		}
 		semanticPreRouter = router.NewSemanticPreRouter(cfg.Router.SemanticRouter, cfg.Router.DefaultFastAlias, embedFn, redisFabric)
 		ir.SetSemanticPreRouter(semanticPreRouter)
-	}
-
-	if cfg.Router.CacheAwareRouting {
-		qual := router.NewQualityPreRouter(repo, cfg.Router, func(ctx context.Context, orgID string, req *domain.CanonicalChatRequest) (string, bool) {
-			if req == nil {
-				return "", false
-			}
-			if respCache != nil && respCache.IsCacheable(req, "") {
-				if key := respCache.ComputeKey(orgID, req); key != "" {
-					if cached, hit := respCache.Get(ctx, key); hit && cached != nil {
-						if mg, err := repo.GetModelGroupByAlias(ctx, orgID, cached.Model); err == nil && mg != nil && mg.IsActive {
-							return mg.Alias, true
-						}
-						if strings.TrimSpace(cfg.Router.DefaultFastAlias) != "" {
-							return cfg.Router.DefaultFastAlias, true
-						}
-						if cached.Model != "" {
-							return cached.Model, true
-						}
-					}
-				}
-			}
-			if affinityStore != nil && cfg.Router.PromptCacheAffinity {
-				if groups, err := ir.ListActiveModelGroupsCached(ctx, orgID); err == nil {
-					for _, g := range groups {
-						if g == nil || !g.IsActive {
-							continue
-						}
-						if depID, _ := affinityStore.Lookup(ctx, orgID, g.Alias, req, ""); depID != "" {
-							return g.Alias, true
-						}
-					}
-				}
-			}
-			return "", false
-		})
-		ir.SetQualityPreRouter(qual)
 	}
 
 	return &serverRoutingDeps{
@@ -894,7 +979,17 @@ func (s *GatewayServer) registerHealthAndMetricsRoutes(r chi.Router) {
 				return
 			}
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"status": "ready"})
+		resp := map[string]any{"status": "ready"}
+		if s.ownedCacheRedis != nil && s.ownedCacheRedis.Client() != nil {
+			cacheCtx, cacheCancel := context.WithTimeout(ctx, 500*time.Millisecond)
+			defer cacheCancel()
+			if err := s.ownedCacheRedis.Ping(cacheCtx); err != nil {
+				resp["cache_status"] = "degraded"
+			} else {
+				resp["cache_status"] = "ok"
+			}
+		}
+		writeJSON(w, http.StatusOK, resp)
 	})
 	r.Method(http.MethodGet, "/metrics", s.metricsAuthMiddleware(s.collector.PrometheusHandler()))
 }
@@ -1589,6 +1684,9 @@ func (s *GatewayServer) Shutdown(ctx context.Context) {
 	}
 	if s.tracerShutdown != nil {
 		_ = s.tracerShutdown(ctx)
+	}
+	if s.ownedCacheRedis != nil && s.ownedCacheRedis.Client() != nil {
+		_ = s.ownedCacheRedis.Client().Close()
 	}
 }
 

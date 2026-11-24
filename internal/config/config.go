@@ -454,7 +454,6 @@ type RouterConfig struct {
 	PromptCacheAffinity            bool                    `yaml:"prompt_cache_affinity" json:"prompt_cache_affinity"`
 	PreRouterMode                  string                  `yaml:"pre_router_mode,omitempty" json:"pre_router_mode,omitempty"`
 	SemanticRouter                 SemanticRouterConfig    `yaml:"semantic_router,omitempty" json:"semantic_router,omitempty"`
-	CacheAwareRouting              bool                    `yaml:"cache_aware_routing" json:"cache_aware_routing"`
 	Bandit                         BanditConfig            `yaml:"bandit,omitempty" json:"bandit,omitempty"`
 	HedgeDelayMs                   int                     `yaml:"hedge_delay_ms" json:"hedge_delay_ms"`
 	MaxHedgeConcurrency            int                     `yaml:"max_hedge_concurrency" json:"max_hedge_concurrency"`
@@ -554,11 +553,44 @@ type DiscoveryConfig struct {
 	AutoApprove  bool          `yaml:"auto_approve"`
 }
 
-// CacheConfig configures exact-match L1/L2 response caching defaults.
+// Supported response cache backend types and RediSearch vector algorithms.
+const (
+	CacheTypeLocal         = "local"
+	CacheTypeRedis         = "redis"
+	CacheTypeRedisSemantic = "redis-semantic"
+
+	VectorAlgorithmHNSW = "HNSW"
+	VectorAlgorithmFLAT = "FLAT"
+)
+
+// SemanticCacheConfig configures Redis Vector Similarity Search semantic caching.
+type SemanticCacheConfig struct {
+	EmbeddingModel      string        `yaml:"embedding_model" json:"embedding_model"`
+	SimilarityThreshold float64       `yaml:"similarity_threshold" json:"similarity_threshold"`
+	IndexName           string        `yaml:"index_name" json:"index_name"`
+	VectorAlgorithm     string        `yaml:"vector_algorithm" json:"vector_algorithm"`
+	EmbeddingTimeout    time.Duration `yaml:"embedding_timeout" json:"embedding_timeout"`
+	MaxMessages         int           `yaml:"max_messages" json:"max_messages"`
+	MaxInputChars       int           `yaml:"max_input_chars" json:"max_input_chars"`
+}
+
+// CacheConfig configures single-backend response caching ("local", "redis", or "redis-semantic").
 type CacheConfig struct {
-	Enabled      bool          `yaml:"enabled"`
-	DefaultTTL   time.Duration `yaml:"default_ttl"`
-	MaxL1Entries int           `yaml:"max_l1_entries"`
+	Enabled           bool                `yaml:"enabled" json:"enabled"`
+	Type              string              `yaml:"type" json:"type"`
+	DefaultTTL        time.Duration       `yaml:"default_ttl" json:"default_ttl"`
+	Namespace         string              `yaml:"namespace" json:"namespace"`
+	MaxEntries        int                 `yaml:"max_entries" json:"max_entries"`
+	MaxL1Entries      int                 `yaml:"max_l1_entries,omitempty" json:"-"` // Silent deprecated YAML alias for MaxEntries
+	MaxItemBytes      int                 `yaml:"max_item_bytes" json:"max_item_bytes"`
+	ExcludedCallTypes []string            `yaml:"excluded_call_types,omitempty" json:"excluded_call_types,omitempty"`
+	RedisAddr         string              `yaml:"redis_addr,omitempty" json:"redis_addr,omitempty"`
+	RedisAddrs        []string            `yaml:"redis_addrs,omitempty" json:"redis_addrs,omitempty"`
+	RedisMasterName   string              `yaml:"redis_master_name,omitempty" json:"redis_master_name,omitempty"`
+	RedisPass         string              `yaml:"redis_pass,omitempty" json:"-"`
+	RedisDB           int                 `yaml:"redis_db,omitempty" json:"redis_db,omitempty"`
+	RedisTLS          bool                `yaml:"redis_tls,omitempty" json:"redis_tls,omitempty"`
+	Semantic          SemanticCacheConfig `yaml:"semantic,omitempty" json:"semantic,omitempty"`
 }
 
 // Default returns a production-ready default configuration.
@@ -650,9 +682,21 @@ func Default() *Config {
 			AutoApprove:  true,
 		},
 		Cache: CacheConfig{
-			Enabled:      true,
-			DefaultTTL:   1 * time.Hour,
-			MaxL1Entries: 4096,
+			Enabled:           true,
+			Type:              CacheTypeLocal,
+			DefaultTTL:        1 * time.Hour,
+			Namespace:         "gw:cache",
+			MaxEntries:        4096,
+			MaxItemBytes:      1 << 20, // 1 MiB
+			ExcludedCallTypes: []string{"embedding"},
+			Semantic: SemanticCacheConfig{
+				SimilarityThreshold: 0.90,
+				IndexName:           "gw_semantic_cache_idx",
+				VectorAlgorithm:     VectorAlgorithmHNSW,
+				EmbeddingTimeout:    2 * time.Second,
+				MaxMessages:         4,
+				MaxInputChars:       8000,
+			},
 		},
 		Security: SecurityConfig{
 			Network: NetworkSecurityConfig{
@@ -784,6 +828,9 @@ func loadWithDefaultEnv(path, defaultEnv string) (*Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read config file %s: %w", path, err)
 		}
+		// Clear MaxEntries before YAML decode so the silent deprecated max_l1_entries
+		// alias takes effect whenever max_entries is omitted; applyDefaults restores 4096.
+		cfg.Cache.MaxEntries = 0
 		if err := yaml.Unmarshal(data, cfg); err != nil {
 			return nil, fmt.Errorf("parse config yaml: %w", err)
 		}
@@ -795,6 +842,7 @@ func loadWithDefaultEnv(path, defaultEnv string) (*Config, error) {
 	cfg.applyServerAndStorageEnvOverrides()
 	cfg.applyAuthEnvOverrides()
 	cfg.applyRouterEnvOverrides()
+	cfg.applyCacheEnvOverrides()
 	cfg.applyFinOpsAndProtocolEnvOverrides()
 	cfg.resolveSecretEnvValues()
 
@@ -807,6 +855,7 @@ func loadWithDefaultEnv(path, defaultEnv string) (*Config, error) {
 func (c *Config) resolveSecretEnvValues() {
 	c.Storage.PostgresDSN = ResolveEnvValue(c.Storage.PostgresDSN)
 	c.Storage.RedisPass = ResolveEnvValue(c.Storage.RedisPass)
+	c.Cache.RedisPass = ResolveEnvValue(c.Cache.RedisPass)
 	c.Auth.MasterAdminKey = ResolveEnvValue(c.Auth.MasterAdminKey)
 	c.Auth.MasterEncryptionKey = ResolveEnvValue(c.Auth.MasterEncryptionKey)
 	for i := range c.Auth.PreviousMasterEncryptionKeys {
@@ -923,7 +972,6 @@ func (c *Config) applyRouterEnvOverrides() {
 	envBool("GATEWAY_ROUTER_SESSION_AFFINITY_REPIN_ON_FAILOVER", &c.Router.SessionAffinityRepinOnFailover)
 	envBool("GATEWAY_ROUTER_PROMPT_CACHE_AFFINITY", &c.Router.PromptCacheAffinity)
 	envTrimStr("GATEWAY_ROUTER_PRE_ROUTER_MODE", &c.Router.PreRouterMode)
-	envBool("GATEWAY_ROUTER_CACHE_AWARE_ROUTING", &c.Router.CacheAwareRouting)
 	envInt("GATEWAY_ROUTER_HEDGE_DELAY_MS", &c.Router.HedgeDelayMs)
 	envInt("GATEWAY_ROUTER_MAX_HEDGE_CONCURRENCY", &c.Router.MaxHedgeConcurrency)
 	envFloat("GATEWAY_ROUTER_LATENCY_TOLERANCE_PCT", &c.Router.LatencyTolerancePct)
@@ -934,6 +982,35 @@ func (c *Config) applyRouterEnvOverrides() {
 	envBool("GATEWAY_ROUTER_FALLBACK_ON_UNSUPPORTED_PARAMS", &c.Router.FallbackOnUnsupportedParams)
 	envBool("GATEWAY_ROUTER_ALLOW_STRATEGY_OVERRIDE", &c.Router.AllowStrategyOverride)
 	envBool("GATEWAY_ROUTER_DEBUG_ROUTING_HEADERS", &c.Router.DebugRoutingHeaders)
+}
+
+func (c *Config) applyCacheEnvOverrides() {
+	envBool("GATEWAY_CACHE_ENABLED", &c.Cache.Enabled)
+	envTrimStr("GATEWAY_CACHE_TYPE", &c.Cache.Type)
+	envDuration("GATEWAY_CACHE_DEFAULT_TTL", &c.Cache.DefaultTTL)
+	envTrimStr("GATEWAY_CACHE_NAMESPACE", &c.Cache.Namespace)
+	envInt("GATEWAY_CACHE_MAX_ENTRIES", &c.Cache.MaxEntries)
+	envInt("GATEWAY_CACHE_MAX_ITEM_BYTES", &c.Cache.MaxItemBytes)
+	if v, ok := os.LookupEnv("GATEWAY_CACHE_EXCLUDED_CALL_TYPES"); ok {
+		c.Cache.ExcludedCallTypes = splitTrimCSV(v)
+	}
+	envTrimStr("GATEWAY_CACHE_REDIS_ADDR", &c.Cache.RedisAddr)
+	if v := os.Getenv("GATEWAY_CACHE_REDIS_ADDRS"); v != "" {
+		if addrs := splitTrimCSV(v); len(addrs) > 0 {
+			c.Cache.RedisAddrs = addrs
+		}
+	}
+	envTrimStr("GATEWAY_CACHE_REDIS_MASTER_NAME", &c.Cache.RedisMasterName)
+	envStr("GATEWAY_CACHE_REDIS_PASS", &c.Cache.RedisPass)
+	envInt("GATEWAY_CACHE_REDIS_DB", &c.Cache.RedisDB)
+	envBool("GATEWAY_CACHE_REDIS_TLS", &c.Cache.RedisTLS)
+	envTrimStr("GATEWAY_CACHE_SEMANTIC_EMBEDDING_MODEL", &c.Cache.Semantic.EmbeddingModel)
+	envFloat("GATEWAY_CACHE_SEMANTIC_SIMILARITY_THRESHOLD", &c.Cache.Semantic.SimilarityThreshold)
+	envTrimStr("GATEWAY_CACHE_SEMANTIC_INDEX_NAME", &c.Cache.Semantic.IndexName)
+	envTrimStr("GATEWAY_CACHE_SEMANTIC_VECTOR_ALGORITHM", &c.Cache.Semantic.VectorAlgorithm)
+	envDuration("GATEWAY_CACHE_SEMANTIC_EMBEDDING_TIMEOUT", &c.Cache.Semantic.EmbeddingTimeout)
+	envInt("GATEWAY_CACHE_SEMANTIC_MAX_MESSAGES", &c.Cache.Semantic.MaxMessages)
+	envInt("GATEWAY_CACHE_SEMANTIC_MAX_INPUT_CHARS", &c.Cache.Semantic.MaxInputChars)
 }
 
 func (c *Config) applyFinOpsAndProtocolEnvOverrides() {
@@ -963,6 +1040,7 @@ func (c *Config) Validate() error {
 	c.applyProviderAndCacheDefaults()
 
 	validators := []func() error{
+		c.validateCache,
 		c.validateRouterAndModelList,
 		c.validateFinOpsAndTracing,
 		c.validateServer,
@@ -995,12 +1073,86 @@ func (c *Config) applyProviderAndCacheDefaults() {
 	if c.Providers.MaxIdleConnsPerHost <= 0 {
 		c.Providers.MaxIdleConnsPerHost = 16
 	}
-	if c.Cache.MaxL1Entries <= 0 {
-		c.Cache.MaxL1Entries = 4096
+	c.Cache.Type = strings.ToLower(strings.TrimSpace(c.Cache.Type))
+	if c.Cache.Type == "" {
+		c.Cache.Type = CacheTypeLocal
+	}
+	if c.Cache.MaxEntries <= 0 && c.Cache.MaxL1Entries > 0 {
+		c.Cache.MaxEntries = c.Cache.MaxL1Entries
+	}
+	if c.Cache.MaxEntries <= 0 {
+		c.Cache.MaxEntries = 4096
+	}
+	if c.Cache.MaxItemBytes <= 0 {
+		c.Cache.MaxItemBytes = 1 << 20
 	}
 	if c.Cache.DefaultTTL <= 0 {
 		c.Cache.DefaultTTL = time.Hour
 	}
+	c.Cache.Namespace = strings.TrimSpace(c.Cache.Namespace)
+	if c.Cache.Namespace == "" {
+		c.Cache.Namespace = "gw:cache"
+	}
+	if c.Cache.ExcludedCallTypes == nil {
+		c.Cache.ExcludedCallTypes = []string{"embedding"}
+	}
+	if c.Cache.Semantic.SimilarityThreshold == 0 {
+		c.Cache.Semantic.SimilarityThreshold = 0.90
+	}
+	c.Cache.Semantic.IndexName = strings.TrimSpace(c.Cache.Semantic.IndexName)
+	if c.Cache.Semantic.IndexName == "" {
+		c.Cache.Semantic.IndexName = "gw_semantic_cache_idx"
+	}
+	c.Cache.Semantic.VectorAlgorithm = strings.ToUpper(strings.TrimSpace(c.Cache.Semantic.VectorAlgorithm))
+	if c.Cache.Semantic.VectorAlgorithm == "" {
+		c.Cache.Semantic.VectorAlgorithm = VectorAlgorithmHNSW
+	}
+	if c.Cache.Semantic.EmbeddingTimeout <= 0 {
+		c.Cache.Semantic.EmbeddingTimeout = 2 * time.Second
+	}
+	if c.Cache.Semantic.MaxMessages == 0 {
+		c.Cache.Semantic.MaxMessages = 4
+	}
+	if c.Cache.Semantic.MaxInputChars <= 0 {
+		c.Cache.Semantic.MaxInputChars = 8000
+	}
+}
+
+func (c *Config) validateCache() error {
+	switch c.Cache.Type {
+	case CacheTypeLocal, CacheTypeRedis, CacheTypeRedisSemantic:
+	default:
+		return fmt.Errorf("invalid cache.type %q (must be \"local\", \"redis\", or \"redis-semantic\")", c.Cache.Type)
+	}
+	if isUnresolvedEnvReference(c.Storage.RedisPass) {
+		return fmt.Errorf("storage.redis_pass contains an unresolved environment variable reference")
+	}
+	if isUnresolvedEnvReference(c.Cache.RedisPass) {
+		return fmt.Errorf("cache.redis_pass contains an unresolved environment variable reference")
+	}
+	if !c.Cache.Enabled {
+		return nil
+	}
+	hasRedis := strings.TrimSpace(c.Cache.RedisAddr) != "" || len(c.Cache.RedisAddrs) > 0 ||
+		strings.TrimSpace(c.Storage.RedisAddr) != "" || len(c.Storage.RedisAddrs) > 0
+	if (c.Cache.Type == CacheTypeRedis || c.Cache.Type == CacheTypeRedisSemantic) && !hasRedis {
+		return fmt.Errorf("cache.type=%q requires cache.redis_addr/redis_addrs or storage.redis_addr/redis_addrs", c.Cache.Type)
+	}
+	if c.Cache.Type == CacheTypeRedisSemantic {
+		if strings.TrimSpace(c.Cache.Semantic.EmbeddingModel) == "" {
+			return fmt.Errorf("cache.semantic.embedding_model is required when cache.type=%q", CacheTypeRedisSemantic)
+		}
+		if c.Cache.Semantic.SimilarityThreshold <= 0 || c.Cache.Semantic.SimilarityThreshold > 1.0 {
+			return fmt.Errorf("invalid cache.semantic.similarity_threshold %v (must be in (0, 1])", c.Cache.Semantic.SimilarityThreshold)
+		}
+		if c.Cache.Semantic.VectorAlgorithm != VectorAlgorithmHNSW && c.Cache.Semantic.VectorAlgorithm != VectorAlgorithmFLAT {
+			return fmt.Errorf("invalid cache.semantic.vector_algorithm %q (must be \"HNSW\" or \"FLAT\")", c.Cache.Semantic.VectorAlgorithm)
+		}
+		if c.Cache.Semantic.MaxMessages < -1 {
+			return fmt.Errorf("invalid cache.semantic.max_messages %d (must be >= -1; -1 disables the limit)", c.Cache.Semantic.MaxMessages)
+		}
+	}
+	return nil
 }
 
 func (c *Config) validateRouterAndModelList() error {

@@ -1,7 +1,7 @@
 # Enterprise AI Gateway (Pure Go) — Complete High-Level & Low-Level Architecture Specification
 
 > **Document Status**: Production Reference Architecture (`v0.1.0`)  
-> **Target Runtime**: Go version declared in `go.mod` (`net/http` + `go-chi/chi/v5`), PostgreSQL 16+, Redis 7+  
+> **Target Runtime**: Go version declared in `go.mod` (`net/http` + `go-chi/chi/v5`), PostgreSQL 16+, Redis 8+  
 > **Provider Integrations**: OpenAPI-first adapters under `internal/adapter/` (`openai`, `anthropic`, `groq`, `openrouter`); consult those packages for exact wire translation.  
 > **Contract Architecture**: Gateway and provider OpenAPI contracts are maintained under `docs/openapi/`. `make specgen` regenerates gateway/provider DTOs and multi-release MCP types (`cmd/mcpgen`), validates all contracts, and checks `/v1`, `/admin/v1`, `/auth`, and provider alias route parity (`127` OpenAPI paths). A2A protobuf generation is documented in `docs/specs/a2a/v1.0/generate.go`.
 
@@ -125,7 +125,7 @@ flowchart TB
         subgraph DataPlane["Data Plane (/v1/* Hot Path — < 2ms Overhead)"]
             AuthMW["1. Auth & RBAC Middleware\n(L1 Memory + L2 Redis Lookup)"]
             RateLimitMW["2. Quota & Budget Guard\n(Single Atomic Redis Lua Script)"]
-            RespCache["3. Exact-Match Response Cache\n(Optional Deterministic Bypass)"]
+            RespCache["3. Response Cache\n(local · redis · redis-semantic)"]
             PreRouter["4. Stage 0: PreRouter Registry\n(Heuristic / Semantic / Quality / Adaptive Bandit / Session Pin)"]
             Stage1Router["5. Stage 1-3: FilterChain & Priority Tiers\n(Plugins, Region, Tags, Budgets, Affinity, Priority)"]
             Stage2LB["6. Stage 4: Deployment Load Balancer\n(7 Strategies + Hedged Fastest-Response Racing)"]
@@ -142,7 +142,7 @@ flowchart TB
     end
 
     subgraph BackingStores["Distributed State & Durable Storage"]
-        Redis[("Redis 7+ Cluster\n- Rate Limit Counters (RPM/TPM/Conc)\n- Real-Time Spend Accumulators\n- Deployment Cooldowns & Latency EWMA\n- L2 Identity & Response Cache\n- Pub/Sub Event Bus")]
+        Redis[("Redis 8+ Cluster\n- Rate Limit Counters (RPM/TPM/Conc)\n- Real-Time Spend Accumulators\n- Deployment Cooldowns & Latency EWMA\n- L2 Identity & KV/Semantic Response Cache\n- Pub/Sub Event Bus")]
         Postgres[("PostgreSQL 16+\n- 4-Layer Model Catalogue & Policies\n- Multi-Tenant Orgs, Teams, Users, Keys\n- AES-256-GCM Encrypted Credentials\n- Partitioned Spend & Audit Logs")]
     end
 
@@ -197,10 +197,10 @@ flowchart TB
      - Verifies Virtual Key, Team, and Organization accumulated spend is below `max_budget_micros`.
      - Verifies and increments `RPM` (+1), `TPM` (+estimated tokens), and `Concurrent Requests` (+1) across Key, Team, and Org scopes.
    - If any threshold is breached, immediately short-circuits with `HTTP 429 Too Many Requests` (`Retry-After` header + standard OpenAI error payload).
-5. **Exact-Match Response Cache Lookup (`internal/cache`)**:
-   - For deterministic requests (`temperature == 0` or `X-Gateway-Cache-Control: enabled`) and non-streaming calls, computes a canonical SHA-256 cache key over the organization and the complete canonical request, excluding per-call `RequestID` and non-cacheable `Stream`. Unencodable requests bypass the cache.
-   - On cache hit, returns the cached `CanonicalChatResponse` immediately (`X-Gateway-Cache: HIT`) with zero upstream cost.
-   - L1 and Redis entries carry global, organization, and model epochs. Each hit validates those epochs against shared Redis state; Redis errors and epoch mismatches become cache misses. Invalidation atomically increments shared epochs, so stale L1 values on other replicas are rejected on their next lookup without relying on Pub/Sub delivery.
+5. **Response Cache Lookup (`internal/cache`)**:
+   - Single-backend response cache selected via `cache.type`: `"local"` (bounded in-memory LRU, default), `"redis"` (direct Redis KV), or `"redis-semantic"` (Redis 8+ RediSearch KNN cosine similarity on Hash documents).
+   - For eligible non-streaming requests (`temperature == 0`, `seed != nil`, or `Cache-Control` / `X-Gateway-Cache-Control: enabled`/`force`), checks the configured backend scoped strictly to `(org_id, team_id, virtual_alias, model)`. Embeddings caching is disabled by default (`cache.excluded_call_types: ["embedding"]`) to protect shared Redis memory; opt in via `excluded_call_types: []` or configure a dedicated cache Redis (`cache.redis_addr`).
+   - On cache hit, returns the cached response immediately (`X-Gateway-Cache: HIT`, `X-Gateway-Cache-Type: exact|semantic`, and `X-Gateway-Cache-Similarity` on semantic hits) with `X-Gateway-Cost-Micros: 0` and zero upstream calls.
 6. **6-Stage Model Routing & Candidate Filtering (`internal/router`)**:
    - **Stage 0 (PreRouterRegistry)**: Resolves virtual aliases (`auto`, `router/heuristic`, `router/semantic`, `router/quality`, `router/adaptive`, or custom `PreRouter` hooks) and session affinity pins (`AffinityStore`). Also supports comma-separated hedged racing (`model-a,model-b`) and dynamic `provider/model` auto-provisioning from the embedded 5,493-record catalogue (`internal/modelcatalog`) if the tenant has an active credential. Fails closed (HTTP 404) on unconfigured explicit models or uncallable providers without custom endpoints.
    - **Stages 1–3 (Group Resolution, Filter Chain & Priority Tiers)**: `DeploymentFilterChain` evaluates `RBACEngine.AuthorizeDeployment` (fail-closed on repo errors), health & staleness (`health_staleness_threshold`), 3-state CB cooldowns, context windows, region, `&`/`!` tag expressions, deployment RPM/TPM/budget caps & provider budgets, affinity hints, and registered `RoutingPlugin` filters. Surviving candidates are grouped by ascending `Deployment.Priority` tier.
@@ -433,11 +433,14 @@ All descriptor checks execute inside `internal/ratelimit/scripts/check_descripto
 
 ---
 
-### 3.8 Component 8: Exact-Match Response Caching
+### 3.8 Component 8: Single-Backend Response Caching (`local` | `redis` | `redis-semantic`)
 
-- Enabled when `request.Temperature == 0` (or explicitly requested via header `X-Gateway-Cache-Control: enabled`) on non-streaming requests.
-- Computes deterministic hash `SHA-256(org_id + model + canonical_json(messages, tools, tool_choice, response_format, max_tokens, stop))`.
-- Stores serialized `CanonicalChatResponse` in L1 memory + Redis (`gw:cache:resp:<sha256>`) with configurable TTL (default `1 hour`).
+- Selects one clean backend per deployment via `cache.type`:
+  - `local` (default): process-local bounded LRU map (`cache.max_entries`, `cache.max_item_bytes`) with TTL expiration and multi-replica admin invalidation broadcast via Redis Pub/Sub (`EntityType: "response_cache"`).
+  - `redis`: direct Redis KV storage (`{namespace}:kv:{org_tag}:{sha256}`) via `GET` / `SET EX` and cursor `SCAN` + batched `MGET`/`Pipeline` + `UNLINK` invalidation.
+  - `redis-semantic`: Redis 8+ RediSearch vector similarity search (`{namespace}:sem:{org_tag}:{sha256}` Hash documents stored atomically via `TxPipeline` `HSET`+`EXPIRE` with `FLOAT32` `COSINE` `HNSW`/`FLAT` index) scoped strictly by `TAG` filters (`scope`, `org_id`, `model`). Bypasses multimodal (`image_url`/`document`) and tool-call messages, binds prior conversation turns, `user`, and `extra_params` in `scope`, verifies vector dimension compatibility via `FT.INFO`, reuses the miss embedding for writes, records internal embedding spend under `endpoint: "_internal/semantic_cache"`, and degrades fail-open on Redis or embedding faults.
+- Eligible on non-streaming requests when `temperature == 0`, `seed != nil`, or `Cache-Control` / `X-Gateway-Cache-Control: enabled` (and not excluded by `cache.excluded_call_types`, which excludes `"embedding"` by default). All 5 cached endpoints (`/v1/chat/completions`, `/v1/messages`, `/v1/responses`, `/v1/completions`, `/v1/embeddings`) record `$0` `cache_hit: true` audit rows in `spend_logs`.
+- Supports optional dedicated cache Redis settings (`cache.redis_addr` / `cache.redis_addrs` / `cache.redis_tls`) so cache eviction never interferes with rate-limit or budget keys; `/readyz` stays HTTP `200` (fail-open) while reporting `"cache_status": "ok" | "degraded"`.
 
 ---
 
@@ -591,7 +594,8 @@ All multi-key Lua scripts use Redis Cluster hash tags so every key touched in an
 | `gw:affinity:{org:<org_id>}:{session,resp,pcache}:*` | `STRING` | `1800s` | Session, Responses API, and prompt-cache deployment affinity pins |
 | `gw:router:semantic:{org:<org_id>}:centroids` | `HASH` / `STRING` | Cached | Normalized centroid vectors for `SemanticPreRouter` |
 | `gw:router:bandit:{org:<org_id>}:{bucket}` | `HASH` | Persistent | Thompson-sampling Beta posterior state for `BanditPreRouter` |
-| `gw:cache:resp:{sha256}` | `STRING` (JSON) | `3600s` | Exact-match cached chat response (plus `gw:cache:{epochs}:*` epoch invalidation) |
+| `gw:cache:kv:{org_tag}:{sha256}` | `STRING` (JSON) | `3600s` | Direct Redis KV cached inference response (`cache.type: redis`) |
+| `gw:cache:sem:{org_tag}:{sha256}` | `HASH` (+ Vector) | `3600s` | RediSearch KNN cosine-similarity cached chat response (`cache.type: redis-semantic`) |
 | `gw:lock:discovery` | `STRING` (UUID) | `60s` | Distributed mutex for automated model discovery worker |
 | `gw:events:invalidation` | `PUBSUB` | — | Broadcast channel for instant L1 cache eviction across pods |
 | `gw:mcp25:sess:{sessionID}` | `STRING` (JSON) | `3600s` | MCP 2025 stateful session mapping isolated by principal digest |
@@ -711,7 +715,7 @@ ai-gateway-go/
 │   ├── security/                     # Centralized outbound SSRF network policy engine & safe HTTP client
 │   ├── guardrails/                   # Two-layer guardrail pipeline, 15 drivers, Starlark custom_code, tool/MCP governance & stream windowing
 │   ├── ratelimit/                    # Redis Lua multi-descriptor atomic rate limiter, rolling_24h recovery + tokenizer
-│   ├── cache/                        # Exact-match deterministic response cache
+│   ├── cache/                        # Single-backend response cache (local LRU, Redis KV, Redis 8 semantic vector search)
 │   ├── modelmgmt/                    # 4-Layer model catalogue, org policies & automated discovery worker
 │   ├── router/                       # Stage 0–5 Intelligent Router, FilterChain, PTU/Load Balancer, Reliability Manager
 │   ├── finops/                       # Micro-dollar cost calculator, soft budgets & durable spend outbox worker
@@ -723,7 +727,7 @@ ai-gateway-go/
 │   └── config.example.yaml           # Annotated production configuration template
 ├── deployments/
 │   ├── Dockerfile                    # Multi-stage distroless container build
-│   ├── docker-compose.yml            # Full stack: Gateway + PostgreSQL 16 + Redis 7 + Prometheus
+│   ├── docker-compose.yml            # Full stack: Gateway + PostgreSQL 16 + Redis 8 + Prometheus
 │   ├── docker-compose.test.yml       # Integration test stack
 │   ├── helm/goroute/                 # Production Helm chart (Deployment, HPA, PDB, NetworkPolicy, Migration Job)
 │   ├── k8s/                          # Raw Kubernetes manifests & Kustomize overlay

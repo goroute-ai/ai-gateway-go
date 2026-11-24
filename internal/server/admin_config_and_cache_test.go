@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/guardrails"
@@ -33,6 +34,7 @@ func TestAdminGetConfigRedactsSecrets(t *testing.T) {
 	cfg.Auth.DefaultVirtualKey = "sk-gw-default-virtual-secret"
 	cfg.Storage.PostgresDSN = "postgres://gwuser:super-db-password@db.internal:5432/gateway?sslmode=require"
 	cfg.Storage.RedisPass = "super-redis-password"
+	cfg.Cache.RedisPass = "super-cache-redis-password"
 	cfg.Security.Network.OutboundSSRF.EgressProxyURL = "http://proxyuser:proxy-pass-secret@proxy.internal:3128"
 	cfg.Tracing.Headers = map[string]string{"Authorization": "Bearer otlp-secret"}
 	cfg.Guardrails.Scanners = []config.GuardrailScannerConfig{
@@ -85,6 +87,7 @@ func TestAdminGetConfigRedactsSecrets(t *testing.T) {
 		cfg.Auth.DefaultVirtualKey,
 		"super-db-password",
 		"super-redis-password",
+		"super-cache-redis-password",
 		"proxy-pass-secret",
 		"otlp-secret",
 		"scanner-url-pass",
@@ -112,6 +115,10 @@ func TestAdminGetConfigRedactsSecrets(t *testing.T) {
 	}
 	if dsn, _ := storageSection["postgres_dsn"].(string); !strings.Contains(dsn, "REDACTED@db.internal:5432") {
 		t.Fatalf("expected redacted postgres_dsn password, got %q", dsn)
+	}
+	cacheSection, _ := parsed["cache"].(map[string]any)
+	if cacheSection["redis_pass"] != "[REDACTED]" {
+		t.Fatalf("expected redacted cache.redis_pass, got %+v", cacheSection)
 	}
 }
 
@@ -153,6 +160,7 @@ func TestResponsesAndMessagesCacheHit(t *testing.T) {
 	cfg := config.Default()
 	cfg.Server.Environment = "test"
 	cfg.Cache.Enabled = true
+	cfg.Cache.ExcludedCallTypes = []string{} // Explicitly opt in to embeddings caching for this test.
 	cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks = true
 	cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP = true
 	cfg.Auth.DefaultVirtualKey = "sk-gw-cache-test-key-123456"
@@ -293,6 +301,111 @@ func TestResponsesAndMessagesCacheHit(t *testing.T) {
 	}
 	if calls := upstreamCalls.Load(); calls != 4 {
 		t.Fatalf("expected 4 total upstream calls after /v1/embeddings miss+hit, got %d", calls)
+	}
+
+	// 4b. Send a non-cacheable request (Cache-Control: no-cache) and verify it does NOT inflate cache_misses (M8).
+	noCacheReq := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(respPayload))
+	noCacheReq.Header.Set("Authorization", "Bearer "+issuedKey.Key)
+	noCacheReq.Header.Set("Content-Type", "application/json")
+	noCacheReq.Header.Set("Cache-Control", "no-cache")
+	noCacheRec := httptest.NewRecorder()
+	gw.Handler().ServeHTTP(noCacheRec, noCacheReq)
+	if noCacheRec.Code != http.StatusOK {
+		t.Fatalf("/v1/responses no-cache call failed (%d): %s", noCacheRec.Code, noCacheRec.Body.String())
+	}
+
+	// 5. Verify GET /admin/v1/observability/metrics exposes exact eligible cache_hits=4, cache_misses=4, cache_hit_rate=0.5 (M8).
+	metricsReq := httptest.NewRequest(http.MethodGet, "/admin/v1/observability/metrics", nil)
+	metricsReq.Header.Set("Authorization", "Bearer "+cfg.Auth.MasterAdminKey)
+	metricsRec := httptest.NewRecorder()
+	gw.Handler().ServeHTTP(metricsRec, metricsReq)
+	if metricsRec.Code != http.StatusOK {
+		t.Fatalf("/admin/v1/observability/metrics failed (%d): %s", metricsRec.Code, metricsRec.Body.String())
+	}
+	var snap struct {
+		CacheEnabled bool    `json:"cache_enabled"`
+		CacheType    string  `json:"cache_type"`
+		CacheStatus  string  `json:"cache_status"`
+		CacheHits    int64   `json:"cache_hits"`
+		CacheMisses  int64   `json:"cache_misses"`
+		CacheEntries int64   `json:"cache_entries"`
+		CacheHitRate float64 `json:"cache_hit_rate"`
+	}
+	if err := json.Unmarshal(metricsRec.Body.Bytes(), &snap); err != nil {
+		t.Fatalf("decode observability metrics: %v", err)
+	}
+	if !snap.CacheEnabled || snap.CacheType != "local" || snap.CacheStatus != "ok" ||
+		snap.CacheHits != 4 || snap.CacheMisses != 4 || snap.CacheEntries != 4 || snap.CacheHitRate != 0.5 {
+		t.Fatalf("expected enabled local ok cache (hits=4, misses=4, entries=4, rate=0.5), got %+v", snap)
+	}
+
+	// 6. Verify /admin/v1/spend/logs recorded $0 cache_hit=true audit events for all 4 endpoints (M6).
+	spendReq := httptest.NewRequest(http.MethodGet, "/admin/v1/spend/logs?org_id=org_default&limit=100", nil)
+	spendReq.Header.Set("Authorization", "Bearer "+cfg.Auth.MasterAdminKey)
+	spendRec := httptest.NewRecorder()
+	gw.Handler().ServeHTTP(spendRec, spendReq)
+	if spendRec.Code != http.StatusOK {
+		t.Fatalf("/admin/v1/spend/logs failed (%d): %s", spendRec.Code, spendRec.Body.String())
+	}
+	var spendPayload struct {
+		Data []domain.SpendEvent `json:"data"`
+	}
+	if err := json.Unmarshal(spendRec.Body.Bytes(), &spendPayload); err != nil {
+		t.Fatalf("decode spend logs: %v", err)
+	}
+	hitEndpoints := map[string]bool{}
+	for _, ev := range spendPayload.Data {
+		if ev.CacheHit {
+			if ev.CostMicros != 0 {
+				t.Fatalf("cache hit spend event for %s must have cost_micros=0, got %d", ev.Endpoint, ev.CostMicros)
+			}
+			hitEndpoints[ev.Endpoint] = true
+		}
+	}
+	for _, ep := range []string{"/v1/responses", "/v1/messages", "/v1/completions", "/v1/embeddings"} {
+		if !hitEndpoints[ep] {
+			t.Fatalf("expected $0 cache_hit spend audit row for %s; saw %v", ep, hitEndpoints)
+		}
+	}
+}
+
+func TestReadyzCacheStatusDegradedAndOK(t *testing.T) {
+	mr := miniredis.RunT(t)
+	cfg := config.Default()
+	cfg.Server.Environment = "test"
+	cfg.Cache.Enabled = true
+	cfg.Cache.Type = config.CacheTypeRedis
+	cfg.Cache.RedisAddr = mr.Addr()
+
+	gw, err := server.New(cfg, storage.NewMemoryRepository(), nil, nil)
+	if err != nil {
+		t.Fatalf("server.New: %v", err)
+	}
+	defer gw.Shutdown(context.Background())
+
+	// Dedicated cache Redis healthy -> HTTP 200 with cache_status="ok".
+	recOK := httptest.NewRecorder()
+	gw.Handler().ServeHTTP(recOK, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if recOK.Code != http.StatusOK {
+		t.Fatalf("expected /readyz 200 while cache redis up, got %d: %s", recOK.Code, recOK.Body.String())
+	}
+	var bodyOK map[string]any
+	_ = json.Unmarshal(recOK.Body.Bytes(), &bodyOK)
+	if bodyOK["status"] != "ready" || bodyOK["cache_status"] != "ok" {
+		t.Fatalf("expected status=ready cache_status=ok, got %v", bodyOK)
+	}
+
+	// Dedicated cache Redis down -> STILL HTTP 200 (fail-open) with cache_status="degraded".
+	mr.Close()
+	recDeg := httptest.NewRecorder()
+	gw.Handler().ServeHTTP(recDeg, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if recDeg.Code != http.StatusOK {
+		t.Fatalf("expected /readyz 200 (fail-open) during dedicated cache redis outage, got %d: %s", recDeg.Code, recDeg.Body.String())
+	}
+	var bodyDeg map[string]any
+	_ = json.Unmarshal(recDeg.Body.Bytes(), &bodyDeg)
+	if bodyDeg["status"] != "ready" || bodyDeg["cache_status"] != "degraded" {
+		t.Fatalf("expected status=ready cache_status=degraded, got %v", bodyDeg)
 	}
 }
 
