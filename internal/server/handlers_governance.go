@@ -50,7 +50,8 @@ func redactAuditMap(m map[string]any) map[string]any {
 		if lower == "raw_key" || lower == "key_hash" || lower == "key" ||
 			lower == "master_key" || lower == "new_master_key" ||
 			lower == "password" || lower == "password_hash" || lower == "password_sha1" ||
-			lower == "auth_secret" || lower == "csrf_token" ||
+			lower == "auth_secret" || lower == "auth_token" || lower == "token" || lower == "secret" ||
+			lower == "csrf_token" ||
 			lower == "authorization" || lower == "x-api-key" || lower == "api_key" ||
 			strings.HasPrefix(lower, "encrypted_") ||
 			lower == "dek_nonce" || lower == "data_nonce" ||

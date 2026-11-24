@@ -157,6 +157,14 @@ func (s *GatewayServer) handleAdminCreateMCPServer(w http.ResponseWriter, r *htt
 		return
 	}
 
+	s.auditWithDiff(r.Context(), server.OrgID, "mcp_server.created", "mcp_server", server.ID, map[string]any{
+		"name":             server.Name,
+		"slug":             server.Slug,
+		"protocol_version": server.ProtocolVersion,
+		"transport_type":   server.TransportType,
+		"auth_type":        server.AuthType,
+	}, nil, server)
+
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"status": "created",
 		"server": server,
@@ -416,6 +424,16 @@ func (s *GatewayServer) handleAdminSyncMCPServer(w http.ResponseWriter, r *http.
 	server.UpdatedAt = time.Now().UTC()
 	_ = s.repo.UpdateMCPServer(r.Context(), server)
 
+	s.auditWithDiff(r.Context(), server.OrgID, "mcp_server.synced", "mcp_server", server.ID, map[string]any{
+		"slug":           server.Slug,
+		"config_version": server.ConfigVersion,
+		"tools_count":    len(discoveredTools),
+	}, nil, map[string]any{
+		"server_id":      server.ID,
+		"config_version": server.ConfigVersion,
+		"tools_count":    len(discoveredTools),
+	})
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":         "synced",
 		"server_id":      server.ID,
@@ -507,6 +525,12 @@ func (s *GatewayServer) handleAdminCreateMCPToolset(w http.ResponseWriter, r *ht
 		})
 		return
 	}
+
+	s.auditWithDiff(r.Context(), ts.OrgID, "mcp_toolset.created", "mcp_toolset", ts.ID, map[string]any{
+		"name":       ts.Name,
+		"slug":       ts.Slug,
+		"tool_count": len(ts.ToolIDs),
+	}, nil, ts)
 
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"status":  "created",
@@ -658,6 +682,11 @@ func (s *GatewayServer) handleAdminSetMCPUserCredential(w http.ResponseWriter, r
 		return
 	}
 
+	s.auditWithDiff(r.Context(), cred.OrgID, "mcp_user_credential.saved", "mcp_user_credential", cred.ID, map[string]any{
+		"server_id": cred.ServerID,
+		"user_id":   cred.UserID,
+	}, nil, cred)
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":        "saved",
 		"credential_id": cred.ID,
@@ -758,9 +787,11 @@ func (s *GatewayServer) handleAdminUpdateMCPSpec(w http.ResponseWriter, r *http.
 		return
 	}
 
+	var beforeSettings domain.MCPRuntimeSettings
 	strict := false
 	if s.mcpHub != nil {
-		strict = s.mcpHub.RuntimeSettings().StrictSchemaValidation
+		beforeSettings = s.mcpHub.RuntimeSettings()
+		strict = beforeSettings.StrictSchemaValidation
 	}
 	if input.StrictSchemaValidation != nil {
 		strict = *input.StrictSchemaValidation
@@ -798,16 +829,10 @@ func (s *GatewayServer) handleAdminUpdateMCPSpec(w http.ResponseWriter, r *http.
 		EntityID:   updated.ActiveProtocolVersion,
 	})
 
-	_ = s.repo.RecordAuditLog(r.Context(), &domain.AuditLog{
-		ActorID:    actor,
-		Action:     "mcp.spec.updated",
-		Resource:   "mcp_runtime_settings",
-		ResourceID: "default",
-		Details: map[string]any{
-			"active_protocol_version":  updated.ActiveProtocolVersion,
-			"strict_schema_validation": updated.StrictSchemaValidation,
-		},
-	})
+	s.auditWithDiff(r.Context(), "", "mcp.spec.updated", "mcp_runtime_settings", "default", map[string]any{
+		"active_protocol_version":  updated.ActiveProtocolVersion,
+		"strict_schema_validation": updated.StrictSchemaValidation,
+	}, beforeSettings, updated)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":                   "updated",
@@ -845,6 +870,7 @@ func (s *GatewayServer) handleAdminUpdateMCPServer(w http.ResponseWriter, r *htt
 	if _, ok := s.authorizeAdmin(w, r, existing.OrgID, true); !ok {
 		return
 	}
+	before := *existing
 
 	var input struct {
 		Name            *string           `json:"name,omitempty"`
@@ -948,6 +974,13 @@ func (s *GatewayServer) handleAdminUpdateMCPServer(w http.ResponseWriter, r *htt
 		})
 		return
 	}
+
+	s.auditWithDiff(r.Context(), existing.OrgID, "mcp_server.updated", "mcp_server", existing.ID, map[string]any{
+		"slug":             existing.Slug,
+		"protocol_version": existing.ProtocolVersion,
+		"transport_type":   existing.TransportType,
+		"is_active":        existing.IsActive,
+	}, &before, existing)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status": "updated",
