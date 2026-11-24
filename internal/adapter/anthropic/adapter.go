@@ -13,6 +13,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/sse"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/observability"
 	"github.com/goroute-ai/ai-gateway-go/internal/openapi/providers"
 	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 )
@@ -848,6 +849,7 @@ func (a *Adapter) ListModels(ctx context.Context, cred *domain.ProviderCredentia
 func setHeaders(req *http.Request, cred *domain.ProviderCredential) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("anthropic-version", anthropicVersion)
+	observability.InjectTraceHeaders(req.Context(), req)
 	if cred != nil {
 		if cred.DecryptedAPIKey != "" {
 			req.Header.Set("x-api-key", cred.DecryptedAPIKey)

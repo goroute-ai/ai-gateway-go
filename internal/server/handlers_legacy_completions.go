@@ -136,7 +136,14 @@ func (s *GatewayServer) handleLegacyCompletions(w http.ResponseWriter, r *http.R
 	if s.respCache != nil && s.respCache.IsCompletionCacheable(&req, cacheOpts) {
 		cacheKey = s.respCache.ComputeCompletionKeyWithScope(idCtx.OrgID, idCtx.TeamID, cacheAllowedModelScope(idCtx), &req)
 		if cacheKey != "" {
-			if cachedResp, hit := s.respCache.GetCompletion(r.Context(), idCtx.OrgID, cacheKey); hit {
+			cacheSpanCtx, cacheSpan := observability.StartCacheLookupSpan(r.Context(), s.tracer, s.respCache.Type(), req.Model)
+			cachedResp, hit := s.respCache.GetCompletion(cacheSpanCtx, idCtx.OrgID, cacheKey)
+			hitType := ""
+			if hit {
+				hitType = "exact"
+			}
+			observability.FinishCacheLookupSpan(cacheSpan, hit, hitType, 0, nil)
+			if hit {
 				for i := range cachedResp.Choices {
 					var sanitizeErr error
 					cachedResp.Choices[i].Text, sanitizeErr = s.sanitizeGuardrailText(r.Context(), idCtx.OrgID, cachedResp.Choices[i].Text)

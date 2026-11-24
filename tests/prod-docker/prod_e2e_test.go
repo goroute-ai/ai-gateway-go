@@ -1551,13 +1551,17 @@ func TestProdDocker_Suite99_MultiReplicaHA_ResilienceAndKEKRotation(t *testing.T
 	}
 
 	for _, base := range []string{prodPod1Base, prodPod2Base} {
-		unauthResp, _ := doReq(t, client, http.MethodGet, base+"/metrics", nil, nil)
-		if unauthResp.StatusCode != http.StatusUnauthorized {
-			t.Fatalf("%s/metrics without auth got %d, want 401", base, unauthResp.StatusCode)
+		legacyResp, _ := doReq(t, client, http.MethodGet, base+"/metrics", nil, map[string]string{"Authorization": "Bearer " + prodMasterKey})
+		if legacyResp.StatusCode != http.StatusNotFound {
+			t.Fatalf("%s/metrics should be removed (404), got %d", base, legacyResp.StatusCode)
 		}
-		mResp, mBody := doReq(t, client, http.MethodGet, base+"/metrics", nil, map[string]string{"Authorization": "Bearer " + prodMasterKey})
-		if mResp.StatusCode != http.StatusOK || !strings.Contains(string(mBody), "# HELP") {
-			t.Fatalf("%s/metrics unexpected response: status=%d body_len=%d", base, mResp.StatusCode, len(mBody))
+		unauthResp, _ := doReq(t, client, http.MethodGet, base+"/admin/v1/observability/metrics", nil, nil)
+		if unauthResp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("%s/admin/v1/observability/metrics without auth got %d, want 401", base, unauthResp.StatusCode)
+		}
+		mResp, mBody := doReq(t, client, http.MethodGet, base+"/admin/v1/observability/metrics", nil, map[string]string{"Authorization": "Bearer " + prodMasterKey})
+		if mResp.StatusCode != http.StatusOK || !strings.Contains(string(mBody), `"total_requests"`) {
+			t.Fatalf("%s/admin/v1/observability/metrics unexpected response: status=%d body_len=%d", base, mResp.StatusCode, len(mBody))
 		}
 	}
 

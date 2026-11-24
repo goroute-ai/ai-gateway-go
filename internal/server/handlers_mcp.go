@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/logger"
 	"github.com/goroute-ai/ai-gateway-go/internal/mcp"
 )
 
@@ -123,6 +124,15 @@ func (s *GatewayServer) handleMCPHTTPDispatch(w http.ResponseWriter, r *http.Req
 		})
 		return
 	}
+
+	mcpModel := routeKind
+	if targetSlug != "" {
+		mcpModel = routeKind + ":" + targetSlug
+	}
+	logger.SetInferenceMeta(r.Context(), logger.InferenceMeta{
+		Provider: "mcp",
+		Model:    mcpModel,
+	})
 
 	res, err := s.mcpHub.DispatchHTTP(r.Context(), idCtx, routeKind, targetSlug, r, bodyBytes)
 	if err != nil {

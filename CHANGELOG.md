@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### OpenTelemetry (OTLP/HTTP) 3-Signal Observability Standardization (`v0.1` LTS)
+
+#### Added
+- **Unified 3-Signal OpenTelemetry OTLP/HTTP Runtime (`internal/observability/otel.go`, `instruments.go`, `genai_spans.go`)**:
+  - Standardized GoRoute telemetry export exclusively on pure-Go official OpenTelemetry OTLP/HTTP SDKs across **Traces** (`otlptracehttp`), **Metrics** (`otlpmetrichttp`), and opt-in post-scrub **Logs** (`otelslog` + `otlploghttp`), with every signal endpoint validated against `internal/security/network` outbound SSRF policies.
+  - Adopted OpenTelemetry **GenAI Semantic Conventions** (`gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.first_token` streaming event, `execute_tool` MCP spans, `invoke_agent` A2A spans, `cache.lookup` spans, and privacy-first `capture_content: false` default).
+  - Standardized all OTLP metric names to pure OpenTelemetry dot-separated naming under `gen_ai.*` (`gen_ai.client.operation.duration`, `gen_ai.client.token.usage`, `gen_ai.server.time_to_first_token`) and `gateway.*` (`gateway.requests`, `gateway.cache.*`, `gateway.guardrail.*`, `gateway.mcp.requests`, `gateway.a2a.requests`, `gateway.finops.outbox.*`, `gateway.audit.siem.*`, `gateway.redis.circuit_breaker.state`, `gateway.deployment.healthy`, and non-STW `runtime/metrics` Go runtime gauges).
+  - Added W3C `traceparent` propagation across all 4 OpenAPI-first provider adapters (`openai`, `anthropic`, `groq`, `openrouter`), fixed real `spanContext.TraceFlags()` formatting, and low-cardinality `chi` route-template span naming (`HTTP POST /v1/chat/completions`).
+  - Added top-level `otel:` and `health:` configuration sections with full standard `OTEL_*` and `GATEWAY_OTEL_*` / `GATEWAY_AUDIT_SIEM_*` / `GATEWAY_HEALTH_PROBE_*` environment overrides, fail-closed `os.environ/` validation on `otel.headers` & `audit.siem_webhook.*`, and silent deprecated `tracing:` YAML alias compatibility.
+  - Fixed tenant identity attribution (`org_id`, `team_id`, `virtual_key_id`, `key_prefix`) on HTTP access logs & spans, replaced lifetime Algorithm-R latency reservoir with a bounded 1,024-sample sliding window, replaced STW `runtime.ReadMemStats()` with lock-free `runtime/metrics`, wired `pkg/gateway.WithLogger` to global `logger.SetGlobal`, and surfaced live OTLP 3-signal status, FinOps outbox depth, SIEM webhook delivery stats, and Redis circuit-breaker state in `GET /admin/v1/observability/metrics` and Operator Web UI (`OverviewView` + `ConfigView`).
+  - Added Tier 3c `make test-obs-prod-docker` 2-replica HA production Docker OTLP verification suite (`Suites O0–O5`) using a real `otel/opentelemetry-collector-contrib` instance writing traces, metrics, and logs JSONL alongside 4-adapter `traceparent` capture, HMAC-SHA256 SIEM webhook verification, and Redis circuit-breaker chaos testing.
+
+#### Removed
+- **Removed Prometheus Exposition & Non-OTLP Telemetry Dependencies**: Deleted `GET /metrics`, `metricsAuthMiddleware`, `Collector.PrometheusHandler()`, `deployments/prometheus/prometheus.yml`, legacy `gw_*` metric names (`gw_redis_cb_state`, `gw_routing_signal_degraded_total`), and the custom protobuf OTLP encoder (`internal/observability/metrics_otlp.go`). GoRoute `v0.1` LTS exports telemetry exclusively over standard OpenTelemetry OTLP/HTTP; external observability platforms integrate on top of OTLP/HTTP directly or via an OpenTelemetry Collector.
+
 ### Single-Backend Response Caching (`local` | `redis` | `redis-semantic`), Hardening & Operator Web UI Wiring
 
 #### Added
@@ -17,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Strict tenant, multi-turn, and parameter isolation: hex-hashed RediSearch `TAG` filters (`scope`, `org_id`, `model` including both resolved upstream model and requested `ModelGroup` alias), multimodal (`image_url`/`document`) and tool-call semantic bypass, prior-turn + `user` + `extra_params` semantic scope binding, `seed` cache eligibility (`temperature > 0`), `cache.semantic.max_messages: -1` unlimited mode, and rune-safe UTF-8 prompt truncation.
   - Optional dedicated cache Redis (`cache.redis_addr`/`redis_addrs`/`redis_master_name`/`redis_pass`/`redis_db`/`redis_tls` with TLS 1.2+ and `500ms` fail-open timeouts), fail-open `/readyz` `"cache_status": "ok" | "degraded"` reporting, default `cache.excluded_call_types: ["embedding"]`, and `max_l1_entries` preserved as a silent deprecated YAML alias for `max_entries`.
   - Unified `$0` (`cache_hit: true`) FinOps `spend_logs` audit records across all 5 cached endpoints (`/v1/chat/completions`, `/v1/messages`, `/v1/responses`, `/v1/completions`, `/v1/embeddings`) plus async internal semantic-cache embedding spend logging under `endpoint: "_internal/semantic_cache"`.
-  - Backend-agnostic Prometheus cache metrics (`gateway_cache_hits_total`, `gateway_cache_misses_total`, `gateway_cache_errors_total`, `gateway_cache_semantic_hits_total`, `gateway_cache_entries`, `gateway_cache_evictions_total`) and authoritative `Collector.SetCacheTelemetryProvider` parity on `GET /admin/v1/observability/metrics`.
+  - Backend-agnostic OTLP cache metrics (`gateway.cache.hits`, `gateway.cache.misses`, `gateway.cache.errors`, `gateway.cache.semantic_hits`, `gateway.cache.entries`, `gateway.cache.evictions`) and authoritative `Collector.SetCacheTelemetryProvider` parity on `GET /admin/v1/observability/metrics`.
   - Documented `X-Gateway-Cache`, `X-Gateway-Cache-Type`, and `X-Gateway-Cache-Similarity` headers in OpenAPI 3.1 (`docs/openapi/gateway.openapi.yaml`) and CORS `Access-Control-Expose-Headers`.
 - **Operator Web UI Caching Wiring (`web/src/`, `internal/ui/dist/`)**:
   - `PlaygroundView`: `Stream SSE | JSON (Cacheable)` response mode toggle, collapsible **Cache Controls** (`Cache Mode`, `Seed`, `Semantic Similarity` override), token usage & cache telemetry display, and updated `curl`/Python/TypeScript/Go code exports.

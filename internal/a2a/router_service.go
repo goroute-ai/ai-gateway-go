@@ -35,6 +35,14 @@ type RouterService struct {
 	verifier    *UpstreamCardVerifier
 	guardrails  *guardrails.Engine
 	pipeline    *guardrails.Pipeline
+	instruments *observability.Instruments
+}
+
+// SetInstruments attaches OpenTelemetry metric instruments to the A2A RouterService.
+func (s *RouterService) SetInstruments(inst *observability.Instruments) {
+	if s != nil {
+		s.instruments = inst
+	}
 }
 
 // NewRouterService constructs a new A2A RouterService.
@@ -574,42 +582,72 @@ func (s *RouterService) invokeUpstreamAgent(
 	agent *domain.A2AAgent,
 	req *pb.SendMessageRequest,
 ) (*pb.SendMessageResponse, error) {
-	reqJSON, err := ProtoJSONMarshaler.Marshal(req)
-	if err != nil {
-		return nil, fmt.Errorf("marshal upstream request: %w", err)
+	spanCtx, agentSpan := observability.StartGenAISpan(ctx, nil, observability.GenAISpanStart{
+		Operation:     "invoke_agent",
+		AgentName:     agent.Slug,
+		ServerAddress: agent.EndpointURL,
+		OrgID:         agent.OrgID,
+	})
+	finishAgent := func(err error, errType string) {
+		observability.FinishGenAISpan(agentSpan, observability.GenAISpanEnd{Err: err, ErrorType: errType})
+		if s.instruments != nil {
+			status := "ok"
+			if err != nil {
+				status = "error"
+			}
+			s.instruments.RecordA2ARequest(spanCtx, "message/send", status)
+		}
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, agent.EndpointURL, bytes.NewReader(reqJSON))
+	reqJSON, err := ProtoJSONMarshaler.Marshal(req)
 	if err != nil {
-		return nil, fmt.Errorf("create upstream request: %w", err)
+		mErr := fmt.Errorf("marshal upstream request: %w", err)
+		finishAgent(mErr, "a2a_marshal_error")
+		return nil, mErr
+	}
+
+	httpReq, err := http.NewRequestWithContext(spanCtx, http.MethodPost, agent.EndpointURL, bytes.NewReader(reqJSON))
+	if err != nil {
+		rErr := fmt.Errorf("create upstream request: %w", err)
+		finishAgent(rErr, "a2a_request_error")
+		return nil, rErr
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
 
 	// Inject W3C distributed tracing context
-	observability.InjectTraceHeaders(ctx, httpReq)
+	observability.InjectTraceHeaders(spanCtx, httpReq)
 
 	resp, err := s.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("upstream agent call failed: %w", err)
+		uErr := fmt.Errorf("upstream agent call failed: %w", err)
+		finishAgent(uErr, "a2a_upstream_error")
+		return nil, uErr
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("upstream agent returned HTTP %d: %s", resp.StatusCode, string(b))
+		hErr := fmt.Errorf("upstream agent returned HTTP %d: %s", resp.StatusCode, string(b))
+		finishAgent(hErr, fmt.Sprintf("http_%d", resp.StatusCode))
+		return nil, hErr
 	}
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
 	if err != nil {
-		return nil, fmt.Errorf("read upstream response: %w", err)
+		bErr := fmt.Errorf("read upstream response: %w", err)
+		finishAgent(bErr, "a2a_read_error")
+		return nil, bErr
 	}
 
 	var a2aResp pb.SendMessageResponse
 	if err := StrictProtoJSONUnmarshaler.Unmarshal(respBody, &a2aResp); err != nil {
-		return nil, fmt.Errorf("parse upstream agent response: %w", err)
+		pErr := fmt.Errorf("parse upstream agent response: %w", err)
+		finishAgent(pErr, "a2a_parse_error")
+		return nil, pErr
 	}
 
+	finishAgent(nil, "")
 	return &a2aResp, nil
 }
 

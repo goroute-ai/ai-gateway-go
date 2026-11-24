@@ -124,50 +124,45 @@ func TestDeclarativeModelListBootstrapAndDynamicRouting(t *testing.T) {
 	}
 }
 
-func TestMetricsRequiresMasterAdminCredential(t *testing.T) {
+func TestObservabilityMetricsRequiresAdminCredentialAndLegacyMetricsRemoved(t *testing.T) {
 	cfg := config.Default()
 	cfg.Auth.MasterAdminKey = "sk-gw-metrics-test-master"
 	gateway, err := server.New(cfg, storage.NewMemoryRepository(), nil, nil)
 	if err != nil {
 		t.Fatalf("create gateway: %v", err)
 	}
+	defer gateway.Shutdown(context.Background())
 
-	unauthenticated := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	// Legacy Prometheus /metrics endpoint is removed in v0.1 LTS (OTLP-only export).
+	legacyReq := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	legacyReq.Header.Set("Authorization", "Bearer sk-gw-metrics-test-master")
+	legacyRec := httptest.NewRecorder()
+	gateway.Handler().ServeHTTP(legacyRec, legacyReq)
+	if legacyRec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 on removed /metrics endpoint, got %d", legacyRec.Code)
+	}
+
+	unauthenticated := httptest.NewRequest(http.MethodGet, "/admin/v1/observability/metrics", nil)
 	unauthenticatedRecorder := httptest.NewRecorder()
 	gateway.Handler().ServeHTTP(unauthenticatedRecorder, unauthenticated)
 	if unauthenticatedRecorder.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 without credentials, got %d", unauthenticatedRecorder.Code)
 	}
 
-	queryCredential := httptest.NewRequest(http.MethodGet, "/metrics?token=sk-gw-metrics-test-master", nil)
+	queryCredential := httptest.NewRequest(http.MethodGet, "/admin/v1/observability/metrics?token=sk-gw-metrics-test-master", nil)
 	queryRecorder := httptest.NewRecorder()
 	gateway.Handler().ServeHTTP(queryRecorder, queryCredential)
 	if queryRecorder.Code != http.StatusUnauthorized {
 		t.Fatalf("expected query credentials to be rejected, got %d", queryRecorder.Code)
 	}
 
-	authenticated := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	authenticated := httptest.NewRequest(http.MethodGet, "/admin/v1/observability/metrics", nil)
 	authenticated.Header.Set("Authorization", "Bearer sk-gw-metrics-test-master")
 	authenticatedRecorder := httptest.NewRecorder()
 	gateway.Handler().ServeHTTP(authenticatedRecorder, authenticated)
 	metricsBody := authenticatedRecorder.Body.String()
-	if authenticatedRecorder.Code != http.StatusOK || !strings.Contains(metricsBody, "gateway_requests_total") {
-		t.Fatalf("expected 200 with metrics for admin credential, got %d: %s", authenticatedRecorder.Code, authenticatedRecorder.Body.String())
-	}
-	for _, metric := range []string{
-		"gateway_go_heap_alloc_bytes",
-		"gateway_go_gc_cycles_total",
-		"gateway_model_catalog_size",
-		"gateway_cache_hits_total",
-		"gateway_cache_misses_total",
-		"gateway_cache_errors_total",
-		"gateway_cache_semantic_hits_total",
-		"gateway_cache_entries",
-		"gateway_cache_evictions_total",
-	} {
-		if !strings.Contains(metricsBody, metric) {
-			t.Fatalf("expected runtime metric %q, got: %s", metric, metricsBody)
-		}
+	if authenticatedRecorder.Code != http.StatusOK || !strings.Contains(metricsBody, `"total_requests"`) || !strings.Contains(metricsBody, `"cache_enabled"`) {
+		t.Fatalf("expected 200 with TelemetrySnapshot JSON for admin credential, got %d: %s", authenticatedRecorder.Code, metricsBody)
 	}
 }
 

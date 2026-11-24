@@ -5,9 +5,9 @@ import (
 	"crypto/tls"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -42,6 +42,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/ui"
 	"github.com/goroute-ai/ai-gateway-go/internal/validation"
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -78,12 +79,10 @@ type GatewayServer struct {
 	spendWorker        *finops.SpendWorker
 	softBudgetNotifier *finops.SoftBudgetNotifier
 	collector          *observability.Collector
-	metricsExporter    *observability.OTLPMetricsExporter
-	metricsStop        func()
+	telemetry          *observability.TelemetryRuntime
 	outboundMetrics    *network.HTTPClientMetrics
 	budgetStats        *budgetLookupStats
 	tracer             trace.Tracer
-	tracerShutdown     func(context.Context) error
 	healthMon          *health.Monitor
 	validator          *validation.Validator
 	guardrails         *guardrails.Engine
@@ -186,14 +185,16 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	if err != nil {
 		return nil, fmt.Errorf("invalid outbound ssrf security policy: %w", err)
 	}
-	tracer, tracerShutdown, err := observability.NewOTLPTracer(context.Background(), cfg.Tracing, netPolicy)
+	otelCfg := effectiveOTelConfig(cfg)
+	telemetryRuntime, err := observability.NewTelemetryRuntime(context.Background(), otelCfg, netPolicy, observability.RuntimeOptions{
+		ServiceVersion: otelCfg.ServiceVersion,
+	})
 	if err != nil {
 		return nil, err
 	}
+	tracer := telemetryRuntime.Tracer()
 	cleanupOnErr := func(cause error) (*GatewayServer, error) {
-		if tracerShutdown != nil {
-			_ = tracerShutdown(context.Background())
-		}
+		_ = telemetryRuntime.Shutdown(context.Background())
 		return nil, cause
 	}
 
@@ -215,17 +216,22 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	discWorker := modelmgmt.NewDiscoveryWorker(repo, reg, authDeps.vault, redisFabric, cfg.Discovery.SyncInterval, cfg.Discovery.AutoApprove)
 
 	collector := observability.NewCollector()
+	collector.SetInstruments(telemetryRuntime.Instruments())
+	collector.SetOTelStatusProvider(telemetryRuntime.Status)
+	if redisFabric != nil {
+		collector.SetRedisCBStateProvider(redisFabric.CBStateCode)
+	}
 	budgetStats := &budgetLookupStats{}
 
-	var metricsExporter *observability.OTLPMetricsExporter
-	if cfg.Tracing.Enabled && strings.TrimSpace(cfg.Tracing.OTLPEndpoint) != "" {
-		metricsExporter, err = observability.NewOTLPMetricsExporterFromTracingConfig(collector, cfg.Tracing, 0, netPolicy)
-		if err != nil {
-			return cleanupOnErr(err)
-		}
+	probeInterval := cfg.Health.ProbeInterval
+	if probeInterval <= 0 {
+		probeInterval = 60 * time.Second
 	}
-
-	healthMon := health.NewMonitor(repo, reg, authDeps.vault, 60*time.Second, 5*time.Second)
+	probeTimeout := cfg.Health.ProbeTimeout
+	if probeTimeout <= 0 {
+		probeTimeout = 5 * time.Second
+	}
+	healthMon := health.NewMonitor(repo, reg, authDeps.vault, probeInterval, probeTimeout)
 	validator := validation.NewValidator(repo)
 	validator.SetAllowDefaultFallbacks(len(cfg.Router.DefaultFallbacks) > 0)
 	validator.SetDropUnsupportedParams(cfg.Router.DropUnsupportedParams)
@@ -233,9 +239,18 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 	guardrailsEng := guardrails.NewEngine(repo)
 
 	routingDeps := buildRoutingSubsystem(cfg, repo, redisFabric, reg, authDeps.vault, authDeps.rbac, limiter, collector, healthMon)
+	routingDeps.relMgr.SetTracer(tracer)
+	routingDeps.relMgr.SetCaptureContent(telemetryRuntime.CaptureContent())
+	routingDeps.relMgr.SetCostCalculator(func(gm *domain.GlobalModel, usage *domain.TokenUsage) int64 {
+		if gm == nil || usage == nil {
+			return 0
+		}
+		return finops.CalculateCostMicros(gm, *usage)
+	})
 
 	spendWorker := finops.NewSpendWorker(repo, limiter, cfg.FinOps)
 	spendWorker.SetCollector(collector)
+	collector.SetFinOpsOutboxProvider(spendWorker.OutboxMetrics)
 	spendWorker.SetDeploymentSpendRecorder(routingDeps.depBudgets)
 	softBudgetNotifier := finops.NewSoftBudgetNotifier(repo, redisFabric, netPolicy, cfg.FinOps.SoftBudgetWebhookURL, cfg.FinOps.SoftBudgetCooldownSec)
 	spendWorker.SetSoftBudgetNotifier(softBudgetNotifier)
@@ -246,9 +261,10 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		semanticEmbedFn = buildSemanticCacheEmbedFunc(routingDeps.relMgr, spendWorker)
 	}
 	respCache := cache.NewResponseCacheFromConfig(cfg.Cache, cacheRedis, semanticEmbedFn)
-	registerCollectorMetricsProvider(collector, repo, respCache, cacheRedis, outboundMetrics, budgetStats, authDeps.keyRotation)
 
 	protoDeps := buildMCPAndA2ASubsystem(cfg, repo, redisFabric, netPolicy, authDeps.vault, authDeps.rbac, limiter, guardrailsEng, spendWorker, routingDeps.relMgr)
+	protoDeps.mcpHub.SetInstruments(telemetryRuntime.Instruments())
+	protoDeps.a2aRouter.SetInstruments(telemetryRuntime.Instruments())
 
 	var uploadSem chan struct{}
 	if cfg.Server.MaxConcurrentFileUploads > 0 {
@@ -286,11 +302,10 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		spendWorker:        spendWorker,
 		softBudgetNotifier: softBudgetNotifier,
 		collector:          collector,
-		metricsExporter:    metricsExporter,
+		telemetry:          telemetryRuntime,
 		outboundMetrics:    outboundMetrics,
 		budgetStats:        budgetStats,
 		tracer:             tracer,
-		tracerShutdown:     tracerShutdown,
 		healthMon:          healthMon,
 		validator:          validator,
 		guardrails:         guardrailsEng,
@@ -352,9 +367,29 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 			Timeout:       cfg.Audit.SIEMWebhook.Timeout,
 			MaxQueueSize:  cfg.Audit.SIEMWebhook.MaxQueueSize,
 		}, netPolicy)
+		collector.SetAuditSIEMProvider(s.auditSIEMSink.Stats)
 		if obsRepo, ok := repo.(storage.AuditLogObserverRepository); ok && obsRepo != nil {
 			obsRepo.SetAuditLogObserver(s.auditSIEMSink.Enqueue)
 		}
+	}
+	if err := registerObservabilityProviders(
+		collector,
+		telemetryRuntime.Instruments(),
+		repo,
+		redisFabric,
+		respCache,
+		cacheRedis,
+		spendWorker,
+		s.auditSIEMSink,
+		healthMon,
+		outboundMetrics,
+		budgetStats,
+		authDeps.keyRotation,
+	); err != nil {
+		return cleanupOnErr(fmt.Errorf("register observability metric providers: %w", err))
+	}
+	if logHandler := telemetryRuntime.LogHandler(); logHandler != nil {
+		logger.SetOTLPHandler(logHandler)
 	}
 	return s, nil
 }
@@ -578,16 +613,54 @@ func buildRateLimiter(cfg *config.Config, repo storage.Repository, redisFabric *
 	return limiter
 }
 
-func registerCollectorMetricsProvider(
+func effectiveOTelConfig(cfg *config.Config) config.OTelConfig {
+	if cfg == nil {
+		return config.OTelConfig{ServiceName: "ai-gateway-go"}
+	}
+	otelCfg := cfg.OTel
+	if cfg.Tracing.Enabled && !otelCfg.Enabled {
+		otelCfg.Enabled = true
+	}
+	if strings.TrimSpace(otelCfg.Endpoint) == "" && strings.TrimSpace(cfg.Tracing.OTLPEndpoint) != "" {
+		otelCfg.Endpoint = strings.TrimSpace(cfg.Tracing.OTLPEndpoint)
+	}
+	if svc := strings.TrimSpace(cfg.Tracing.ServiceName); svc != "" && (strings.TrimSpace(otelCfg.ServiceName) == "" || otelCfg.ServiceName == "ai-gateway-go") {
+		otelCfg.ServiceName = svc
+	}
+	if len(cfg.Tracing.Headers) > 0 {
+		if otelCfg.Headers == nil {
+			otelCfg.Headers = make(map[string]string, len(cfg.Tracing.Headers))
+		}
+		for k, v := range cfg.Tracing.Headers {
+			if _, exists := otelCfg.Headers[k]; !exists {
+				otelCfg.Headers[k] = config.ResolveEnvValue(v)
+			}
+		}
+	}
+	if strings.TrimSpace(otelCfg.ServiceName) == "" {
+		otelCfg.ServiceName = "ai-gateway-go"
+	}
+	if strings.TrimSpace(otelCfg.DeploymentEnvironment) == "" {
+		otelCfg.DeploymentEnvironment = strings.TrimSpace(cfg.Server.Environment)
+	}
+	return otelCfg
+}
+
+func registerObservabilityProviders(
 	collector *observability.Collector,
+	instruments *observability.Instruments,
 	repo storage.Repository,
+	redisFabric *storage.RedisFabric,
 	respCache *cache.ResponseCache,
 	cacheRedis *storage.RedisFabric,
+	spendWorker *finops.SpendWorker,
+	auditSIEM *AuditSIEMSink,
+	healthMon *health.Monitor,
 	outboundMetrics *network.HTTPClientMetrics,
 	budgetStats *budgetLookupStats,
 	keyRotation *auth.KeyRotationManager,
-) {
-	collector.SetCacheTelemetryProvider(func() observability.CacheTelemetry {
+) error {
+	cacheTelemetryFn := func() observability.CacheTelemetry {
 		m := respCache.Metrics()
 		enabled := respCache.Enabled()
 		cacheType := respCache.Type()
@@ -610,61 +683,96 @@ func registerCollectorMetricsProvider(
 			Entries:      int64(m.Entries),
 			Evictions:    int64(m.Evictions),
 		}
-	})
-	collector.SetAdditionalMetricsProvider(func() map[string]float64 {
-		cacheMetrics := respCache.Metrics()
-		metrics := map[string]float64{
-			"gateway_cache_misses_total":        float64(cacheMetrics.Misses),
-			"gateway_cache_errors_total":        float64(cacheMetrics.Errors),
-			"gateway_cache_semantic_hits_total": float64(cacheMetrics.SemanticHits),
-			"gateway_cache_entries":             float64(cacheMetrics.Entries),
-			"gateway_cache_evictions_total":     float64(cacheMetrics.Evictions),
+	}
+	collector.SetCacheTelemetryProvider(cacheTelemetryFn)
+
+	providers := observability.OperationalMetricsProviders{
+		CacheTelemetry: cacheTelemetryFn,
+		BudgetStats: func() observability.BudgetMetricsSnapshot {
+			snap := observability.BudgetMetricsSnapshot{
+				IndexedLookups:   uint64ToInt64(budgetStats.indexedLookups.Load()),
+				CatalogScans:     uint64ToInt64(budgetStats.catalogScans.Load()),
+				BudgetedChecks:   uint64ToInt64(budgetStats.budgetedChecks.Load()),
+				PricingSummaries: uint64ToInt64(budgetStats.pricingSummaries.Load()),
+			}
+			if catalog, ok := repo.(storage.GlobalModelCatalogSize); ok {
+				snap.CatalogSize = int64(catalog.GlobalModelCatalogSize())
+			}
+			if summaryStats, ok := repo.(storage.GlobalModelPricingSummaryMetrics); ok {
+				snap.PricingSummaryRebuilds = uint64ToInt64(summaryStats.PricingSummaryRebuilds())
+			}
+			return snap
+		},
+	}
+	if redisFabric != nil {
+		providers.RedisCBState = redisFabric.CBStateCode
+	}
+	if spendWorker != nil {
+		providers.FinOpsOutbox = spendWorker.OutboxMetrics
+	}
+	if auditSIEM != nil {
+		providers.AuditSIEM = auditSIEM.Stats
+	}
+	if healthMon != nil {
+		providers.DeploymentHealth = func() []observability.DeploymentHealthMetric {
+			reports := healthMon.GetReports()
+			out := make([]observability.DeploymentHealthMetric, 0, len(reports))
+			for _, rep := range reports {
+				out = append(out, observability.DeploymentHealthMetric{
+					Provider:       rep.Provider,
+					Model:          rep.Model,
+					Healthy:        rep.Status == health.StateHealthy,
+					ProbeLatencyMs: rep.ProbeLatencyMs,
+				})
+			}
+			return out
 		}
-		if outboundMetrics != nil {
-			snapshot := outboundMetrics.Snapshot()
-			metrics["gateway_upstream_http_requests_total"] = float64(snapshot.Requests)
-			metrics["gateway_upstream_dial_attempts_total"] = float64(snapshot.DialAttempts)
-			metrics["gateway_upstream_tls_handshakes_total"] = float64(snapshot.TLSHandshakes)
-			metrics["gateway_upstream_connections_fresh_total"] = float64(snapshot.FreshConnections)
-			metrics["gateway_upstream_connections_reused_total"] = float64(snapshot.ReusedConnections)
-			metrics["gateway_upstream_responses_http1_total"] = float64(snapshot.HTTP1Responses)
-			metrics["gateway_upstream_responses_http2_total"] = float64(snapshot.HTTP2Responses)
-			metrics["gateway_upstream_first_byte_wait_seconds_sum"] = float64(snapshot.FirstByteWaitNanos) / float64(time.Second)
-			metrics["gateway_upstream_first_byte_wait_count"] = float64(snapshot.FirstByteWaitCount)
-			metrics["gateway_upstream_idle_timeouts_total"] = float64(snapshot.IdleTimeouts)
+	}
+	if outboundMetrics != nil {
+		providers.UpstreamHTTP = func() observability.UpstreamHTTPMetricsSnapshot {
+			s := outboundMetrics.Snapshot()
+			return observability.UpstreamHTTPMetricsSnapshot{
+				Requests:           uint64ToInt64(s.Requests),
+				DialAttempts:       uint64ToInt64(s.DialAttempts),
+				TLSHandshakes:      uint64ToInt64(s.TLSHandshakes),
+				FreshConnections:   uint64ToInt64(s.FreshConnections),
+				ReusedConnections:  uint64ToInt64(s.ReusedConnections),
+				HTTP1Responses:     uint64ToInt64(s.HTTP1Responses),
+				HTTP2Responses:     uint64ToInt64(s.HTTP2Responses),
+				FirstByteWaitNanos: uint64ToInt64(s.FirstByteWaitNanos),
+				FirstByteWaitCount: uint64ToInt64(s.FirstByteWaitCount),
+				IdleTimeouts:       uint64ToInt64(s.IdleTimeouts),
+			}
 		}
-		metrics["gateway_budget_indexed_model_lookups_total"] = float64(budgetStats.indexedLookups.Load())
-		metrics["gateway_budget_catalog_scans_total"] = float64(budgetStats.catalogScans.Load())
-		metrics["gateway_budgeted_reservation_checks_total"] = float64(budgetStats.budgetedChecks.Load())
-		metrics["gateway_budget_pricing_summary_lookups_total"] = float64(budgetStats.pricingSummaries.Load())
-		rotDeliveries, rotFailures := keyRotation.DeliveryStats()
-		metrics["gateway_key_rotation_deliveries_total"] = float64(rotDeliveries)
-		metrics["gateway_key_rotation_delivery_failures_total"] = float64(rotFailures)
-		if recordedRequests := collector.Snapshot().TotalRequests; recordedRequests > 0 {
-			metrics["gateway_budgeted_request_share"] = float64(budgetStats.budgetedChecks.Load()) / float64(recordedRequests)
+	}
+	if keyRotation != nil {
+		providers.KeyRotation = func() (int64, int64) {
+			d, f := keyRotation.DeliveryStats()
+			return uint64ToInt64(d), uint64ToInt64(f)
 		}
-		if catalog, ok := repo.(storage.GlobalModelCatalogSize); ok {
-			metrics["gateway_model_catalog_size"] = float64(catalog.GlobalModelCatalogSize())
+	}
+	if lookupStats, ok := repo.(storage.PostgresLookupMetrics); ok {
+		providers.StorageLookups = func() observability.StorageLookupMetricsSnapshot {
+			sub, emptySub, gr, missingGr := lookupStats.LookupQueryStats()
+			return observability.StorageLookupMetricsSnapshot{
+				SubscriptionFallbacks:      uint64ToInt64(sub),
+				EmptySubscriptionFallbacks: uint64ToInt64(emptySub),
+				GuardrailFallbacks:         uint64ToInt64(gr),
+				MissingGuardrailFallbacks:  uint64ToInt64(missingGr),
+			}
 		}
-		if summaryStats, ok := repo.(storage.GlobalModelPricingSummaryMetrics); ok {
-			metrics["gateway_budget_pricing_summary_rebuilds_total"] = float64(summaryStats.PricingSummaryRebuilds())
-		}
-		var mem runtime.MemStats
-		runtime.ReadMemStats(&mem)
-		metrics["gateway_go_heap_alloc_bytes"] = float64(mem.HeapAlloc)
-		metrics["gateway_go_heap_inuse_bytes"] = float64(mem.HeapInuse)
-		metrics["gateway_go_heap_objects"] = float64(mem.HeapObjects)
-		metrics["gateway_go_gc_cycles_total"] = float64(mem.NumGC)
-		metrics["gateway_go_gc_pause_seconds_total"] = float64(mem.PauseTotalNs) / float64(time.Second)
-		if lookupStats, ok := repo.(storage.PostgresLookupMetrics); ok {
-			subscriptionQueries, emptySubscriptionQueries, guardrailQueries, missingGuardrailQueries := lookupStats.LookupQueryStats()
-			metrics["gateway_storage_subscription_fallback_queries_total"] = float64(subscriptionQueries)
-			metrics["gateway_storage_empty_subscription_queries_total"] = float64(emptySubscriptionQueries)
-			metrics["gateway_storage_guardrail_fallback_queries_total"] = float64(guardrailQueries)
-			metrics["gateway_storage_missing_guardrail_queries_total"] = float64(missingGuardrailQueries)
-		}
-		return metrics
-	})
+	}
+	if instruments != nil {
+		return instruments.RegisterOperationalCallbacks(providers)
+	}
+	return nil
+}
+
+func uint64ToInt64(v uint64) int64 {
+	if v > math.MaxInt64 {
+		return math.MaxInt64
+	}
+	return int64(v)
 }
 
 func buildCacheRedisFabric(cfg config.CacheConfig, primary *storage.RedisFabric) (active *storage.RedisFabric, owned *storage.RedisFabric) {
@@ -991,7 +1099,51 @@ func (s *GatewayServer) registerHealthAndMetricsRoutes(r chi.Router) {
 		}
 		writeJSON(w, http.StatusOK, resp)
 	})
-	r.Method(http.MethodGet, "/metrics", s.metricsAuthMiddleware(s.collector.PrometheusHandler()))
+}
+
+// observabilityIdentityMiddleware propagates authenticated tenant/operator identity
+// back into logger.HTTPMiddleware's mutable holder and attaches low-cardinality tenant
+// attributes onto the active OpenTelemetry server span.
+func observabilityIdentityMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		span := trace.SpanFromContext(ctx)
+		if idCtx := auth.IdentityFromContext(ctx); idCtx != nil {
+			logger.SetRequestIdentity(ctx, logger.RequestIdentity{
+				OrgID:        idCtx.OrgID,
+				TeamID:       idCtx.TeamID,
+				VirtualKeyID: idCtx.VirtualKeyID,
+				KeyPrefix:    idCtx.KeyPrefix,
+			})
+			setIdentitySpanAttrs(span, idCtx.OrgID, idCtx.TeamID, idCtx.VirtualKeyID)
+		} else if op := auth.OperatorFromContext(ctx); op != nil {
+			logger.SetRequestIdentity(ctx, logger.RequestIdentity{
+				OrgID:  op.OrgID,
+				TeamID: op.TeamID,
+			})
+			setIdentitySpanAttrs(span, op.OrgID, "", "")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func setIdentitySpanAttrs(span trace.Span, orgID, teamID, virtualKeyID string) {
+	if span == nil || !span.IsRecording() {
+		return
+	}
+	attrs := make([]attribute.KeyValue, 0, 3)
+	if orgID != "" {
+		attrs = append(attrs, attribute.String("goroute.org_id", orgID))
+	}
+	if teamID != "" {
+		attrs = append(attrs, attribute.String("goroute.team_id", teamID))
+	}
+	if virtualKeyID != "" {
+		attrs = append(attrs, attribute.String("goroute.virtual_key_id", virtualKeyID))
+	}
+	if len(attrs) > 0 {
+		span.SetAttributes(attrs...)
+	}
 }
 
 func (s *GatewayServer) registerAuthRoutes(r chi.Router) {
@@ -1016,6 +1168,7 @@ func (s *GatewayServer) registerDataPlaneRoutes(r chi.Router) {
 	// cmd/specgen AST parity checks can inspect every /v1 route directly.
 	r.Route("/v1", func(v1 chi.Router) {
 		v1.Use(auth.DataPlaneMiddleware(s.authSvc, s.rbac))
+		v1.Use(observabilityIdentityMiddleware)
 		v1.Post("/chat/completions", s.handleChatCompletions)
 		v1.Post("/completions", s.handleLegacyCompletions)
 		v1.Post("/embeddings", s.handleEmbeddings)
@@ -1067,12 +1220,14 @@ func (s *GatewayServer) registerDataPlaneRoutes(r chi.Router) {
 	// Unversioned and protocol-specific aliases for SDK compatibility
 	r.Group(func(unv chi.Router) {
 		unv.Use(auth.DataPlaneMiddleware(s.authSvc, s.rbac))
+		unv.Use(observabilityIdentityMiddleware)
 		s.registerCoreInferenceRoutes(unv)
 	})
 
 	// OpenAI Direct Wire Spec (/openai/v1/*)
 	r.Route("/openai/v1", func(oai chi.Router) {
 		oai.Use(auth.DataPlaneMiddleware(s.authSvc, s.rbac))
+		oai.Use(observabilityIdentityMiddleware)
 		oai.Post("/responses", s.handleResponses)
 		oai.Get("/realtime", s.handleRealtimeWebSocket)
 	})
@@ -1080,6 +1235,7 @@ func (s *GatewayServer) registerDataPlaneRoutes(r chi.Router) {
 	// Anthropic Native Ingress Spec (/anthropic/v1/*)
 	r.Route("/anthropic/v1", func(ant chi.Router) {
 		ant.Use(auth.DataPlaneMiddleware(s.authSvc, s.rbac))
+		ant.Use(observabilityIdentityMiddleware)
 		ant.Post("/messages", s.handleAnthropicMessages)
 		ant.Post("/messages/count_tokens", s.handleAnthropicCountTokens)
 	})
@@ -1123,11 +1279,12 @@ func (s *GatewayServer) registerMCPRoutes(r chi.Router) {
 		return
 	}
 	if s.cfg.MCP.SubscriptionsListenActive {
-		r.With(auth.DataPlaneMiddleware(s.authSvc, s.rbac)).Get("/mcp/subscriptions/listen", s.handleMCPSubscriptionsListen)
+		r.With(auth.DataPlaneMiddleware(s.authSvc, s.rbac), observabilityIdentityMiddleware).Get("/mcp/subscriptions/listen", s.handleMCPSubscriptionsListen)
 	}
-	r.With(auth.DataPlaneMiddleware(s.authSvc, s.rbac)).Post("/mcp", s.handleMCPVirtualHub)
+	r.With(auth.DataPlaneMiddleware(s.authSvc, s.rbac), observabilityIdentityMiddleware).Post("/mcp", s.handleMCPVirtualHub)
 	r.Route("/mcp", func(mcpRouter chi.Router) {
 		mcpRouter.Use(auth.DataPlaneMiddleware(s.authSvc, s.rbac))
+		mcpRouter.Use(observabilityIdentityMiddleware)
 		mcpRouter.Post("/", s.handleMCPVirtualHub)
 		mcpRouter.Post("/{serverSlug}", s.handleMCPScopedServer)
 		mcpRouter.Post("/toolsets/{toolsetSlug}", s.handleMCPToolset)
@@ -1153,6 +1310,7 @@ func (s *GatewayServer) registerA2AAndSCIMRoutes(r chi.Router) {
 	if s.cfg.A2A.Enabled {
 		r.Route("/a2a/v1/agents/{agentSlug}", func(a2aRouter chi.Router) {
 			a2aRouter.Use(auth.DataPlaneMiddleware(s.authSvc, s.rbac))
+			a2aRouter.Use(observabilityIdentityMiddleware)
 			a2aRouter.Post("/", s.handleA2AAgentMessage)
 			a2aRouter.Get("/tasks", s.handleA2AListTasks)
 			a2aRouter.Get("/tasks/{taskID}", s.handleA2AGetTask)
@@ -1184,6 +1342,7 @@ func (s *GatewayServer) registerA2AAndSCIMRoutes(r chi.Router) {
 func (s *GatewayServer) registerAdminRoutes(r chi.Router) {
 	r.Route("/admin/v1", func(adm chi.Router) {
 		adm.Use(auth.AdminControlPlaneMiddleware(s.authSvc))
+		adm.Use(observabilityIdentityMiddleware)
 
 		// Organizations, 4-Layer Policies & Security Guardrails
 		adm.Post("/organizations", s.handleAdminCreateOrg)
@@ -1352,29 +1511,6 @@ func (s *GatewayServer) registerAdminRoutes(r chi.Router) {
 	})
 }
 
-func (s *GatewayServer) metricsAuthMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		header := strings.TrimSpace(r.Header.Get("Authorization"))
-		var token string
-		if len(header) > len("Bearer ") && strings.EqualFold(header[:len("Bearer ")], "Bearer ") {
-			token = strings.TrimSpace(header[len("Bearer "):])
-		}
-		if token == "" {
-			token = strings.TrimSpace(r.Header.Get("x-api-key"))
-		}
-		if !s.authSvc.ValidateAdminKey(token) {
-			domain.WriteHTTPError(w, &domain.GatewayError{
-				StatusCode: http.StatusUnauthorized,
-				Type:       domain.ErrorTypeAuthentication,
-				Code:       "invalid_admin_key",
-				Message:    "Valid Master Admin Key is required to access /metrics",
-			})
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
 // Handler returns the root HTTP router configured with security, auth, and API middleware.
 func (s *GatewayServer) Handler() http.Handler {
 	return s.router
@@ -1402,9 +1538,9 @@ func (s *GatewayServer) Collector() *observability.Collector {
 	return s.collector
 }
 
-// MetricsExporter returns the configured OTLP metrics exporter, or nil when disabled.
-func (s *GatewayServer) MetricsExporter() *observability.OTLPMetricsExporter {
-	return s.metricsExporter
+// TelemetryRuntime returns the unified 3-signal OpenTelemetry runtime.
+func (s *GatewayServer) TelemetryRuntime() *observability.TelemetryRuntime {
+	return s.telemetry
 }
 
 // HealthMonitor returns the background active health monitor.
@@ -1576,7 +1712,9 @@ func (s *GatewayServer) StartWorkers(ctx context.Context) {
 		s.keyExpiryAlerts.Start(ctx)
 	}
 	s.spendWorker.Start(ctx)
-	s.healthMon.Start(ctx)
+	if s.cfg.Health.IsProbeEnabled() {
+		s.healthMon.Start(ctx)
+	}
 	if s.cfg.Discovery.Enabled {
 		s.discovery.Start(ctx)
 	}
@@ -1593,11 +1731,6 @@ func (s *GatewayServer) StartWorkers(ctx context.Context) {
 	}
 	if s.a2aOutboxWorker != nil {
 		s.a2aOutboxWorker.Start(ctx)
-	}
-	if s.metricsExporter != nil {
-		metricsCtx, metricsCancel := context.WithCancel(ctx)
-		s.metricsStop = metricsCancel
-		s.metricsExporter.Start(metricsCtx)
 	}
 }
 
@@ -1676,14 +1809,11 @@ func (s *GatewayServer) Shutdown(ctx context.Context) {
 	if s.auditSIEMSink != nil {
 		s.auditSIEMSink.Close(ctx)
 	}
-	if s.metricsStop != nil {
-		s.metricsStop()
-	}
-	if s.metricsExporter != nil {
-		_ = s.metricsExporter.Shutdown(ctx)
-	}
-	if s.tracerShutdown != nil {
-		_ = s.tracerShutdown(ctx)
+	if s.telemetry != nil {
+		if s.telemetry.LogHandler() != nil {
+			logger.SetOTLPHandler(nil)
+		}
+		_ = s.telemetry.Shutdown(ctx)
 	}
 	if s.ownedCacheRedis != nil && s.ownedCacheRedis.Client() != nil {
 		_ = s.ownedCacheRedis.Client().Close()

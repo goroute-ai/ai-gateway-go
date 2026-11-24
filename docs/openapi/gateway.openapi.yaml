@@ -5950,6 +5950,46 @@ paths:
               schema:
                 type: object
                 properties:
+                  otel_enabled:
+                    type: boolean
+                    description: Whether OpenTelemetry OTLP/HTTP telemetry export is enabled.
+                  otel_signals:
+                    type: array
+                    items:
+                      type: string
+                      enum: [traces, metrics, logs]
+                    description: Active OTLP/HTTP telemetry signals exporting from this gateway instance.
+                  redis_cb_state:
+                    type: integer
+                    description: Primary Redis circuit breaker state (0=closed, 1=half_open, 2=open).
+                  routing_signal_degraded_total:
+                    type: integer
+                    format: int64
+                    description: Routing operations degraded to process-local signals due to Redis unavailability.
+                  finops_outbox_pending:
+                    type: integer
+                    format: int64
+                    description: Current pending FinOps spend outbox queue depth.
+                  finops_outbox_dead_letter:
+                    type: integer
+                    format: int64
+                    description: Cumulative FinOps spend events moved to dead-letter state.
+                  finops_outbox_backpressure:
+                    type: integer
+                    format: int64
+                    description: Cumulative FinOps spend outbox backpressure rejections.
+                  audit_siem_delivered:
+                    type: integer
+                    format: int64
+                    description: Cumulative audit log events delivered to the SIEM webhook sink.
+                  audit_siem_failed:
+                    type: integer
+                    format: int64
+                    description: Cumulative audit log events that failed SIEM webhook delivery.
+                  audit_siem_dropped:
+                    type: integer
+                    format: int64
+                    description: Cumulative audit log events dropped due to a full SIEM webhook queue.
                   cache_enabled:
                     type: boolean
                     description: Whether response caching is enabled on this gateway instance.

@@ -13,7 +13,7 @@ import (
 
 var safeCategoryTokenRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,47}$`)
 
-// GuardrailObservation records one guardrail evaluation for Prometheus & OTLP metrics.
+// GuardrailObservation records one guardrail evaluation for OTLP and UI telemetry.
 type GuardrailObservation struct {
 	GuardrailName string
 	Hook          string
@@ -28,7 +28,7 @@ type GuardrailMetricKey struct {
 	Hook      string `json:"hook"`
 }
 
-// GuardrailMetricSummary holds bounded Prometheus/OTLP summary stats for one guardrail+hook pair.
+// GuardrailMetricSummary holds bounded telemetry summary stats for one guardrail+hook pair.
 type GuardrailMetricSummary struct {
 	Guardrail        string           `json:"guardrail"`
 	Hook             string           `json:"hook"`
@@ -41,13 +41,15 @@ type GuardrailMetricSummary struct {
 	HistogramBoundMs []int64          `json:"histogram_bound_ms"`
 }
 
+const guardrailDecisionError = "error"
+
 var guardrailLatencyBoundsMs = []int64{5, 10, 25, 50, 100, 250, 500, 1000}
 
 // NormalizeGuardrailDecision maps guardrail decisions into safe low-cardinality labels:
 // allow | block | flag | modify | error.
 func NormalizeGuardrailDecision(decision string, isError bool) string {
 	if isError {
-		return "error"
+		return guardrailDecisionError
 	}
 	switch strings.ToLower(strings.TrimSpace(decision)) {
 	case "allow":
@@ -58,8 +60,8 @@ func NormalizeGuardrailDecision(decision string, isError bool) string {
 		return "flag"
 	case "modify", "redact", "mask":
 		return "modify"
-	case "error":
-		return "error"
+	case guardrailDecisionError:
+		return guardrailDecisionError
 	default:
 		return "allow"
 	}
@@ -122,9 +124,7 @@ func FinishGuardrailEvaluateSpan(span trace.Span, decision string, violationCate
 	if span == nil {
 		return
 	}
-	if latencyMs < 0 {
-		latencyMs = 0
-	}
+	latencyMs = max(latencyMs, 0)
 	normDecision := NormalizeGuardrailDecision(decision, isError)
 	attrs := []attribute.KeyValue{
 		attribute.String("guardrail.decision", normDecision),
@@ -134,7 +134,7 @@ func FinishGuardrailEvaluateSpan(span trace.Span, decision string, violationCate
 		attrs = append(attrs, attribute.StringSlice("guardrail.violation_categories", cats))
 	}
 	span.SetAttributes(attrs...)
-	if isError || normDecision == "error" {
+	if isError || normDecision == guardrailDecisionError {
 		span.SetStatus(codes.Error, "guardrail evaluation error")
 	}
 	span.End()

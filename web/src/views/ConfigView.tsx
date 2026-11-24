@@ -8,11 +8,12 @@ import { Badge } from '../components/common/Badge';
 import type { GatewayConfig } from '../types';
 
 const SECTIONS: [string, string][] = [
-  ['server', 'Server & Transport'], ['logging', 'Logging'], ['tracing', 'Tracing'],
-  ['security', 'Network Security'], ['storage', 'Storage & Redis'], ['auth', 'Authentication'],
-  ['router', 'Router & Reliability'], ['rate_limit', 'Rate Limits'], ['finops', 'FinOps Accounting'],
-  ['discovery', 'Model Discovery'], ['cache', 'Response Cache'], ['guardrails', 'Guardrails'],
-  ['mcp', 'MCP Protocol'], ['a2a', 'A2A Agents'], ['providers', 'Providers'], ['model_list', 'Static Models'],
+  ['server', 'Server & Transport'], ['logging', 'Logging'], ['otel', 'OpenTelemetry (OTLP)'],
+  ['health', 'Health Probing'], ['audit', 'Audit & SIEM'], ['security', 'Network Security'],
+  ['storage', 'Storage & Redis'], ['auth', 'Authentication'], ['router', 'Router & Reliability'],
+  ['rate_limit', 'Rate Limits'], ['finops', 'FinOps Accounting'], ['discovery', 'Model Discovery'],
+  ['cache', 'Response Cache'], ['guardrails', 'Guardrails'], ['mcp', 'MCP Protocol'],
+  ['a2a', 'A2A Agents'], ['providers', 'Providers'], ['model_list', 'Static Models'],
 ];
 
 function formatKey(key: string): string {

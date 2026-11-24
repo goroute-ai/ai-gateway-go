@@ -199,6 +199,11 @@ func (s *GatewayServer) handleImageGenerations(w http.ResponseWriter, r *http.Re
 		RoutingMicros:  meta.RoutingMicros,
 		CostMicros:     costMicros,
 	})
+	logger.SetInferenceMeta(r.Context(), logger.InferenceMeta{
+		Model:      resp.Model,
+		Provider:   string(resp.Provider),
+		CostMicros: costMicros,
+	})
 
 	w.Header().Set("X-Gateway-Provider", string(resp.Provider))
 	w.Header().Set("X-Gateway-Cost-Micros", strconv.FormatInt(costMicros, 10))

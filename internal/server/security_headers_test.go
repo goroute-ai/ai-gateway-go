@@ -97,6 +97,8 @@ func TestCORSMiddleware(t *testing.T) {
 			"X-Gateway-Cache",
 			"X-Gateway-Guardrail-Action",
 			"X-Gateway-Pricing-Status",
+			"X-Trace-Id",
+			"traceparent",
 			"X-Gateway-Latency-Ms",
 			"X-Gateway-Route-Reason",
 			"X-Gateway-Fallback-Attempted",

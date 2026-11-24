@@ -1,7 +1,9 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/url"
 	"os"
@@ -17,7 +19,9 @@ import (
 type Config struct {
 	Server     ServerConfig     `yaml:"server"`
 	Logging    LogConfig        `yaml:"logging"`
-	Tracing    TracingConfig    `yaml:"tracing"`
+	OTel       OTelConfig       `yaml:"otel"`
+	Tracing    TracingConfig    `yaml:"tracing,omitempty"` // Deprecated YAML alias for otel
+	Health     HealthConfig     `yaml:"health,omitempty"`
 	Security   SecurityConfig   `yaml:"security"`
 	Storage    StorageConfig    `yaml:"storage"`
 	Auth       AuthConfig       `yaml:"auth"`
@@ -103,12 +107,134 @@ type LogConfig struct {
 	AddSource bool   `yaml:"add_source"` // include file:line source location in log entries
 }
 
-// TracingConfig configures OpenTelemetry OTLP trace export.
+// TracingConfig is a deprecated YAML alias for OTelConfig kept for backward compatibility.
 type TracingConfig struct {
 	Enabled      bool              `yaml:"enabled" json:"enabled"`
 	OTLPEndpoint string            `yaml:"otlp_endpoint" json:"otlp_endpoint"`
 	ServiceName  string            `yaml:"service_name" json:"service_name"`
 	Headers      map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+}
+
+// OTelTracesConfig configures OpenTelemetry OTLP/HTTP trace export.
+type OTelTracesConfig struct {
+	Enabled        *bool   `yaml:"enabled,omitempty" json:"enabled"`
+	Endpoint       string  `yaml:"endpoint,omitempty" json:"endpoint,omitempty"`
+	Sampler        string  `yaml:"sampler,omitempty" json:"sampler,omitempty"`
+	SamplerArg     float64 `yaml:"sampler_arg,omitempty" json:"sampler_arg,omitempty"`
+	CaptureContent bool    `yaml:"capture_content,omitempty" json:"capture_content"`
+}
+
+// OTelMetricsConfig configures OpenTelemetry OTLP/HTTP periodic metric export.
+type OTelMetricsConfig struct {
+	Enabled        *bool         `yaml:"enabled,omitempty" json:"enabled"`
+	Endpoint       string        `yaml:"endpoint,omitempty" json:"endpoint,omitempty"`
+	ExportInterval time.Duration `yaml:"export_interval,omitempty" json:"export_interval"`
+}
+
+// OTelLogsConfig configures opt-in OpenTelemetry OTLP/HTTP structured log export.
+type OTelLogsConfig struct {
+	Enabled  bool   `yaml:"enabled,omitempty" json:"enabled"`
+	Endpoint string `yaml:"endpoint,omitempty" json:"endpoint,omitempty"`
+}
+
+// OTelConfig configures unified 3-signal OpenTelemetry (OTLP/HTTP) telemetry export
+// for traces, metrics, and opt-in logs using OpenTelemetry GenAI semantic conventions.
+type OTelConfig struct {
+	Enabled               bool              `yaml:"enabled" json:"enabled"`
+	Endpoint              string            `yaml:"endpoint,omitempty" json:"endpoint,omitempty"`
+	ServiceName           string            `yaml:"service_name,omitempty" json:"service_name"`
+	ServiceVersion        string            `yaml:"service_version,omitempty" json:"service_version,omitempty"`
+	DeploymentEnvironment string            `yaml:"deployment_environment,omitempty" json:"deployment_environment,omitempty"`
+	Headers               map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+	Traces                OTelTracesConfig  `yaml:"traces,omitempty" json:"traces"`
+	Metrics               OTelMetricsConfig `yaml:"metrics,omitempty" json:"metrics"`
+	Logs                  OTelLogsConfig    `yaml:"logs,omitempty" json:"logs"`
+}
+
+// TracesEnabled reports whether OTLP trace export is enabled when OTel is enabled.
+func (c OTelConfig) TracesEnabled() bool {
+	if !c.Enabled {
+		return false
+	}
+	if c.Traces.Enabled != nil {
+		return *c.Traces.Enabled
+	}
+	return true
+}
+
+// MetricsEnabled reports whether OTLP metric export is enabled when OTel is enabled.
+func (c OTelConfig) MetricsEnabled() bool {
+	if !c.Enabled {
+		return false
+	}
+	if c.Metrics.Enabled != nil {
+		return *c.Metrics.Enabled
+	}
+	return true
+}
+
+// LogsEnabled reports whether opt-in OTLP log export is enabled when OTel is enabled.
+func (c OTelConfig) LogsEnabled() bool {
+	return c.Enabled && c.Logs.Enabled
+}
+
+// ResolvedTracesEndpoint returns the effective OTLP/HTTP traces URL, or "" if none is configured.
+func (c OTelConfig) ResolvedTracesEndpoint() string {
+	return resolveOTLPSignalURL(c.Traces.Endpoint, c.Endpoint, "/v1/traces")
+}
+
+// ResolvedMetricsEndpoint returns the effective OTLP/HTTP metrics URL, or "" if none is configured.
+func (c OTelConfig) ResolvedMetricsEndpoint() string {
+	return resolveOTLPSignalURL(c.Metrics.Endpoint, c.Endpoint, "/v1/metrics")
+}
+
+// ResolvedLogsEndpoint returns the effective OTLP/HTTP logs URL, or "" if none is configured.
+func (c OTelConfig) ResolvedLogsEndpoint() string {
+	return resolveOTLPSignalURL(c.Logs.Endpoint, c.Endpoint, "/v1/logs")
+}
+
+func resolveOTLPSignalURL(signalOverride, baseEndpoint, defaultPath string) string {
+	raw := strings.TrimSpace(signalOverride)
+	fromBase := false
+	if raw == "" {
+		raw = strings.TrimSpace(baseEndpoint)
+		fromBase = true
+	}
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return raw
+	}
+	if fromBase {
+		switch strings.TrimRight(u.Path, "/") {
+		case "", "/v1/traces", "/v1/metrics", "/v1/logs":
+			u.Path = defaultPath
+		default:
+			if !strings.HasSuffix(u.Path, defaultPath) {
+				u.Path = strings.TrimRight(u.Path, "/") + defaultPath
+			}
+		}
+	} else if u.Path == "" || u.Path == "/" {
+		u.Path = defaultPath
+	}
+	return u.String()
+}
+
+// HealthConfig configures background active upstream deployment health probing.
+type HealthConfig struct {
+	ProbeEnabled  *bool         `yaml:"probe_enabled,omitempty" json:"probe_enabled"`
+	ProbeInterval time.Duration `yaml:"probe_interval,omitempty" json:"probe_interval"`
+	ProbeTimeout  time.Duration `yaml:"probe_timeout,omitempty" json:"probe_timeout"`
+}
+
+// IsProbeEnabled reports whether background upstream deployment health probing is enabled (default true).
+func (h HealthConfig) IsProbeEnabled() bool {
+	if h.ProbeEnabled != nil {
+		return *h.ProbeEnabled
+	}
+	return true
 }
 
 // ModelListEntry defines a declarative model list entry in config.yaml,
@@ -618,7 +744,16 @@ func Default() *Config {
 			Format:    "text",
 			AddSource: false,
 		},
-		Tracing: TracingConfig{ServiceName: "ai-gateway-go"},
+		OTel: OTelConfig{
+			ServiceName: "ai-gateway-go",
+			Metrics: OTelMetricsConfig{
+				ExportInterval: 60 * time.Second,
+			},
+		},
+		Health: HealthConfig{
+			ProbeInterval: 60 * time.Second,
+			ProbeTimeout:  5 * time.Second,
+		},
 		Storage: StorageConfig{
 			Mode:        "memory",
 			PostgresDSN: "postgres://gateway:gateway@localhost:5432/aigateway?sslmode=disable",
@@ -840,6 +975,7 @@ func loadWithDefaultEnv(path, defaultEnv string) (*Config, error) {
 	}
 
 	cfg.applyServerAndStorageEnvOverrides()
+	cfg.applyObservabilityAndHealthEnvOverrides()
 	cfg.applyAuthEnvOverrides()
 	cfg.applyRouterEnvOverrides()
 	cfg.applyCacheEnvOverrides()
@@ -873,6 +1009,29 @@ func (c *Config) resolveSecretEnvValues() {
 		c.Auth.SSOProviders[i].ClientID = ResolveEnvValue(c.Auth.SSOProviders[i].ClientID)
 		c.Auth.SSOProviders[i].ClientSecret = ResolveEnvValue(c.Auth.SSOProviders[i].ClientSecret)
 	}
+	for k, v := range c.OTel.Headers {
+		c.OTel.Headers[k] = resolveEnvValuePreserveMissing(v)
+	}
+	for k, v := range c.Tracing.Headers {
+		c.Tracing.Headers[k] = resolveEnvValuePreserveMissing(v)
+	}
+	c.Audit.SIEMWebhook.Secret = resolveEnvValuePreserveMissing(c.Audit.SIEMWebhook.Secret)
+	c.Audit.SIEMWebhook.AuthHeader = resolveEnvValuePreserveMissing(c.Audit.SIEMWebhook.AuthHeader)
+}
+
+func resolveEnvValuePreserveMissing(raw string) string {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return ""
+	}
+	if isUnresolvedEnvReference(v) {
+		resolved := ResolveEnvValue(v)
+		if resolved == "" {
+			return v
+		}
+		return resolved
+	}
+	return ResolveEnvValue(v)
 }
 
 func isUnresolvedEnvReference(raw string) bool {
@@ -924,6 +1083,95 @@ func (c *Config) applyServerAndStorageEnvOverrides() {
 	}
 	envStr("GATEWAY_REDIS_MASTER_NAME", &c.Storage.RedisMasterName)
 	envStr("GATEWAY_REDIS_PASS", &c.Storage.RedisPass)
+}
+
+func envBoolPtr(key string, dst **bool) {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			*dst = &b
+		}
+	}
+}
+
+func parseOTLPHeadersEnv(raw string) map[string]string {
+	out := make(map[string]string)
+	for pair := range strings.SplitSeq(raw, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		k, v, ok := strings.Cut(pair, "=")
+		if !ok {
+			continue
+		}
+		k = strings.TrimSpace(k)
+		v = strings.TrimSpace(v)
+		if k != "" {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+func (c *Config) applyObservabilityAndHealthEnvOverrides() {
+	// Standard OpenTelemetry environment variables (lowest precedence among env vars).
+	envTrimStr("OTEL_SERVICE_NAME", &c.OTel.ServiceName)
+	envTrimStr("OTEL_SERVICE_VERSION", &c.OTel.ServiceVersion)
+	envTrimStr("OTEL_EXPORTER_OTLP_ENDPOINT", &c.OTel.Endpoint)
+	envTrimStr("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", &c.OTel.Traces.Endpoint)
+	envTrimStr("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", &c.OTel.Metrics.Endpoint)
+	envTrimStr("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", &c.OTel.Logs.Endpoint)
+	if rawHeaders := strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_HEADERS")); rawHeaders != "" {
+		if c.OTel.Headers == nil {
+			c.OTel.Headers = make(map[string]string)
+		}
+		maps.Copy(c.OTel.Headers, parseOTLPHeadersEnv(rawHeaders))
+	}
+	envTrimStr("OTEL_TRACES_SAMPLER", &c.OTel.Traces.Sampler)
+	envFloat("OTEL_TRACES_SAMPLER_ARG", &c.OTel.Traces.SamplerArg)
+	if rawMs := strings.TrimSpace(os.Getenv("OTEL_METRIC_EXPORT_INTERVAL")); rawMs != "" {
+		if ms, err := strconv.Atoi(rawMs); err == nil && ms > 0 {
+			c.OTel.Metrics.ExportInterval = time.Duration(ms) * time.Millisecond
+		}
+	}
+
+	// GoRoute-specific OTel env overrides (highest precedence).
+	envBool("GATEWAY_OTEL_ENABLED", &c.OTel.Enabled)
+	envTrimStr("GATEWAY_OTEL_ENDPOINT", &c.OTel.Endpoint)
+	envTrimStr("GATEWAY_OTEL_SERVICE_NAME", &c.OTel.ServiceName)
+	envTrimStr("GATEWAY_OTEL_SERVICE_VERSION", &c.OTel.ServiceVersion)
+	envTrimStr("GATEWAY_OTEL_DEPLOYMENT_ENVIRONMENT", &c.OTel.DeploymentEnvironment)
+	if rawHeaders := strings.TrimSpace(os.Getenv("GATEWAY_OTEL_HEADERS")); rawHeaders != "" {
+		if c.OTel.Headers == nil {
+			c.OTel.Headers = make(map[string]string)
+		}
+		maps.Copy(c.OTel.Headers, parseOTLPHeadersEnv(rawHeaders))
+	}
+	envBoolPtr("GATEWAY_OTEL_TRACES_ENABLED", &c.OTel.Traces.Enabled)
+	envTrimStr("GATEWAY_OTEL_TRACES_ENDPOINT", &c.OTel.Traces.Endpoint)
+	envTrimStr("GATEWAY_OTEL_TRACES_SAMPLER", &c.OTel.Traces.Sampler)
+	envFloat("GATEWAY_OTEL_TRACES_SAMPLER_ARG", &c.OTel.Traces.SamplerArg)
+	envBool("GATEWAY_OTEL_TRACES_CAPTURE_CONTENT", &c.OTel.Traces.CaptureContent)
+	envBoolPtr("GATEWAY_OTEL_METRICS_ENABLED", &c.OTel.Metrics.Enabled)
+	envTrimStr("GATEWAY_OTEL_METRICS_ENDPOINT", &c.OTel.Metrics.Endpoint)
+	envDuration("GATEWAY_OTEL_METRICS_EXPORT_INTERVAL", &c.OTel.Metrics.ExportInterval)
+	envBool("GATEWAY_OTEL_LOGS_ENABLED", &c.OTel.Logs.Enabled)
+	envTrimStr("GATEWAY_OTEL_LOGS_ENDPOINT", &c.OTel.Logs.Endpoint)
+
+	// Audit SIEM webhook env overrides.
+	envBool("GATEWAY_AUDIT_SIEM_ENABLED", &c.Audit.SIEMWebhook.Enabled)
+	envTrimStr("GATEWAY_AUDIT_SIEM_URL", &c.Audit.SIEMWebhook.URL)
+	envStr("GATEWAY_AUDIT_SIEM_SECRET", &c.Audit.SIEMWebhook.Secret)
+	envStr("GATEWAY_AUDIT_SIEM_AUTH_HEADER", &c.Audit.SIEMWebhook.AuthHeader)
+	envInt("GATEWAY_AUDIT_SIEM_BATCH_SIZE", &c.Audit.SIEMWebhook.BatchSize)
+	envDuration("GATEWAY_AUDIT_SIEM_FLUSH_INTERVAL", &c.Audit.SIEMWebhook.FlushInterval)
+	envDuration("GATEWAY_AUDIT_SIEM_TIMEOUT", &c.Audit.SIEMWebhook.Timeout)
+	envInt("GATEWAY_AUDIT_SIEM_MAX_QUEUE_SIZE", &c.Audit.SIEMWebhook.MaxQueueSize)
+
+	// Active upstream health probe env overrides.
+	envBoolPtr("GATEWAY_HEALTH_PROBE_ENABLED", &c.Health.ProbeEnabled)
+	envDuration("GATEWAY_HEALTH_PROBE_INTERVAL", &c.Health.ProbeInterval)
+	envDuration("GATEWAY_HEALTH_PROBE_TIMEOUT", &c.Health.ProbeTimeout)
 }
 
 func (c *Config) applyAuthEnvOverrides() {
@@ -1248,8 +1496,73 @@ func (c *Config) validateFinOpsAndTracing() error {
 	if c.FinOps.BudgetExceededThrottlePct == 0 {
 		c.FinOps.BudgetExceededThrottlePct = 0.10
 	}
-	if strings.TrimSpace(c.Tracing.ServiceName) == "" {
-		c.Tracing.ServiceName = "ai-gateway-go"
+
+	// Merge silent deprecated `tracing:` YAML alias into `otel:` when `otel:` fields are unset.
+	if c.Tracing.Enabled && !c.OTel.Enabled {
+		c.OTel.Enabled = true
+	}
+	if strings.TrimSpace(c.OTel.Endpoint) == "" && strings.TrimSpace(c.Tracing.OTLPEndpoint) != "" {
+		c.OTel.Endpoint = strings.TrimSpace(c.Tracing.OTLPEndpoint)
+	}
+	if svc := strings.TrimSpace(c.Tracing.ServiceName); svc != "" && (strings.TrimSpace(c.OTel.ServiceName) == "" || c.OTel.ServiceName == "ai-gateway-go") {
+		c.OTel.ServiceName = svc
+	}
+	if len(c.Tracing.Headers) > 0 {
+		if c.OTel.Headers == nil {
+			c.OTel.Headers = make(map[string]string, len(c.Tracing.Headers))
+		}
+		for k, v := range c.Tracing.Headers {
+			if _, exists := c.OTel.Headers[k]; !exists {
+				c.OTel.Headers[k] = v
+			}
+		}
+	}
+
+	if strings.TrimSpace(c.OTel.ServiceName) == "" {
+		c.OTel.ServiceName = "ai-gateway-go"
+	}
+	if strings.TrimSpace(c.OTel.DeploymentEnvironment) == "" {
+		c.OTel.DeploymentEnvironment = strings.TrimSpace(c.Server.Environment)
+	}
+	if c.OTel.Metrics.ExportInterval < 0 {
+		return fmt.Errorf("invalid otel.metrics.export_interval: %v", c.OTel.Metrics.ExportInterval)
+	}
+	if c.OTel.Metrics.ExportInterval == 0 {
+		c.OTel.Metrics.ExportInterval = 60 * time.Second
+	}
+	if sampler := strings.ToLower(strings.TrimSpace(c.OTel.Traces.Sampler)); sampler != "" {
+		switch sampler {
+		case "always_on", "always_off", "traceidratio", "parentbased_always_on", "parentbased_always_off", "parentbased_traceidratio":
+			c.OTel.Traces.Sampler = sampler
+		default:
+			return fmt.Errorf("invalid otel.traces.sampler %q", c.OTel.Traces.Sampler)
+		}
+	}
+	if c.OTel.Traces.SamplerArg < 0 || c.OTel.Traces.SamplerArg > 1 {
+		return fmt.Errorf("invalid otel.traces.sampler_arg: %v (must be in [0, 1])", c.OTel.Traces.SamplerArg)
+	}
+	for k, v := range c.OTel.Headers {
+		if isUnresolvedEnvReference(v) {
+			return fmt.Errorf("otel.headers[%q] contains an unresolved environment variable reference", k)
+		}
+	}
+	if isUnresolvedEnvReference(c.Audit.SIEMWebhook.Secret) {
+		return errors.New("audit.siem_webhook.secret contains an unresolved environment variable reference")
+	}
+	if isUnresolvedEnvReference(c.Audit.SIEMWebhook.AuthHeader) {
+		return errors.New("audit.siem_webhook.auth_header contains an unresolved environment variable reference")
+	}
+	if c.Health.ProbeInterval < 0 {
+		return fmt.Errorf("invalid health.probe_interval: %v", c.Health.ProbeInterval)
+	}
+	if c.Health.ProbeInterval == 0 {
+		c.Health.ProbeInterval = 60 * time.Second
+	}
+	if c.Health.ProbeTimeout < 0 {
+		return fmt.Errorf("invalid health.probe_timeout: %v", c.Health.ProbeTimeout)
+	}
+	if c.Health.ProbeTimeout == 0 {
+		c.Health.ProbeTimeout = 5 * time.Second
 	}
 	return nil
 }

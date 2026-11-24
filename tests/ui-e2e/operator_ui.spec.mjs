@@ -508,6 +508,22 @@ async function run() {
     await page.getByRole('button', { name: 'Cache Hits', exact: true }).click();
     await page.getByRole('button', { name: 'Semantic Cache', exact: true }).click();
     await page.getByRole('button', { name: 'All', exact: true }).click();
+    await page.locator('input[placeholder*="trace"]').waitFor({ state: 'visible' });
+
+    // Check 5e: Observability & Pure OTLP UI wiring (OverviewView telemetry strip + ConfigView OTLP/Health/Audit cards)
+    await page.locator('aside button', { hasText: /Overview|Telemetry/i }).click();
+    await page.getByRole('heading', { name: 'Telemetry & Upstream Health' }).waitFor({ state: 'visible' });
+    await page.getByText(/P99:/).waitFor({ state: 'visible' });
+    await page.getByText(/Redis CB:/).waitFor({ state: 'visible' });
+    await page.getByText(/TTFT:/).waitFor({ state: 'visible' });
+    await page.getByText(/Guardrail Blocks:/).waitFor({ state: 'visible' });
+    await page.getByText(/Redactions:/).waitFor({ state: 'visible' });
+    await page.getByText(/Outbox:/).waitFor({ state: 'visible' });
+    await page.getByRole('button', { name: /OTLP:/i }).click();
+    await page.getByRole('heading', { name: 'Gateway Configuration' }).waitFor({ state: 'visible' });
+    await page.getByRole('heading', { name: 'OpenTelemetry (OTLP)' }).waitFor({ state: 'visible' });
+    await page.getByRole('heading', { name: 'Health Probing' }).waitFor({ state: 'visible' });
+    await page.getByRole('heading', { name: 'Audit & SIEM' }).waitFor({ state: 'visible' });
 
     // Check 6: Sign Out & Session Revocation
     await page.locator('button[title*="Click to sign out"]').click();

@@ -12,6 +12,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/sse"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/observability"
 	"github.com/goroute-ai/ai-gateway-go/internal/openapi/providers"
 	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 )
@@ -92,6 +93,7 @@ func applyOpenRouterAuthAndHeaders(req *http.Request, cred *domain.ProviderCrede
 	}
 	req.Header.Set("HTTP-Referer", defaultHTTPReferer)
 	req.Header.Set("X-Title", defaultXTitle)
+	observability.InjectTraceHeaders(req.Context(), req)
 	if err := (&adapter.BearerAuthStrategy{}).ApplyAuth(req, cred); err != nil {
 		return &domain.GatewayError{
 			StatusCode:  http.StatusUnauthorized,
@@ -525,6 +527,7 @@ func (a *Adapter) ListModels(ctx context.Context, cred *domain.ProviderCredentia
 			return nil, err
 		}
 	}
+	observability.InjectTraceHeaders(ctx, httpReq)
 	resp, err := a.client.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("openrouter list models: %w", err)

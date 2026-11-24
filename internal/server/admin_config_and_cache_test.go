@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -496,7 +497,14 @@ func TestHTTPGuardrailScanner(t *testing.T) {
 func TestServerOTLPMetricsExporterWiredWhenTracingEnabled(t *testing.T) {
 	metricsReceived := make(chan string, 4)
 	otlpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
+		var reader io.Reader = r.Body
+		if r.Header.Get("Content-Encoding") == "gzip" {
+			if gz, err := gzip.NewReader(r.Body); err == nil {
+				defer gz.Close()
+				reader = gz
+			}
+		}
+		body, _ := io.ReadAll(reader)
 		if r.URL.Path == "/v1/metrics" {
 			metricsReceived <- string(body)
 		}
@@ -516,15 +524,15 @@ func TestServerOTLPMetricsExporterWiredWhenTracingEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("server.New: %v", err)
 	}
-	if gw.MetricsExporter() == nil {
-		t.Fatalf("expected MetricsExporter() to be initialized when Tracing.Enabled && Tracing.OTLPEndpoint != \"\"")
+	if gw.TelemetryRuntime() == nil || !gw.TelemetryRuntime().Status().MetricsActive {
+		t.Fatalf("expected TelemetryRuntime metrics to be active when Tracing.Enabled && Tracing.OTLPEndpoint != \"\"")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	gw.StartWorkers(ctx)
 
-	// Record a metric and trigger Shutdown, which flushes OTLPMetricsExporter.
+	// Record a metric and trigger Shutdown, which flushes the OTel MeterProvider.
 	gw.Collector().Record(observability.RequestObservation{
 		Provider:   "openai",
 		Model:      "gpt-4o-mini",
@@ -534,11 +542,11 @@ func TestServerOTLPMetricsExporterWiredWhenTracingEnabled(t *testing.T) {
 
 	select {
 	case payload := <-metricsReceived:
-		if !strings.Contains(payload, "gw-otlp-server-test") || !strings.Contains(payload, "gateway_requests_total") {
-			t.Fatalf("unexpected OTLP metrics payload: %s", payload)
+		if !strings.Contains(payload, "gw-otlp-server-test") || !strings.Contains(payload, "gateway.requests") {
+			t.Fatalf("unexpected OTLP metrics payload: %q", payload)
 		}
 	case <-ctx.Done():
-		t.Fatal("timed out waiting for OTLPMetricsExporter flush on GatewayServer Shutdown")
+		t.Fatal("timed out waiting for OTel MeterProvider flush on GatewayServer Shutdown")
 	}
 }
 

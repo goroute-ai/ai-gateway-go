@@ -25,11 +25,28 @@ type InferenceMeta struct {
 	CacheHit         bool
 }
 
+// RequestIdentity holds tenant identity recorded by downstream auth middleware so
+// HTTPMiddleware (which wraps auth middleware) emits org_id, team_id, virtual_key_id,
+// and key_prefix on completed HTTP access logs.
+type RequestIdentity struct {
+	OrgID        string
+	TeamID       string
+	VirtualKeyID string
+	KeyPrefix    string
+}
+
 type inferenceMetaKey struct{}
+type requestIdentityKey struct{}
 
 type inferenceMetaHolder struct {
 	mu   sync.Mutex
 	meta InferenceMeta
+	set  bool
+}
+
+type requestIdentityHolder struct {
+	mu   sync.Mutex
+	meta RequestIdentity
 	set  bool
 }
 
@@ -49,6 +66,37 @@ func SetInferenceMeta(ctx context.Context, meta InferenceMeta) {
 	holder.mu.Unlock()
 }
 
+// SetRequestIdentity populates the mutable RequestIdentity holder attached to ctx by HTTPMiddleware
+// so completed HTTP access logs include tenant identity resolved by downstream auth middleware.
+func SetRequestIdentity(ctx context.Context, id RequestIdentity) {
+	if ctx == nil {
+		return
+	}
+	holder, ok := ctx.Value(requestIdentityKey{}).(*requestIdentityHolder)
+	if !ok || holder == nil {
+		return
+	}
+	holder.mu.Lock()
+	holder.meta = id
+	holder.set = true
+	holder.mu.Unlock()
+}
+
+func requestIdentityFromContext(ctx context.Context) (RequestIdentity, bool) {
+	if ctx == nil {
+		return RequestIdentity{}, false
+	}
+	holder, ok := ctx.Value(requestIdentityKey{}).(*requestIdentityHolder)
+	if !ok || holder == nil {
+		return RequestIdentity{}, false
+	}
+	holder.mu.Lock()
+	meta := holder.meta
+	set := holder.set
+	holder.mu.Unlock()
+	return meta, set
+}
+
 type responseRecorder struct {
 	http.ResponseWriter
 	statusCode  int
@@ -57,8 +105,10 @@ type responseRecorder struct {
 }
 
 func (r *responseRecorder) WriteHeader(statusCode int) {
-	r.statusCode = statusCode
-	r.wroteHeader = true
+	if !r.wroteHeader {
+		r.statusCode = statusCode
+		r.wroteHeader = true
+	}
 	r.ResponseWriter.WriteHeader(statusCode)
 }
 
@@ -91,18 +141,23 @@ func (r *responseRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return nil, nil, errors.New("underlying ResponseWriter does not implement http.Hijacker")
 }
 
-// HTTPMiddleware constructs a production-grade structured logging middleware for http.Handler routers.
-// It intercepts requests, records duration, status, and payload size, extracts tracing metadata,
-// and automatically filters noisy Kubernetes health probes (/healthz, /readyz, /metrics) to DEBUG level.
-func HTTPMiddleware(l *slog.Logger) func(http.Handler) http.Handler {
-	if l == nil {
-		l = L()
-	}
-	httpLogger := l.With(slog.String("component", "http"))
+func (r *responseRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
+}
 
+// HTTPMiddleware constructs a production-grade structured logging middleware for http.Handler routers.
+// It intercepts requests, records duration, status, and payload size, enriches logs with trace IDs,
+// request IDs, tenant identity, and inference telemetry, and downgrades Kubernetes health probes
+// (/healthz, /readyz) to DEBUG level.
+func HTTPMiddleware(l *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
+			base := l
+			if base == nil {
+				base = L()
+			}
+			httpLogger := base.With(slog.String("component", "http"))
 
 			// Extract, sanitize, and bound Request ID
 			reqID := sanitizeRequestID(r.Header.Get("X-Request-Id"))
@@ -111,10 +166,12 @@ func HTTPMiddleware(l *slog.Logger) func(http.Handler) http.Handler {
 			}
 			w.Header().Set("X-Gateway-Request-Id", reqID)
 
-			// Enrich request context with request ID, tracing context, and mutable inference metadata holder
+			// Enrich request context with request ID and mutable inference/identity holders
 			holder := &inferenceMetaHolder{}
+			idHolder := &requestIdentityHolder{}
 			ctx := WithRequestID(r.Context(), reqID)
 			ctx = context.WithValue(ctx, inferenceMetaKey{}, holder)
+			ctx = context.WithValue(ctx, requestIdentityKey{}, idHolder)
 			r = r.WithContext(ctx)
 
 			rec := &responseRecorder{
@@ -129,8 +186,8 @@ func HTTPMiddleware(l *slog.Logger) func(http.Handler) http.Handler {
 
 			path := r.URL.Path
 
-			// Check if this is a high-frequency probe endpoint
-			isProbe := path == "/healthz" || path == "/readyz" || path == "/metrics"
+			// Downgrade high-frequency Kubernetes liveness/readiness probes to DEBUG.
+			isProbe := path == "/healthz" || path == "/readyz"
 
 			attrs := []any{
 				slog.String("method", r.Method),
@@ -166,9 +223,9 @@ func HTTPMiddleware(l *slog.Logger) func(http.Handler) http.Handler {
 				}
 			}
 
-			// Note: trace_id and request_id are injected automatically by contextHandler from ctx.
+			// Note: trace_id, span_id, request_id, org_id, team_id, virtual_key_id, and key_prefix
+			// are injected automatically by ContextHandler from ctx (including idHolder).
 
-			// Log level selection based on status and path
 			if isProbe {
 				httpLogger.DebugContext(ctx, "health probe", attrs...)
 				return

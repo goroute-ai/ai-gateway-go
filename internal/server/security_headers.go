@@ -110,7 +110,7 @@ func CORSMiddleware(allowedOrigins []string, allowCredentials bool) func(http.Ha
 			if matchedOrigin != "*" && allowCredentials {
 				h.Set("Access-Control-Allow-Credentials", "true")
 			}
-			h.Set("Access-Control-Expose-Headers", "X-Gateway-Request-Id, X-Gateway-Provider, X-Gateway-Model, X-Gateway-Cost-Micros, X-Gateway-Cache, X-Gateway-Cache-Type, X-Gateway-Cache-Similarity, X-Gateway-Guardrail-Action, X-Gateway-Pricing-Status, X-Gateway-Latency-Ms, X-Gateway-Route-Reason, X-Gateway-Fallback-Attempted, X-Gateway-Routing-Micros, X-Gateway-Stream-Continued, X-Gateway-Tier-Stepdowns, X-RateLimit-Limit-Requests, X-RateLimit-Remaining-Requests, X-RateLimit-Reset-Requests, X-RateLimit-Limit-Tokens, X-RateLimit-Remaining-Tokens, X-RateLimit-Reset-Tokens, X-RateLimit-Scope, X-RateLimit-Type, X-RateLimit-Reset-At, Retry-After")
+			h.Set("Access-Control-Expose-Headers", "X-Trace-Id, traceparent, X-Gateway-Request-Id, X-Gateway-Provider, X-Gateway-Model, X-Gateway-Cost-Micros, X-Gateway-Cache, X-Gateway-Cache-Type, X-Gateway-Cache-Similarity, X-Gateway-Guardrail-Action, X-Gateway-Pricing-Status, X-Gateway-Latency-Ms, X-Gateway-Route-Reason, X-Gateway-Fallback-Attempted, X-Gateway-Routing-Micros, X-Gateway-Stream-Continued, X-Gateway-Tier-Stepdowns, X-RateLimit-Limit-Requests, X-RateLimit-Remaining-Requests, X-RateLimit-Reset-Requests, X-RateLimit-Limit-Tokens, X-RateLimit-Remaining-Tokens, X-RateLimit-Reset-Tokens, X-RateLimit-Scope, X-RateLimit-Type, X-RateLimit-Reset-At, Retry-After")
 
 			if r.Method == http.MethodOptions {
 				h.Add("Vary", "Access-Control-Request-Method")

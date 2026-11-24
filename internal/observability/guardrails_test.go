@@ -2,17 +2,27 @@ package observability
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
-func TestCollector_GuardrailMetricsPrometheusAndOTLP(t *testing.T) {
+func TestCollector_GuardrailMetricsOTel(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+
+	inst, err := NewInstruments(mp.Meter(instrumentationScopeName))
+	if err != nil {
+		t.Fatalf("NewInstruments: %v", err)
+	}
+
 	col := NewCollector()
+	col.SetInstruments(inst)
 	col.RecordGuardrailEvaluation(GuardrailObservation{
 		GuardrailName: "pii-detector",
 		Hook:          "pre_call",
@@ -32,57 +42,51 @@ func TestCollector_GuardrailMetricsPrometheusAndOTLP(t *testing.T) {
 		LatencyMs:     80,
 		IsError:       true,
 	})
+	// Simulate the blocked request being recorded once by the gateway handler (must NOT double-count).
+	col.Record(RequestObservation{StatusCode: 400, GuardrailBlocked: true})
 
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
-	rec := httptest.NewRecorder()
-	col.PrometheusHandler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rec.Code)
+	snap := col.Snapshot()
+	if snap.GuardrailBlocks != 1 {
+		t.Fatalf("expected exactly 1 blocked request (no double-counting), got %d", snap.GuardrailBlocks)
 	}
-	body := rec.Body.String()
-	for _, want := range []string{
-		`gateway_guardrail_evaluations_total{guardrail="pii-detector",hook="pre_call",decision="allow"} 1`,
-		`gateway_guardrail_evaluations_total{guardrail="pii-detector",hook="pre_call",decision="block"} 1`,
-		`gateway_guardrail_evaluations_total{guardrail="pii-detector",hook="pre_call",decision="error"} 1`,
-		`gateway_guardrail_errors_total{guardrail="pii-detector",hook="pre_call"} 1`,
-		`gateway_guardrail_duration_ms_bucket{guardrail="pii-detector",hook="pre_call",le="5"} 1`,
-		`gateway_guardrail_duration_ms_bucket{guardrail="pii-detector",hook="pre_call",le="25"} 2`,
-		`gateway_guardrail_duration_ms_bucket{guardrail="pii-detector",hook="pre_call",le="+Inf"} 3`,
-		`gateway_guardrail_duration_ms_sum{guardrail="pii-detector",hook="pre_call"} 96`,
-		`gateway_guardrail_duration_ms_count{guardrail="pii-detector",hook="pre_call"} 3`,
-	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("expected Prometheus output to contain %q, got:\n%s", want, body)
-		}
+	if len(snap.GuardrailMetrics) != 1 {
+		t.Fatalf("expected 1 guardrail summary, got %d", len(snap.GuardrailMetrics))
 	}
-	if strings.Contains(body, "deployment_id=") || strings.Contains(body, "name=") {
-		t.Fatalf("Prometheus labels must not expose forbidden keys: %s", body)
+	gm := snap.GuardrailMetrics[0]
+	if gm.Evaluations != 3 || gm.Errors != 1 || gm.DurationSumMs != 96 || gm.DurationCount != 3 || gm.DecisionCounts["block"] != 1 {
+		t.Fatalf("unexpected guardrail snapshot summary: %+v", gm)
 	}
 
-	exp := &OTLPMetricsExporter{
-		collector:   col,
-		serviceName: "test",
-		startTimeNs: 1,
+	metricsMap := collectMetricMap(t, reader)
+	blocksMetric, ok := metricsMap["gateway.guardrail.blocks"]
+	if !ok || sumInt64Value(t, blocksMetric) != 1 {
+		t.Fatalf("expected gateway.guardrail.blocks=1 (no double-counting), got %+v", blocksMetric)
 	}
-	payload := exp.buildPayload()
-	foundEval := false
-	foundErr := false
-	for _, m := range payload.ResourceMetrics[0].ScopeMetrics[0].Metrics {
-		if m.Name == "gateway_guardrail_evaluations_total" {
-			foundEval = true
-		}
-		if m.Name == "gateway_guardrail_errors_total" {
-			foundErr = true
-		}
+	evals, ok := metricsMap["gateway.guardrail.evaluations"]
+	if !ok {
+		t.Fatalf("missing gateway.guardrail.evaluations in OTel metrics")
 	}
-	if !foundEval || !foundErr {
-		t.Fatalf("expected OTLP guardrail metrics in payload, eval=%v err=%v", foundEval, foundErr)
+	if sumInt64Value(t, evals) != 3 {
+		t.Fatalf("expected 3 total guardrail evaluations, got %d", sumInt64Value(t, evals))
+	}
+	errsMetric, ok := metricsMap["gateway.guardrail.errors"]
+	if !ok || sumInt64Value(t, errsMetric) != 1 {
+		t.Fatalf("expected gateway.guardrail.errors=1, got %+v", errsMetric)
+	}
+	durMetric, ok := metricsMap["gateway.guardrail.duration"]
+	if !ok {
+		t.Fatalf("missing gateway.guardrail.duration histogram")
+	}
+	hist, ok := durMetric.Data.(metricdata.Histogram[float64])
+	if !ok || len(hist.DataPoints) != 1 || hist.DataPoints[0].Count != 3 || hist.DataPoints[0].Sum != 96 {
+		t.Fatalf("unexpected gateway.guardrail.duration histogram: %+v", durMetric.Data)
 	}
 }
 
 func TestGuardrailOTELSpanScrubsSensitiveViolationTags(t *testing.T) {
 	recorder := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	tracer := tp.Tracer("test")
 
 	ctx, span := StartGuardrailEvaluateSpan(context.Background(), tracer, "dlp-scanner", "pre_call")
@@ -105,17 +109,8 @@ func TestGuardrailOTELSpanScrubsSensitiveViolationTags(t *testing.T) {
 	for _, a := range spans[0].Attributes() {
 		attrMap[string(a.Key)] = a.Value.AsInterface()
 	}
-	if attrMap["guardrail.name"] != "dlp-scanner" {
-		t.Fatalf("unexpected guardrail.name: %v", attrMap["guardrail.name"])
-	}
-	if attrMap["guardrail.hook"] != "pre_call" {
-		t.Fatalf("unexpected guardrail.hook: %v", attrMap["guardrail.hook"])
-	}
-	if attrMap["guardrail.decision"] != "modify" {
-		t.Fatalf("unexpected guardrail.decision: %v", attrMap["guardrail.decision"])
-	}
-	if attrMap["guardrail.latency_ms"] != int64(18) {
-		t.Fatalf("unexpected guardrail.latency_ms: %v", attrMap["guardrail.latency_ms"])
+	if attrMap["guardrail.name"] != "dlp-scanner" || attrMap["guardrail.hook"] != "pre_call" || attrMap["guardrail.decision"] != "modify" || attrMap["guardrail.latency_ms"] != int64(18) {
+		t.Fatalf("unexpected guardrail span attributes: %+v", attrMap)
 	}
 	cats, ok := attrMap["guardrail.violation_categories"].([]string)
 	if !ok {

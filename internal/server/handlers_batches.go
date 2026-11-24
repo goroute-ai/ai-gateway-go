@@ -85,6 +85,10 @@ func (s *GatewayServer) handleCreateBatch(w http.ResponseWriter, r *http.Request
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: http.StatusBadRequest, Type: domain.ErrorTypeInvalidRequest, Code: "unsupported_completion_window", Message: "completion_window must be 24h"})
 		return
 	}
+	logger.SetInferenceMeta(r.Context(), logger.InferenceMeta{
+		Provider: "batches",
+		Model:    payload.Endpoint,
+	})
 
 	// 1. Verify input file belongs to tenant
 	inputFile, err := s.repo.GetFile(r.Context(), idCtx.OrgID, payload.InputFileID)

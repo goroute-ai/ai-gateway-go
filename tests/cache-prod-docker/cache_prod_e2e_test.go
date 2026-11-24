@@ -319,39 +319,29 @@ func provisionTenant(t *testing.T, client *http.Client, prefix, apiKey, chatGlob
 	}
 }
 
-func scrapeMetric(t *testing.T, client *http.Client, baseURL, metricName string) float64 {
+type cacheTelemetrySnap struct {
+	CacheEnabled      bool    `json:"cache_enabled"`
+	CacheType         string  `json:"cache_type"`
+	CacheStatus       string  `json:"cache_status"`
+	CacheHits         int64   `json:"cache_hits"`
+	CacheMisses       int64   `json:"cache_misses"`
+	CacheSemanticHits int64   `json:"cache_semantic_hits"`
+	CacheErrors       int64   `json:"cache_errors"`
+	CacheEntries      int64   `json:"cache_entries"`
+	CacheEvictions    int64   `json:"cache_evictions"`
+	CacheHitRate      float64 `json:"cache_hit_rate"`
+}
+
+func getCacheTelemetrySnapshot(t *testing.T, client *http.Client, baseURL string) cacheTelemetrySnap {
 	t.Helper()
-	resp, data, _ := doHTTP(t, client, http.MethodGet, baseURL+"/metrics", nil, map[string]string{
-		"Authorization": "Bearer " + cacheMasterKey,
-	})
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET %s/metrics status=%d body=%s", baseURL, resp.StatusCode, string(data))
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, metricName+" ") {
-			parts := strings.Fields(line)
-			if len(parts) >= 2 {
-				val, err := strconv.ParseFloat(parts[1], 64)
-				if err != nil {
-					t.Fatalf("parse metric %s=%q: %v", metricName, parts[1], err)
-				}
-				return val
-			}
-		}
-	}
-	t.Fatalf("metric %q not found in /metrics output from %s", metricName, baseURL)
-	return 0
+	var snap cacheTelemetrySnap
+	mustAdminJSON(t, client, http.MethodGet, baseURL+"/admin/v1/observability/metrics", nil, &snap, http.StatusOK)
+	return snap
 }
 
 func getObservabilityMetrics(t *testing.T, client *http.Client, baseURL string) (hits, misses int64, hitRate float64) {
 	t.Helper()
-	var snap struct {
-		CacheHits    int64   `json:"cache_hits"`
-		CacheMisses  int64   `json:"cache_misses"`
-		CacheHitRate float64 `json:"cache_hit_rate"`
-	}
-	mustAdminJSON(t, client, http.MethodGet, baseURL+"/admin/v1/observability/metrics", nil, &snap, http.StatusOK)
+	snap := getCacheTelemetrySnapshot(t, client, baseURL)
 	return snap.CacheHits, snap.CacheMisses, snap.CacheHitRate
 }
 
@@ -482,23 +472,16 @@ func TestCacheProd_SuiteC1_LocalMode(t *testing.T) {
 			t.Fatalf("C1 LRU fill %d failed (%d): %s", i, rp.StatusCode, string(bp))
 		}
 	}
-	entries := scrapeMetric(t, client, cachePod1Base, "gateway_cache_entries")
-	evictions := scrapeMetric(t, client, cachePod1Base, "gateway_cache_evictions_total")
-	if entries > 4 || evictions < 1 {
-		t.Fatalf("C1 LRU bound check failed: gateway_cache_entries=%v (want <=4) gateway_cache_evictions_total=%v (want >=1)", entries, evictions)
+	snap := getCacheTelemetrySnapshot(t, client, cachePod1Base)
+	if snap.CacheEntries > 4 || snap.CacheEvictions < 1 {
+		t.Fatalf("C1 LRU bound check failed: cache_entries=%d (want <=4) cache_evictions=%d (want >=1)", snap.CacheEntries, snap.CacheEvictions)
 	}
 
-	// 7. Operator UI telemetry snapshot matches Prometheus cache counters 100% (unaffected by streaming/no-cache/excluded embeddings).
-	hits, misses, hitRate := getObservabilityMetrics(t, client, cachePod1Base)
-	promHits := int64(scrapeMetric(t, client, cachePod1Base, "gateway_cache_hits_total"))
-	promMisses := int64(scrapeMetric(t, client, cachePod1Base, "gateway_cache_misses_total"))
-	if hits < 2 || misses < 2 || hitRate <= 0 {
-		t.Fatalf("C1 observability metrics invalid: hits=%d misses=%d hit_rate=%v", hits, misses, hitRate)
+	// 7. Operator UI telemetry snapshot reports authoritative eligible cache counters (unaffected by streaming/no-cache/excluded embeddings).
+	if snap.CacheHits < 2 || snap.CacheMisses < 2 || snap.CacheHitRate <= 0 || snap.CacheType != "local" || !snap.CacheEnabled {
+		t.Fatalf("C1 observability metrics invalid: %+v", snap)
 	}
-	if hits != promHits || misses != promMisses {
-		t.Fatalf("C1 observability vs Prometheus cache metrics drift: obs=(%d,%d) prom=(%d,%d)", hits, misses, promHits, promMisses)
-	}
-	t.Logf("C1 PASS: entries=%.0f evictions=%.0f obs_hits=%d obs_misses=%d hit_rate=%.3f (exact Prometheus parity)", entries, evictions, hits, misses, hitRate)
+	t.Logf("C1 PASS: entries=%d evictions=%d hits=%d misses=%d hit_rate=%.3f", snap.CacheEntries, snap.CacheEvictions, snap.CacheHits, snap.CacheMisses, snap.CacheHitRate)
 }
 
 // =============================================================================
@@ -798,7 +781,7 @@ func TestCacheProd_SuiteC3_RedisSemantic_HNSW_LiveGemini(t *testing.T) {
 	}
 
 	// 9. Fail-open when a tenant lacks the configured semantic embedding model.
-	errBefore := scrapeMetric(t, client, cachePod1Base, "gateway_cache_errors_total")
+	errBefore := getCacheTelemetrySnapshot(t, client, cachePod1Base).CacheErrors
 	rNoEmb, bNoEmb, _ := chatCall(t, client, cachePod1Base, orgNoEmbed.KeyTeam1, map[string]any{
 		"model":      orgNoEmbed.ChatAlias,
 		"max_tokens": 48,
@@ -808,9 +791,9 @@ func TestCacheProd_SuiteC3_RedisSemantic_HNSW_LiveGemini(t *testing.T) {
 		t.Fatalf("C3 tenant without embedding model must fail open 200 MISS: status=%d cache=%q body=%s",
 			rNoEmb.StatusCode, rNoEmb.Header.Get("X-Gateway-Cache"), string(bNoEmb))
 	}
-	errAfter := scrapeMetric(t, client, cachePod1Base, "gateway_cache_errors_total")
+	errAfter := getCacheTelemetrySnapshot(t, client, cachePod1Base).CacheErrors
 	if errAfter <= errBefore {
-		t.Fatalf("C3 expected gateway_cache_errors_total to increment on missing embedding model (before=%v after=%v)", errBefore, errAfter)
+		t.Fatalf("C3 expected cache_errors to increment on missing embedding model (before=%d after=%d)", errBefore, errAfter)
 	}
 
 	// 10. Targeted admin invalidation purges Org A semantic docs while keeping Org B semantic docs alive!
@@ -856,7 +839,7 @@ func TestCacheProd_SuiteC4_ChaosFailOpenAndRecovery(t *testing.T) {
 		"allowed_models":    []string{"*"},
 	}, &rlKey, http.StatusCreated)
 
-	errBefore := scrapeMetric(t, client, cachePod1Base, "gateway_cache_errors_total")
+	errBefore := getCacheTelemetrySnapshot(t, client, cachePod1Base).CacheErrors
 
 	// Ensure redis-cache is always restarted even if assertions fail mid-test.
 	t.Cleanup(func() {
@@ -875,7 +858,7 @@ func TestCacheProd_SuiteC4_ChaosFailOpenAndRecovery(t *testing.T) {
 		t.Fatalf("C4 /readyz during redis-cache outage expected 200 status=ready cache_status=degraded, got %d body=%s", rReadyDeg.StatusCode, string(bReadyDeg))
 	}
 
-	// 2. First call through pod 1 must succeed 200 OK (fail-open MISS) and increment gateway_cache_errors_total.
+	// 2. First call through pod 1 must succeed 200 OK (fail-open MISS) and increment gateway.cache.errors.
 	rOutage, bOutage, _ := chatCall(t, client, cachePod1Base, rlKey.RawKey, map[string]any{
 		"model":      tenant.ChatAlias,
 		"max_tokens": 48,
@@ -885,9 +868,9 @@ func TestCacheProd_SuiteC4_ChaosFailOpenAndRecovery(t *testing.T) {
 		t.Fatalf("C4 fail-open during redis-cache outage failed: status=%d cache=%q body=%s",
 			rOutage.StatusCode, rOutage.Header.Get("X-Gateway-Cache"), string(bOutage))
 	}
-	errAfter := scrapeMetric(t, client, cachePod1Base, "gateway_cache_errors_total")
+	errAfter := getCacheTelemetrySnapshot(t, client, cachePod1Base).CacheErrors
 	if errAfter <= errBefore {
-		t.Fatalf("C4 expected gateway_cache_errors_total to increase during outage (before=%v after=%v)", errBefore, errAfter)
+		t.Fatalf("C4 expected cache_errors to increase during outage (before=%d after=%d)", errBefore, errAfter)
 	}
 
 	// 3. Subsequent calls with rpm_limit=1 must STILL be rejected with HTTP 429 from redis-primary!
@@ -1097,33 +1080,16 @@ func TestCacheProd_SuiteC5_ConcurrencyFinOpsAndMetrics(t *testing.T) {
 		t.Fatalf("C5 expected _internal/semantic_cache audit rows to reflect semantic lookup embeddings (before=%d after=%d)", missSemRows, afterSemRows)
 	}
 
-	// 4. Verify all 6 backend-agnostic Prometheus metrics & /admin/v1/observability/metrics.
-	for _, base := range []string{cachePod1Base, cachePod2Base} {
-		for _, metric := range []string{
-			"gateway_cache_hits_total",
-			"gateway_cache_misses_total",
-			"gateway_cache_errors_total",
-			"gateway_cache_semantic_hits_total",
-			"gateway_cache_entries",
-			"gateway_cache_evictions_total",
-		} {
-			_ = scrapeMetric(t, client, base, metric)
-		}
+	// 4. Verify authoritative cache telemetry snapshot across both pods (/admin/v1/observability/metrics).
+	s1 := getCacheTelemetrySnapshot(t, client, cachePod1Base)
+	s2 := getCacheTelemetrySnapshot(t, client, cachePod2Base)
+	totalHits := s1.CacheHits + s2.CacheHits
+	totalSemHits := s1.CacheSemanticHits + s2.CacheSemanticHits
+	if totalHits < workers || totalSemHits < 1 || (s1.CacheHitRate <= 0 && s2.CacheHitRate <= 0) {
+		t.Fatalf("C5 observability snapshot mismatch: pod1=%+v pod2=%+v", s1, s2)
 	}
-	totalPromHits := scrapeMetric(t, client, cachePod1Base, "gateway_cache_hits_total") +
-		scrapeMetric(t, client, cachePod2Base, "gateway_cache_hits_total")
-	totalSemHits := scrapeMetric(t, client, cachePod1Base, "gateway_cache_semantic_hits_total") +
-		scrapeMetric(t, client, cachePod2Base, "gateway_cache_semantic_hits_total")
-	if totalPromHits < float64(workers) || totalSemHits < 1 {
-		t.Fatalf("C5 Prometheus hit counters too low: total_hits=%v sem_hits=%v", totalPromHits, totalSemHits)
-	}
-	h1, m1, hr1 := getObservabilityMetrics(t, client, cachePod1Base)
-	h2, m2, hr2 := getObservabilityMetrics(t, client, cachePod2Base)
-	if h1+h2 < workers || (hr1 <= 0 && hr2 <= 0) {
-		t.Fatalf("C5 observability snapshot mismatch: pod1=(%d,%d,%.3f) pod2=(%d,%d,%.3f)", h1, m1, hr1, h2, m2, hr2)
-	}
-	t.Logf("C5 PASS: %d/20 concurrent HITs (%d semantic), spend unchanged (%d rows, %d micros), prom_hits=%.0f prom_sem_hits=%.0f",
-		hitCount.Load(), semHitCount.Load(), afterRows, afterCost, totalPromHits, totalSemHits)
+	t.Logf("C5 PASS: %d/20 concurrent HITs (%d semantic), spend unchanged (%d rows, %d micros), obs_hits=%d obs_sem_hits=%d",
+		hitCount.Load(), semHitCount.Load(), afterRows, afterCost, totalHits, totalSemHits)
 }
 
 // =============================================================================

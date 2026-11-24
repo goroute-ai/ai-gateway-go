@@ -225,6 +225,11 @@ func (s *GatewayServer) processAudioSTT(w http.ResponseWriter, r *http.Request, 
 		RoutingMicros:  meta.RoutingMicros,
 		CostMicros:     costMicros,
 	})
+	logger.SetInferenceMeta(r.Context(), logger.InferenceMeta{
+		Model:      model,
+		Provider:   string(meta.WinningDeployment.GlobalModel.Provider),
+		CostMicros: costMicros,
+	})
 
 	w.Header().Set("X-Gateway-Provider", string(meta.WinningDeployment.GlobalModel.Provider))
 	w.Header().Set("X-Gateway-Cost-Micros", strconv.FormatInt(costMicros, 10))
@@ -404,6 +409,11 @@ func (s *GatewayServer) handleAudioSpeech(w http.ResponseWriter, r *http.Request
 		LatencyMs:      latencyMs,
 		RoutingMicros:  routingMicros,
 		CostMicros:     costMicros,
+	})
+	logger.SetInferenceMeta(r.Context(), logger.InferenceMeta{
+		Model:      raw.Model,
+		Provider:   string(provider),
+		CostMicros: costMicros,
 	})
 
 	safeContentType := "audio/mpeg"

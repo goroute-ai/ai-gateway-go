@@ -270,7 +270,7 @@ Before selection, `DeploymentFilterChain` narrows candidates by deployment healt
 | `usage-based-headroom` | Picks deployment with most remaining TPM capacity over a 1-minute window. | Avoiding provider token limits across deployments. |
 | `lowest-cost` | Picks deployment with lowest `(InputCostMicrosPer1M + OutputCostMicrosPer1M)`. | Cost-optimized batch processing. |
 
-Adaptive strategies, affinity pins, and bandit updates share expiring state through Redis. If shared state cannot be read or updated, routing degrades gracefully to process-local observations, increments `gw_routing_signal_degraded_total`, and emits a structured `routing_signal_store_unavailable` warning.
+Adaptive strategies, affinity pins, and bandit updates share expiring state through Redis. If shared state cannot be read or updated, routing degrades gracefully to process-local observations, increments `gateway.routing.signal_degraded`, and emits a structured `routing_signal_store_unavailable` warning.
 
 ### YAML Configuration (`configs/config.yaml`)
 ```yaml
@@ -582,11 +582,11 @@ For lower-level internal embedding, `GatewayServer.ConfigureGuardrailScanners` c
 ### Module B: Pre-Flight Request Validator
 Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model capabilities (`supports_tools`, `supports_reasoning`), and context window limits (`estPromptTokens + maxTokens <= GlobalModel.MaxInputTokens`) before consuming upstream quota.
 
-### Module C: Observability, W3C Tracing & Active Health Monitor
-- **Prometheus Metrics (`GET /metrics`)**: Requires the Master Admin Key in the `Authorization: Bearer` header. Scrape from a trusted monitoring network. The endpoint exposes gateway/provider aggregates, stream duration/errors/TTFT, Go heap and GC counters, response-cache hits, misses, semantic hits, fail-open errors, local entries, and LRU evictions, budget reservation checks and their share of recorded requests, catalog size, and Postgres read-through misses. Upstream HTTP protocol, connection reuse, dials, TLS handshakes, first-byte timing, and idle-timeout counters are included when the gateway creates its default outbound client; an injected `http.Client` owns its own transport and metrics. Per-deployment identifiers are omitted to keep metric cardinality bounded.
-- **Distributed Tracing**: Set `tracing.otlp_endpoint` to an OTLP/HTTP traces URL such as `https://collector.example:4318/v1/traces`. Tracing is disabled when the endpoint is empty. The exporter uses the outbound SSRF/network policy and supports optional `tracing.headers` for collector authentication.
-- **JSON Telemetry Snapshot (`GET /admin/v1/observability/metrics`)**: Real-time P50/P95/P99 latency and per-provider/per-deployment health breakdown.
-- **Active Health Monitor (`GET /admin/v1/health/deployments` & `POST /admin/v1/health/probe`)**: Periodically probes upstream credentials and preemptively marks failing deployments unhealthy before user traffic hits them.
+### Module C: OpenTelemetry (OTLP/HTTP) Observability, W3C Tracing & Active Health Monitor
+- **Unified OTLP/HTTP Export (`otel:`)**: GoRoute `v0.1` LTS supports **pure OpenTelemetry OTLP/HTTP only** for telemetry export, emitting **Traces**, **Metrics**, and opt-in post-scrub **Logs** via pure-Go official OTel SDKs with zero non-OTLP scrape endpoints or vendor-specific exporters. External observability platforms integrate on top of OTLP/HTTP directly or through an OpenTelemetry Collector. All signal endpoints are validated by `internal/security/network` SSRF policies, and `otel.headers` supports `os.environ/VAR` secret expansion with fail-closed validation. Standard `OTEL_*` environment variables (`OTEL_SERVICE_NAME`, `OTEL_SERVICE_VERSION`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_TRACES_SAMPLER`, `OTEL_METRIC_EXPORT_INTERVAL`) and `GATEWAY_OTEL_*` overrides are both supported; the legacy `tracing:` YAML block remains supported as a silent deprecated alias.
+- **GenAI Semantic Conventions & Privacy**: Outbound LLM calls, MCP tool executions (`execute_tool`), A2A invocations (`invoke_agent`), cache lookups (`cache.lookup`), and guardrail checks (`guardrail.evaluate`) emit standardized OTel spans and pure dot-separated `gen_ai.*` / `gateway.*` metrics. `otel.traces.capture_content` defaults to `false` so prompts and completions are never exported unless explicitly opted in, and `otel.logs.enabled` fans out records strictly downstream of `internal/logger` secret/PII scrubbing.
+- **JSON Telemetry Snapshot (`GET /admin/v1/observability/metrics`)**: Admin-authenticated JSON snapshot strictly for the embedded Operator Web UI (`OverviewView`), exposing sliding-window P50/P95/P99 latency, per-provider metrics, OTLP 3-signal status, FinOps outbox health, SIEM delivery stats, and Redis circuit-breaker state.
+- **Active Health Monitor (`health:` + `GET /admin/v1/health/deployments` & `POST /admin/v1/health/probe`)**: Periodically probes upstream credentials (configurable via `health.probe_enabled`, `health.probe_interval`, `health.probe_timeout`), publishes `gateway.deployment.healthy` OTLP gauges, and preemptively marks failing deployments unhealthy before user traffic hits them.
 
 ---
 
@@ -798,6 +798,26 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 | `model_list[].model_params.max_parallel_requests` | — | `0` | Distributed per-deployment concurrent in-flight request limit (`0` = unlimited). |
 | `model_list[].model_params.headers` | — | `{}` | Custom HTTP headers forwarded to the upstream model provider. |
 | `files.storage_dir` | `GOROUTE_FILES_DIR` | `os.TempDir()/goroute-files` | Local disk directory for stateful tenant files and batch JSONL files (enforces `0700` directory mode and `0600` file mode). |
+| `otel.enabled` | `GATEWAY_OTEL_ENABLED` | `false` | Master switch for OpenTelemetry OTLP/HTTP telemetry export (traces & metrics default on when enabled; logs opt-in). |
+| `otel.service_name` | `GATEWAY_OTEL_SERVICE_NAME` / `OTEL_SERVICE_NAME` | `"ai-gateway-go"` | OTel `service.name` resource attribute. |
+| `otel.service_version` | `GATEWAY_OTEL_SERVICE_VERSION` / `OTEL_SERVICE_VERSION` | build version | OTel `service.version` resource attribute (defaults to binary version). |
+| `otel.deployment_environment` | `GATEWAY_OTEL_DEPLOYMENT_ENVIRONMENT` | `server.environment` | OTel `deployment.environment.name` resource attribute. |
+| `otel.endpoint` | `GATEWAY_OTEL_ENDPOINT` / `OTEL_EXPORTER_OTLP_ENDPOINT` | `""` | Base OTLP/HTTP collector endpoint (signals append `/v1/traces`, `/v1/metrics`, `/v1/logs`; SSRF-validated). |
+| `otel.headers` | `GATEWAY_OTEL_HEADERS` / `OTEL_EXPORTER_OTLP_HEADERS` | `{}` | Collector HTTP auth headers (`os.environ/VAR` supported; fails closed if unresolved; redacted in `/admin/v1/config`). |
+| `otel.traces.enabled` | `GATEWAY_OTEL_TRACES_ENABLED` | `true` (when `otel.enabled`) | Enables OTLP/HTTP trace export (`otlptracehttp`). |
+| `otel.traces.endpoint` | `GATEWAY_OTEL_TRACES_ENDPOINT` / `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | `""` | Optional traces-specific OTLP/HTTP endpoint override. |
+| `otel.traces.sampler` | `GATEWAY_OTEL_TRACES_SAMPLER` / `OTEL_TRACES_SAMPLER` | `"parentbased_always_on"` | OTel trace sampler (`always_on`, `always_off`, `traceidratio`, `parentbased_*`). |
+| `otel.traces.sampler_arg` | `GATEWAY_OTEL_TRACES_SAMPLER_ARG` / `OTEL_TRACES_SAMPLER_ARG` | `1.0` | Sampling ratio (`0.0`–`1.0`) for ratio-based samplers. |
+| `otel.traces.capture_content` | `GATEWAY_OTEL_TRACES_CAPTURE_CONTENT` | `false` | Opt-in GenAI prompt/completion content recording on spans (disabled by default for privacy). |
+| `otel.metrics.enabled` | `GATEWAY_OTEL_METRICS_ENABLED` | `true` (when `otel.enabled`) | Enables OTLP/HTTP periodic metric export (`otlpmetrichttp`). |
+| `otel.metrics.endpoint` | `GATEWAY_OTEL_METRICS_ENDPOINT` / `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | `""` | Optional metrics-specific OTLP/HTTP endpoint override. |
+| `otel.metrics.export_interval` | `GATEWAY_OTEL_METRICS_EXPORT_INTERVAL` / `OTEL_METRIC_EXPORT_INTERVAL` | `60s` | Periodic OTLP metrics push interval (`OTEL_METRIC_EXPORT_INTERVAL` in ms). |
+| `otel.logs.enabled` | `GATEWAY_OTEL_LOGS_ENABLED` | `false` | Opt-in OTLP/HTTP structured log export (`otelslog` + `otlploghttp`, strictly downstream of `scrubAttr` secret/PII redaction). |
+| `otel.logs.endpoint` | `GATEWAY_OTEL_LOGS_ENDPOINT` / `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | `""` | Optional logs-specific OTLP/HTTP endpoint override. |
+| `health.probe_enabled` | `GATEWAY_HEALTH_PROBE_ENABLED` | `true` | Enables background active upstream deployment health probing. |
+| `health.probe_interval` | `GATEWAY_HEALTH_PROBE_INTERVAL` | `60s` | Interval between active upstream deployment health probes. |
+| `health.probe_timeout` | `GATEWAY_HEALTH_PROBE_TIMEOUT` | `5s` | Per-deployment HTTP timeout for active health probes. |
+| `audit.siem_webhook.*` | `GATEWAY_AUDIT_SIEM_*` | disabled | Async HMAC-SHA256 signed SIEM audit webhook sink (`ENABLED`, `URL`, `SECRET`, `AUTH_HEADER`, `BATCH_SIZE`, `FLUSH_INTERVAL`, `TIMEOUT`, `MAX_QUEUE_SIZE`). |
 
 ### Provider Options
 - All supported upstream providers (`openai`, `anthropic`, `groq`, `openrouter`) are OpenAPI-backed with explicit per-adapter capabilities and operation sets.
@@ -811,7 +831,7 @@ Operator authentication uses OpenID Connect Authorization Code + PKCE (`S256`) c
 
 For fine-grained data-plane and control-plane authorization, configure `allowed_deployments`, mandatory `allowed_routing_tags` (pruning candidate deployments even when callers omit routing tag headers), positive 3-state `allowed_mcp_tools` / `allowed_mcp_toolsets` alongside unconditional `ToolPolicy` enforcement on direct `/mcp` routes, Unified Access Groups (`/admin/v1/access-groups` covering models, MCP servers, MCP tools, and A2A agents), and optional `auth.external_authorizer` (`webhook` or OPA REST API with `X-GoRoute-Signature-256` HMAC signing) plus `audit.siem_webhook` over GoRoute's SSRF-protected outbound transport.
 
-Scheduled key rotation requires either an in-process Go SDK `KeySecretSink`, `auth.key_rotation_delivery_url` + `auth.key_rotation_delivery_token`, or a declarative `auth.key_rotation_sink` (`webhook` or `vault_kv2`). Both `Deliver` webhooks and `SecretSink` pushes execute transactionally inside scheduled rotation sweeps with strict SSRF controls (`https://` only, redirects disabled, private IP checks) and reuse the same AES-GCM-encrypted staged replacement across transient delivery failures until a `2xx` response promotes the key and begins the old key's grace window. Delivery success/failure counters are exported as `gateway_key_rotation_deliveries_total` and `gateway_key_rotation_delivery_failures_total`. Manual rotations return the replacement directly to the authorized caller.
+Scheduled key rotation requires either an in-process Go SDK `KeySecretSink`, `auth.key_rotation_delivery_url` + `auth.key_rotation_delivery_token`, or a declarative `auth.key_rotation_sink` (`webhook` or `vault_kv2`). Both `Deliver` webhooks and `SecretSink` pushes execute transactionally inside scheduled rotation sweeps with strict SSRF controls (`https://` only, redirects disabled, private IP checks) and reuse the same AES-GCM-encrypted staged replacement across transient delivery failures until a `2xx` response promotes the key and begins the old key's grace window. Delivery success/failure counters are exported as OTLP metrics `gateway.key_rotation.deliveries` and `gateway.key_rotation.delivery_failures`. Manual rotations return the replacement directly to the authorized caller.
 
 For zero-downtime master KEK rotation (`POST /admin/v1/security/rotate-kek`), `RotateKEKsTransactionally` atomically re-wraps all provider credentials, MCP servers, A2A agents, guardrail definitions, and `virtual_keys.staged_key_dek` rows before promoting the new KEK locally. During rolling multi-pod restarts, keep the retired key in `auth.previous_master_encryption_keys` (or `GATEWAY_PREVIOUS_MASTER_ENCRYPTION_KEYS`) until all replicas have rolled onto the new primary KEK.
 

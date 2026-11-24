@@ -212,7 +212,9 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 	}
 	defer s.settleQuotaOnReturn(quotaSettlement)
 
-	cacheLookup := s.respCache.LookupChat(r.Context(), idCtx.OrgID, idCtx.TeamID, cacheAllowedModelScope(idCtx), &chatReq, requestCacheOptions(r))
+	cacheSpanCtx, cacheSpan := observability.StartCacheLookupSpan(r.Context(), s.tracer, s.respCache.Type(), chatReq.Model)
+	cacheLookup := s.respCache.LookupChat(cacheSpanCtx, idCtx.OrgID, idCtx.TeamID, cacheAllowedModelScope(idCtx), &chatReq, requestCacheOptions(r))
+	observability.FinishCacheLookupSpan(cacheSpan, cacheLookup.Hit, cacheLookup.CacheType, cacheLookup.Similarity, nil)
 	if cacheLookup.Eligible {
 		if cacheLookup.Hit && cacheLookup.Response != nil {
 			cachedResp := cacheLookup.Response

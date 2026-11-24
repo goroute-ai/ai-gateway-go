@@ -274,7 +274,9 @@ func (s *GatewayServer) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	cacheLookup := s.respCache.LookupChat(r.Context(), idCtx.OrgID, idCtx.TeamID, cacheAllowedModelScope(idCtx), chatReq, requestCacheOptions(r))
+	cacheSpanCtx, cacheSpan := observability.StartCacheLookupSpan(r.Context(), s.tracer, s.respCache.Type(), chatReq.Model)
+	cacheLookup := s.respCache.LookupChat(cacheSpanCtx, idCtx.OrgID, idCtx.TeamID, cacheAllowedModelScope(idCtx), chatReq, requestCacheOptions(r))
+	observability.FinishCacheLookupSpan(cacheSpan, cacheLookup.Hit, cacheLookup.CacheType, cacheLookup.Similarity, nil)
 	if cacheLookup.Eligible {
 		if cacheLookup.Hit && cacheLookup.Response != nil {
 			if served := s.tryServeCachedChatCompletion(w, r, idCtx, prc, chatReq, origRequestedModel, reqID, traceID, cacheLookup, quotaSettlement, guardrailRedacted); served {
@@ -1157,7 +1159,14 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 	if s.respCache != nil && s.respCache.IsEmbeddingCacheable(embReq, cacheOpts) {
 		cacheKey = s.respCache.ComputeEmbeddingKeyWithScope(idCtx.OrgID, idCtx.TeamID, cacheAllowedModelScope(idCtx), embReq)
 		if cacheKey != "" {
-			if cachedResp, hit := s.respCache.GetEmbedding(r.Context(), idCtx.OrgID, cacheKey); hit {
+			cacheSpanCtx, cacheSpan := observability.StartCacheLookupSpan(r.Context(), s.tracer, s.respCache.Type(), embReq.Model)
+			cachedResp, hit := s.respCache.GetEmbedding(cacheSpanCtx, idCtx.OrgID, cacheKey)
+			hitType := ""
+			if hit {
+				hitType = cache.CacheHitTypeExact
+			}
+			observability.FinishCacheLookupSpan(cacheSpan, hit, hitType, 0, nil)
+			if hit {
 				quotaSettlement.actualTokensReconciled = true
 				releaseQuota(0, -2)
 				s.collector.Record(observability.RequestObservation{

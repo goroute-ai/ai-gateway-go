@@ -42,7 +42,7 @@ func isGuardrailDryRun(ctx context.Context) bool {
 }
 
 // telemeteredGuardrailDriver wraps any guardrails.Driver so every Evaluate call emits
-// scrubbed OTEL `guardrail.evaluate` child spans, Prometheus/OTLP metrics, and
+// scrubbed OTEL `guardrail.evaluate` child spans, OTLP metrics, and
 // integer micro-dollar daily usage rollups.
 type telemeteredGuardrailDriver struct {
 	server *GatewayServer

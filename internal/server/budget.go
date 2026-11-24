@@ -270,10 +270,6 @@ func (s *GatewayServer) wrapBudgetRelease(ctx context.Context, id *domain.Identi
 	return s.wrapBudgetReleaseWithRenewerAndSettlement(id, requestID, requestID, s.startReservationLeaseRenewer(ctx, id, requestID), release)
 }
 
-func (s *GatewayServer) wrapBudgetReleaseWithRenewer(id *domain.IdentityContext, requestID string, stopRenewer func(), release func(int, int64)) func(actualTokens int, overrideCostMicros int64) {
-	return s.wrapBudgetReleaseWithRenewerAndSettlement(id, requestID, requestID, stopRenewer, release)
-}
-
 func (s *GatewayServer) wrapBudgetReleaseWithRenewerAndSettlement(id *domain.IdentityContext, requestID, settlementID string, stopRenewer func(), release func(int, int64)) func(actualTokens int, overrideCostMicros int64) {
 	if stopRenewer == nil {
 		stopRenewer = func() {}

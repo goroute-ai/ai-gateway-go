@@ -11,7 +11,7 @@ description: "Go backend architecture, public SDK isolation, router performance,
 - **Router Hot-Path Performance (`internal/router/`)**:
   - Keep single-tier fast paths zero-alloc and Stage 1 + Stage 2 non-embedding routing overhead within `< 500 µs` P99 in memory (`< 2 ms` with Redis pipelining).
   - Preserve lone-deployment circuit-breaker cooldown protection (minimum request volume & safety-net logic), priority tier step-downs, specialized fallback chains (`context_window_fallbacks`, `content_policy_fallbacks`, `fallback_targets`), PTU capacity sharing, and `PriorityScheduler` bounds.
-  - Graceful degradation is allowed **only** for adaptive routing signals and affinity caches (falling back to local state with `gw_routing_signal_degraded_total`), never for auth, RBAC, or quota checks.
+  - Graceful degradation is allowed **only** for adaptive routing signals and affinity caches (falling back to local state with `gateway.routing.signal_degraded`), never for auth, RBAC, or quota checks.
 - **Tri-State Model Capabilities & Pricing**:
   - Preserve explicit tri-state capabilities (`supported`, `unsupported`, `unknown`); never downgrade `unknown` to `unsupported` without verification.
   - Keep model pricing history append-only.

@@ -1,50 +1,55 @@
 package observability
 
 import (
-	"fmt"
-	"math/rand/v2"
-	"net/http"
+	"context"
+	"maps"
+	"slices"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 )
 
 const (
-	maxReservoirSamples  = 1024
+	maxWindowSamples     = 1024
 	maxProviderEntries   = 256
 	maxDeploymentEntries = 4096
 	maxGuardrailEntries  = 512
 )
 
-type reservoir struct {
+// slidingWindow tracks a bounded FIFO ring buffer of the latest maxWindowSamples
+// observations so UI latency/TTFT percentiles always reflect recent traffic rather
+// than stale all-time lifetime samples.
+type slidingWindow struct {
 	samples []int64
+	nextIdx int
 	sum     int64
 	count   int64
 }
 
-func (r *reservoir) add(val int64) {
-	r.sum += val
-	r.count++
-	if len(r.samples) < maxReservoirSamples {
-		r.samples = append(r.samples, val)
+func (w *slidingWindow) add(val int64) {
+	w.sum += val
+	w.count++
+	if len(w.samples) < maxWindowSamples {
+		w.samples = append(w.samples, val)
 		return
 	}
-	// Vitter's Algorithm R: uniform reservoir sampling over all r.count items seen.
-	if idx := rand.Int64N(r.count); idx < maxReservoirSamples {
-		r.samples[idx] = val
-	}
+	w.samples[w.nextIdx] = val
+	w.nextIdx = (w.nextIdx + 1) % maxWindowSamples
 }
 
-func (r *reservoir) stats() (avg float64, p50, p95, p99 int64) {
-	if r.count == 0 || len(r.samples) == 0 {
+func (w *slidingWindow) stats() (avg float64, p50, p95, p99 int64) {
+	if w.count == 0 || len(w.samples) == 0 {
 		return 0, 0, 0, 0
 	}
-	avg = float64(r.sum) / float64(r.count)
-	sorted := make([]int64, len(r.samples))
-	copy(sorted, r.samples)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	var winSum int64
+	sorted := make([]int64, len(w.samples))
+	for i, v := range w.samples {
+		sorted[i] = v
+		winSum += v
+	}
+	slices.Sort(sorted)
 	n := len(sorted)
+	avg = float64(winSum) / float64(n)
 	p50 = sorted[(n*50)/100]
 	p95Idx := (n * 95) / 100
 	if p95Idx >= n {
@@ -100,9 +105,12 @@ type CacheTelemetry struct {
 	Evictions    int64
 }
 
-// TelemetrySnapshot provides a complete operational view of the gateway.
+// TelemetrySnapshot provides the live in-process operational snapshot served by
+// GET /admin/v1/observability/metrics strictly for the embedded Operator Web UI.
 type TelemetrySnapshot struct {
 	GeneratedAt                time.Time                      `json:"generated_at"`
+	OTelEnabled                bool                           `json:"otel_enabled"`
+	OTelSignals                []string                       `json:"otel_signals,omitempty"`
 	TotalRequests              int64                          `json:"total_requests"`
 	TotalErrors                int64                          `json:"total_errors"`
 	GlobalErrorRate            float64                        `json:"global_error_rate"`
@@ -131,6 +139,12 @@ type TelemetrySnapshot struct {
 	GuardrailBlocks            int64                          `json:"guardrail_blocks"`
 	GuardrailRedactions        int64                          `json:"guardrail_redactions"`
 	SpendRedisDriftTotal       int64                          `json:"spend_redis_drift_total"`
+	FinOpsOutboxPending        int64                          `json:"finops_outbox_pending"`
+	FinOpsOutboxDeadLetter     int64                          `json:"finops_outbox_dead_letter"`
+	FinOpsOutboxBackpressure   int64                          `json:"finops_outbox_backpressure"`
+	AuditSIEMDelivered         int64                          `json:"audit_siem_delivered"`
+	AuditSIEMFailed            int64                          `json:"audit_siem_failed"`
+	AuditSIEMDropped           int64                          `json:"audit_siem_dropped"`
 	RoutingSignalDegradedTotal int64                          `json:"routing_signal_degraded_total"`
 	RedisCBState               int                            `json:"redis_cb_state"`
 	StreamRequests             int64                          `json:"stream_requests"`
@@ -163,8 +177,8 @@ type providerInternal struct {
 	errors      int64
 	tokens      int64
 	costMicros  int64
-	latencyHist reservoir
-	ttftHist    reservoir
+	latencyHist slidingWindow
+	ttftHist    slidingWindow
 	lastAccess  uint64
 }
 
@@ -175,8 +189,8 @@ type deploymentInternal struct {
 	model       string
 	totalReqs   int64
 	errors      int64
-	latencyHist reservoir
-	ttftHist    reservoir
+	latencyHist slidingWindow
+	ttftHist    slidingWindow
 	lastAccess  uint64
 }
 
@@ -201,9 +215,12 @@ type RequestObservation struct {
 	GuardrailRedacted bool
 }
 
-// Collector aggregates metrics, latency percentiles, TTFT, and routing overhead across the gateway.
+// Collector aggregates bounded sliding-window telemetry for the Operator Web UI
+// (`GET /admin/v1/observability/metrics`) and forwards observations to OpenTelemetry
+// Instruments for OTLP/HTTP export.
 type Collector struct {
 	mu                     sync.RWMutex
+	instruments            *Instruments
 	totalRequests          int64
 	totalErrors            int64
 	totalFallbacks         int64
@@ -219,13 +236,16 @@ type Collector struct {
 	redisCBStateProvider   func() int
 	cacheMetricsProvider   func() (hits, misses int64)
 	cacheTelemetryProvider func() CacheTelemetry
+	finopsOutboxProvider   func() (pending, deadLetter, backpressure int64)
+	auditSIEMProvider      func() (delivered, failed, dropped int64)
+	otelStatusProvider     func() OTelStatus
 	streamRequests         int64
 	streamErrors           int64
-	streamDuration         reservoir
-	streamTTFT             reservoir
-	globalLatency          reservoir
-	globalTTFT             reservoir
-	routingMicros          reservoir
+	streamDuration         slidingWindow
+	streamTTFT             slidingWindow
+	globalLatency          slidingWindow
+	globalTTFT             slidingWindow
+	routingMicros          slidingWindow
 	providers              map[string]*providerInternal
 	maxProviders           int
 	deployments            map[string]*deploymentInternal
@@ -233,7 +253,6 @@ type Collector struct {
 	guardrails             map[GuardrailMetricKey]*guardrailInternal
 	maxGuardrails          int
 	accessSeq              uint64
-	additionalMetrics      func() map[string]float64
 }
 
 // NewCollector creates a bounded, concurrency-safe telemetry Collector.
@@ -248,15 +267,26 @@ func NewCollector() *Collector {
 	}
 }
 
-// SetAdditionalMetricsProvider attaches low-cardinality runtime gauges and
-// counters from subsystems whose measurements are maintained outside Collector.
-func (c *Collector) SetAdditionalMetricsProvider(provider func() map[string]float64) {
+// SetInstruments attaches OpenTelemetry metric instruments so every observation recorded
+// on Collector is also exported over OTLP/HTTP.
+func (c *Collector) SetInstruments(inst *Instruments) {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
-	c.additionalMetrics = provider
+	c.instruments = inst
 	c.mu.Unlock()
+}
+
+// Instruments returns the attached OpenTelemetry Instruments, if any.
+func (c *Collector) Instruments() *Instruments {
+	if c == nil {
+		return nil
+	}
+	c.mu.RLock()
+	inst := c.instruments
+	c.mu.RUnlock()
+	return inst
 }
 
 // RecordSpendRedisDrift increments the counter for FinOps outbox events whose
@@ -266,8 +296,12 @@ func (c *Collector) RecordSpendRedisDrift() {
 		return
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.spendRedisDrift++
+	inst := c.instruments
+	c.mu.Unlock()
+	if inst != nil {
+		inst.RecordSpendRedisDrift(context.Background())
+	}
 }
 
 // RecordRoutingSignalDegraded increments the counter for routing operations that
@@ -277,8 +311,12 @@ func (c *Collector) RecordRoutingSignalDegraded() {
 		return
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.routingSignalDegraded++
+	inst := c.instruments
+	c.mu.Unlock()
+	if inst != nil {
+		inst.RecordRoutingSignalDegraded(context.Background())
+	}
 }
 
 // SetRedisCBState sets the observed Redis circuit breaker state code
@@ -288,8 +326,8 @@ func (c *Collector) SetRedisCBState(stateCode int) {
 		return
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.redisCBState = stateCode
+	c.mu.Unlock()
 }
 
 // SetRedisCBStateProvider attaches a dynamic callback returning the Redis
@@ -299,42 +337,68 @@ func (c *Collector) SetRedisCBStateProvider(provider func() int) {
 		return
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.redisCBStateProvider = provider
+	c.mu.Unlock()
 }
 
 // SetCacheMetricsProvider attaches a dynamic callback returning authoritative
-// eligible response cache hits and misses from ResponseCache so Snapshot() and
-// Prometheus /metrics report identical cache counters and hit rate.
+// eligible response cache hits and misses from ResponseCache.
 func (c *Collector) SetCacheMetricsProvider(provider func() (hits, misses int64)) {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.cacheMetricsProvider = provider
+	c.mu.Unlock()
 }
 
 // SetCacheTelemetryProvider attaches a dynamic callback returning full live
-// response-cache telemetry (backend type, status, hits, misses, semantic hits,
-// errors, entries, evictions) for Snapshot() and /admin/v1/observability/metrics.
+// response-cache telemetry for Snapshot().
 func (c *Collector) SetCacheTelemetryProvider(provider func() CacheTelemetry) {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.cacheTelemetryProvider = provider
+	c.mu.Unlock()
 }
 
-// RecordStream adds low-cardinality timing and failure measurements for one
-// completed streaming inference response.
+// SetFinOpsOutboxProvider attaches a callback returning live FinOps outbox stats for Snapshot().
+func (c *Collector) SetFinOpsOutboxProvider(provider func() (pending, deadLetter, backpressure int64)) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.finopsOutboxProvider = provider
+	c.mu.Unlock()
+}
+
+// SetAuditSIEMProvider attaches a callback returning live Audit SIEM delivery stats for Snapshot().
+func (c *Collector) SetAuditSIEMProvider(provider func() (delivered, failed, dropped int64)) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.auditSIEMProvider = provider
+	c.mu.Unlock()
+}
+
+// SetOTelStatusProvider attaches a callback reporting active OTLP signals for Snapshot().
+func (c *Collector) SetOTelStatusProvider(provider func() OTelStatus) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.otelStatusProvider = provider
+	c.mu.Unlock()
+}
+
+// RecordStream adds timing and failure measurements for one completed streaming inference response.
 func (c *Collector) RecordStream(duration, ttft time.Duration, failed bool) {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.streamRequests++
 	if failed {
 		c.streamErrors++
@@ -344,6 +408,11 @@ func (c *Collector) RecordStream(duration, ttft time.Duration, failed bool) {
 	}
 	if ttft > 0 {
 		c.streamTTFT.add(ttft.Milliseconds())
+	}
+	inst := c.instruments
+	c.mu.Unlock()
+	if inst != nil {
+		inst.RecordStream(context.Background(), duration, ttft, failed)
 	}
 }
 
@@ -355,21 +424,11 @@ func (c *Collector) RecordGuardrailEvaluation(obs GuardrailObservation) {
 	guardrailLabel := sanitizeGuardrailLabel(obs.GuardrailName)
 	hookLabel := sanitizeGuardrailLabel(obs.Hook)
 	decisionLabel := NormalizeGuardrailDecision(obs.Decision, obs.IsError)
-	latencyMs := obs.LatencyMs
-	if latencyMs < 0 {
-		latencyMs = 0
-	}
+	latencyMs := max(obs.LatencyMs, 0)
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	if c.guardrails == nil {
 		c.guardrails = make(map[GuardrailMetricKey]*guardrailInternal)
-	}
-	if decisionLabel == "block" {
-		c.guardrailBlocks++
-	} else if decisionLabel == "modify" {
-		c.guardrailRedactions++
 	}
 
 	c.accessSeq++
@@ -403,7 +462,7 @@ func (c *Collector) RecordGuardrailEvaluation(obs GuardrailObservation) {
 	}
 	g.lastAccess = c.accessSeq
 	g.evaluations++
-	if obs.IsError || decisionLabel == "error" {
+	if obs.IsError || decisionLabel == guardrailDecisionError {
 		g.errors++
 	}
 	g.decisionCounts[decisionLabel]++
@@ -415,10 +474,14 @@ func (c *Collector) RecordGuardrailEvaluation(obs GuardrailObservation) {
 		}
 	}
 	g.buckets[len(guardrailLatencyBoundsMs)]++ // +Inf bucket
+	inst := c.instruments
+	c.mu.Unlock()
+
+	if inst != nil {
+		inst.RecordGuardrail(context.Background(), obs)
+	}
 }
 
-// getOrCreateProvider returns an existing providerInternal or creates a new one,
-// evicting the least-recently-updated entry if the bounded capacity is reached. Caller must hold c.mu.
 func (c *Collector) getOrCreateProvider(provider string) *providerInternal {
 	c.accessSeq++
 	if p, ok := c.providers[provider]; ok {
@@ -449,8 +512,6 @@ func (c *Collector) getOrCreateProvider(provider string) *providerInternal {
 	return p
 }
 
-// getOrCreateDeployment returns an existing deploymentInternal or creates a new one,
-// evicting the least-recently-updated entry if the bounded capacity is reached. Caller must hold c.mu.
 func (c *Collector) getOrCreateDeployment(depID, depName, provider, model string) *deploymentInternal {
 	c.accessSeq++
 	if d, ok := c.deployments[depID]; ok {
@@ -489,9 +550,10 @@ func (c *Collector) getOrCreateDeployment(depID, depName, provider, model string
 
 // Record ingests telemetry from a single inference request.
 func (c *Collector) Record(obs RequestObservation) {
+	if c == nil {
+		return
+	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	c.totalRequests++
 	isErr := obs.StatusCode >= 400
 	if isErr {
@@ -556,11 +618,17 @@ func (c *Collector) Record(obs RequestObservation) {
 			d.ttftHist.add(obs.TTFTMs)
 		}
 	}
+	inst := c.instruments
+	c.mu.Unlock()
+
+	if inst != nil {
+		inst.RecordRequest(context.Background(), obs)
+	}
 }
 
 // RecordDeploymentAttempt records an individual upstream deployment attempt (including failed primary attempts prior to failover).
 func (c *Collector) RecordDeploymentAttempt(depID, depName, provider, model string, latencyMs int64, failed bool) {
-	if depID == "" {
+	if c == nil || depID == "" {
 		return
 	}
 	c.mu.Lock()
@@ -575,7 +643,7 @@ func (c *Collector) RecordDeploymentAttempt(depID, depName, provider, model stri
 	}
 }
 
-// Snapshot computes the full operational telemetry snapshot.
+// Snapshot computes the full operational telemetry snapshot for the Operator Web UI.
 func (c *Collector) Snapshot() TelemetrySnapshot {
 	c.mu.RLock()
 
@@ -653,9 +721,7 @@ func (c *Collector) Snapshot() TelemetrySnapshot {
 	guardrailList := make([]GuardrailMetricSummary, 0, len(c.guardrails))
 	for _, g := range c.guardrails {
 		decCopy := make(map[string]int64, len(g.decisionCounts))
-		for k, v := range g.decisionCounts {
-			decCopy[k] = v
-		}
+		maps.Copy(decCopy, g.decisionCounts)
 		bucketsCopy := make([]int64, len(g.buckets))
 		copy(bucketsCopy, g.buckets)
 		boundsCopy := make([]int64, len(guardrailLatencyBoundsMs))
@@ -683,6 +749,9 @@ func (c *Collector) Snapshot() TelemetrySnapshot {
 	cbProvider := c.redisCBStateProvider
 	cacheProvider := c.cacheMetricsProvider
 	cacheTelemetryProvider := c.cacheTelemetryProvider
+	outboxProvider := c.finopsOutboxProvider
+	siemProvider := c.auditSIEMProvider
+	otelStatusProvider := c.otelStatusProvider
 
 	cacheHits := c.cacheHits
 	cacheMisses := c.cacheMisses
@@ -729,8 +798,20 @@ func (c *Collector) Snapshot() TelemetrySnapshot {
 		GuardrailMetrics:           guardrailList,
 	}
 	c.mu.RUnlock()
+
 	if cbProvider != nil {
 		snap.RedisCBState = cbProvider()
+	}
+	if otelStatusProvider != nil {
+		st := otelStatusProvider()
+		snap.OTelEnabled = st.Enabled
+		snap.OTelSignals = st.ActiveSignals()
+	}
+	if outboxProvider != nil {
+		snap.FinOpsOutboxPending, snap.FinOpsOutboxDeadLetter, snap.FinOpsOutboxBackpressure = outboxProvider()
+	}
+	if siemProvider != nil {
+		snap.AuditSIEMDelivered, snap.AuditSIEMFailed, snap.AuditSIEMDropped = siemProvider()
 	}
 	if cacheTelemetryProvider != nil {
 		ct := cacheTelemetryProvider()
@@ -759,164 +840,4 @@ func (c *Collector) Snapshot() TelemetrySnapshot {
 		}
 	}
 	return snap
-}
-
-// PrometheusHandler renders metrics in standard Prometheus text exposition format (`GET /metrics`).
-func (c *Collector) PrometheusHandler() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		snap := c.Snapshot()
-		c.mu.RLock()
-		additionalMetrics := c.additionalMetrics
-		c.mu.RUnlock()
-		var extra map[string]float64
-		if additionalMetrics != nil {
-			extra = additionalMetrics()
-		}
-		var b strings.Builder
-
-		b.WriteString("# HELP gateway_requests_total Total inference requests processed by the AI Gateway.\n")
-		b.WriteString("# TYPE gateway_requests_total counter\n")
-		b.WriteString(fmt.Sprintf("gateway_requests_total %d\n", snap.TotalRequests))
-
-		b.WriteString("# HELP gateway_errors_total Total failed requests.\n")
-		b.WriteString("# TYPE gateway_errors_total counter\n")
-		b.WriteString(fmt.Sprintf("gateway_errors_total %d\n", snap.TotalErrors))
-
-		b.WriteString("# HELP gateway_latency_ms Request latency percentiles in milliseconds.\n")
-		b.WriteString("# TYPE gateway_latency_ms gauge\n")
-		b.WriteString(fmt.Sprintf("gateway_latency_ms{quantile=\"0.5\"} %d\n", snap.P50LatencyMs))
-		b.WriteString(fmt.Sprintf("gateway_latency_ms{quantile=\"0.95\"} %d\n", snap.P95LatencyMs))
-		b.WriteString(fmt.Sprintf("gateway_latency_ms{quantile=\"0.99\"} %d\n", snap.P99LatencyMs))
-
-		b.WriteString("# HELP gateway_ttft_ms Time-To-First-Token in milliseconds.\n")
-		b.WriteString("# TYPE gateway_ttft_ms gauge\n")
-		b.WriteString(fmt.Sprintf("gateway_ttft_ms{quantile=\"0.95\"} %d\n", snap.P95TTFTMs))
-
-		b.WriteString("# HELP gateway_streams_total Total completed streaming inference calls.\n")
-		b.WriteString("# TYPE gateway_streams_total counter\n")
-		b.WriteString(fmt.Sprintf("gateway_streams_total %d\n", snap.StreamRequests))
-		b.WriteString("# HELP gateway_stream_errors_total Streaming inference calls that ended with an upstream or handler error.\n")
-		b.WriteString("# TYPE gateway_stream_errors_total counter\n")
-		b.WriteString(fmt.Sprintf("gateway_stream_errors_total %d\n", snap.StreamErrors))
-		b.WriteString("# HELP gateway_stream_duration_seconds_sum Total upstream stream execution duration in seconds.\n")
-		b.WriteString("# TYPE gateway_stream_duration_seconds_sum counter\n")
-		b.WriteString(fmt.Sprintf("gateway_stream_duration_seconds_sum %g\n", float64(snap.StreamDurationSumMs)/1000))
-		b.WriteString("# HELP gateway_stream_duration_seconds_count Number of measured streaming inference calls.\n")
-		b.WriteString("# TYPE gateway_stream_duration_seconds_count counter\n")
-		b.WriteString(fmt.Sprintf("gateway_stream_duration_seconds_count %d\n", snap.StreamDurationCount))
-		b.WriteString("# HELP gateway_stream_ttft_seconds_sum Total time-to-first-token for streaming inference calls.\n")
-		b.WriteString("# TYPE gateway_stream_ttft_seconds_sum counter\n")
-		b.WriteString(fmt.Sprintf("gateway_stream_ttft_seconds_sum %g\n", float64(snap.StreamTTFTSumMs)/1000))
-		b.WriteString("# HELP gateway_stream_ttft_seconds_count Number of streaming calls with a measured first token.\n")
-		b.WriteString("# TYPE gateway_stream_ttft_seconds_count counter\n")
-		b.WriteString(fmt.Sprintf("gateway_stream_ttft_seconds_count %d\n", snap.StreamTTFTCount))
-
-		b.WriteString("# HELP gateway_routing_overhead_micros Stage 1 + Stage 2 routing decision overhead in microseconds.\n")
-		b.WriteString("# TYPE gateway_routing_overhead_micros gauge\n")
-		b.WriteString(fmt.Sprintf("gateway_routing_overhead_micros{quantile=\"0.95\"} %d\n", snap.P95RoutingOverheadMicros))
-
-		b.WriteString("# HELP gateway_fallbacks_total Total cross-group/cross-provider fallback executions.\n")
-		b.WriteString("# TYPE gateway_fallbacks_total counter\n")
-		b.WriteString(fmt.Sprintf("gateway_fallbacks_total %d\n", snap.TotalFallbacks))
-
-		b.WriteString("# HELP gateway_retries_total Total intra-group retry attempts.\n")
-		b.WriteString("# TYPE gateway_retries_total counter\n")
-		b.WriteString(fmt.Sprintf("gateway_retries_total %d\n", snap.TotalRetries))
-
-		b.WriteString("# HELP gateway_cache_hits_total Total response cache hits (exact and semantic).\n")
-		b.WriteString("# TYPE gateway_cache_hits_total counter\n")
-		b.WriteString(fmt.Sprintf("gateway_cache_hits_total %d\n", snap.CacheHits))
-
-		b.WriteString("# HELP gateway_ratelimit_rejections_total Total requests rejected by rate limiting or budget guards.\n")
-		b.WriteString("# TYPE gateway_ratelimit_rejections_total counter\n")
-		b.WriteString(fmt.Sprintf("gateway_ratelimit_rejections_total %d\n", snap.RateLimitRejections))
-
-		b.WriteString("# HELP gateway_guardrail_blocks_total Total requests blocked by security guardrails.\n")
-		b.WriteString("# TYPE gateway_guardrail_blocks_total counter\n")
-		b.WriteString(fmt.Sprintf("gateway_guardrail_blocks_total %d\n", snap.GuardrailBlocks))
-
-		if len(snap.GuardrailMetrics) > 0 {
-			b.WriteString("# HELP gateway_guardrail_evaluations_total Total guardrail evaluations by guardrail, hook, and decision.\n")
-			b.WriteString("# TYPE gateway_guardrail_evaluations_total counter\n")
-			for _, gm := range snap.GuardrailMetrics {
-				decisions := make([]string, 0, len(gm.DecisionCounts))
-				for dec := range gm.DecisionCounts {
-					decisions = append(decisions, dec)
-				}
-				sort.Strings(decisions)
-				for _, dec := range decisions {
-					b.WriteString(fmt.Sprintf("gateway_guardrail_evaluations_total{guardrail=%q,hook=%q,decision=%q} %d\n", gm.Guardrail, gm.Hook, dec, gm.DecisionCounts[dec]))
-				}
-			}
-
-			b.WriteString("# HELP gateway_guardrail_errors_total Total guardrail evaluation errors by guardrail and hook.\n")
-			b.WriteString("# TYPE gateway_guardrail_errors_total counter\n")
-			for _, gm := range snap.GuardrailMetrics {
-				b.WriteString(fmt.Sprintf("gateway_guardrail_errors_total{guardrail=%q,hook=%q} %d\n", gm.Guardrail, gm.Hook, gm.Errors))
-			}
-
-			b.WriteString("# HELP gateway_guardrail_duration_ms Guardrail evaluation duration in milliseconds.\n")
-			b.WriteString("# TYPE gateway_guardrail_duration_ms histogram\n")
-			for _, gm := range snap.GuardrailMetrics {
-				for idx, bound := range gm.HistogramBoundMs {
-					var val int64
-					if idx < len(gm.HistogramBuckets) {
-						val = gm.HistogramBuckets[idx]
-					}
-					b.WriteString(fmt.Sprintf("gateway_guardrail_duration_ms_bucket{guardrail=%q,hook=%q,le=\"%d\"} %d\n", gm.Guardrail, gm.Hook, bound, val))
-				}
-				var infVal int64
-				if len(gm.HistogramBuckets) > len(gm.HistogramBoundMs) {
-					infVal = gm.HistogramBuckets[len(gm.HistogramBoundMs)]
-				} else {
-					infVal = gm.DurationCount
-				}
-				b.WriteString(fmt.Sprintf("gateway_guardrail_duration_ms_bucket{guardrail=%q,hook=%q,le=\"+Inf\"} %d\n", gm.Guardrail, gm.Hook, infVal))
-				b.WriteString(fmt.Sprintf("gateway_guardrail_duration_ms_sum{guardrail=%q,hook=%q} %d\n", gm.Guardrail, gm.Hook, gm.DurationSumMs))
-				b.WriteString(fmt.Sprintf("gateway_guardrail_duration_ms_count{guardrail=%q,hook=%q} %d\n", gm.Guardrail, gm.Hook, gm.DurationCount))
-			}
-		}
-
-		b.WriteString("# HELP gateway_finops_redis_drift_total Total FinOps spend events that exhausted Redis reconciliation retries.\n")
-		b.WriteString("# TYPE gateway_finops_redis_drift_total counter\n")
-		b.WriteString(fmt.Sprintf("gateway_finops_redis_drift_total %d\n", snap.SpendRedisDriftTotal))
-
-		redisCBState := snap.RedisCBState
-		if extraCB, ok := extra["gw_redis_cb_state"]; ok && redisCBState == 0 {
-			redisCBState = int(extraCB)
-		}
-		b.WriteString("# HELP gw_redis_cb_state Current Redis circuit breaker state (0=closed, 1=half_open, 2=open).\n")
-		b.WriteString("# TYPE gw_redis_cb_state gauge\n")
-		b.WriteString(fmt.Sprintf("gw_redis_cb_state %d\n", redisCBState))
-
-		degradedTotal := snap.RoutingSignalDegradedTotal
-		if extraDeg, ok := extra["gw_routing_signal_degraded_total"]; ok && degradedTotal == 0 {
-			degradedTotal = int64(extraDeg)
-		}
-		b.WriteString("# HELP gw_routing_signal_degraded_total Total routing operations degraded to process-local signals due to Redis unavailability.\n")
-		b.WriteString("# TYPE gw_routing_signal_degraded_total counter\n")
-		b.WriteString(fmt.Sprintf("gw_routing_signal_degraded_total %d\n", degradedTotal))
-
-		for prov, pm := range snap.Providers {
-			b.WriteString(fmt.Sprintf("gateway_provider_requests_total{provider=%q} %d\n", prov, pm.TotalRequests))
-			b.WriteString(fmt.Sprintf("gateway_provider_errors_total{provider=%q} %d\n", prov, pm.ErrorCount))
-			b.WriteString(fmt.Sprintf("gateway_provider_latency_p95_ms{provider=%q} %d\n", prov, pm.P95LatencyMs))
-			b.WriteString(fmt.Sprintf("gateway_provider_spend_micros_total{provider=%q} %d\n", prov, pm.TotalCostMicros))
-		}
-		for name, value := range extra {
-			if name == "gw_redis_cb_state" || name == "gw_routing_signal_degraded_total" {
-				continue
-			}
-			metricType := "gauge"
-			if strings.HasSuffix(name, "_total") || strings.HasSuffix(name, "_count") || strings.HasSuffix(name, "_sum") {
-				metricType = "counter"
-			}
-			b.WriteString(fmt.Sprintf("# TYPE %s %s\n", name, metricType))
-			b.WriteString(fmt.Sprintf("%s %g\n", name, value))
-		}
-
-		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(b.String()))
-	}
 }

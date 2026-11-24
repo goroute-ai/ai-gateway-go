@@ -236,7 +236,7 @@ docker compose -f deployments/docker-compose.yml down -v --remove-orphans
 ```
 
 ### Full 2-Replica Production-Topology Verification (All 19 Capabilities)
-Boots 2 read-only non-root `GATEWAY_ENV=production` GoRoute replicas behind Caddy TLS 1.3, PostgreSQL 16 (TLS `verify-full`), Redis 7 (`--requirepass`), live Keycloak 26, SSRF trap, and deterministic LLM/MCP/A2A/Authorizer/SIEM fixtures, runs Suites `1`–`11` + `99` + Playwright Chromium UI + `goroute` CLI + zero-secret log scan, and tears down cleanly:
+Boots 2 read-only non-root `GATEWAY_ENV=production` GoRoute replicas behind Caddy TLS 1.3, PostgreSQL 16 (TLS `verify-full`), Redis 8 (`--requirepass`), live Keycloak 26, SSRF trap, and deterministic LLM/MCP/A2A/Authorizer/SIEM fixtures, runs Suites `1`–`11` + `99` + Playwright Chromium UI + `goroute` CLI + zero-secret log scan, and tears down cleanly:
 
 ```bash
 # Deterministic offline verification (zero external API keys required)

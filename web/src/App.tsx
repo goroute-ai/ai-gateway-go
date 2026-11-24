@@ -76,7 +76,12 @@ export const App: React.FC = () => {
     }
     switch (activeView) {
       case 'overview':
-        return <OverviewView onNavigateToPlayground={() => navigateTo('playground')} />;
+        return (
+          <OverviewView
+            onNavigateToPlayground={() => navigateTo('playground')}
+            onNavigateToConfig={() => navigateTo('config')}
+          />
+        );
       case 'playground':
         return <PlaygroundView />;
       case 'organizations':
@@ -96,7 +101,12 @@ export const App: React.FC = () => {
       case 'config':
         return <ConfigView />;
       default:
-        return <OverviewView onNavigateToPlayground={() => navigateTo('playground')} />;
+        return (
+          <OverviewView
+            onNavigateToPlayground={() => navigateTo('playground')}
+            onNavigateToConfig={() => navigateTo('config')}
+          />
+        );
     }
   };
 

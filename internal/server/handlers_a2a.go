@@ -12,6 +12,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/a2a/pb"
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/logger"
 	"github.com/goroute-ai/ai-gateway-go/internal/mcp"
 )
 
@@ -94,6 +95,11 @@ func (s *GatewayServer) handleA2AAgentMessage(w http.ResponseWriter, r *http.Req
 		})
 		return
 	}
+
+	logger.SetInferenceMeta(r.Context(), logger.InferenceMeta{
+		Provider: "a2a",
+		Model:    agentSlug,
+	})
 
 	// 1. JSON-RPC 2.0 Dispatch
 	if a2a.IsJSONRPC(bodyBytes) {

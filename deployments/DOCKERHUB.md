@@ -41,7 +41,7 @@ docker run --rm -p 8080:8080 \
 
 Open the embedded Operator Web UI at `http://localhost:8080/ui/`.
 
-### 2. Full Production Stack (Docker Compose + PostgreSQL 16 + Redis 7)
+### 2. Full Production Stack (Docker Compose + PostgreSQL 16 + Redis 8)
 
 ```bash
 curl -O https://raw.githubusercontent.com/goroute-ai/ai-gateway-go/main/deployments/docker-compose.yml

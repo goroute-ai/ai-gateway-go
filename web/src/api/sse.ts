@@ -20,6 +20,8 @@ export interface ChatStreamChunk {
 
 export interface ChatStreamHeaders {
   requestId?: string;
+  traceId?: string;
+  traceparent?: string;
   provider?: string;
   model?: string;
   cache?: string;
@@ -50,6 +52,8 @@ function extractGatewayHeaders(response: Response): ChatStreamHeaders {
   const rawStepdowns = response.headers.get('x-gateway-tier-stepdowns');
   return {
     requestId: response.headers.get('x-gateway-request-id') || undefined,
+    traceId: response.headers.get('x-trace-id') || undefined,
+    traceparent: response.headers.get('traceparent') || undefined,
     provider: response.headers.get('x-gateway-provider') || undefined,
     model: response.headers.get('x-gateway-model') || undefined,
     cache: response.headers.get('x-gateway-cache') || undefined,

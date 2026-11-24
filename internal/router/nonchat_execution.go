@@ -477,7 +477,7 @@ func (rm *ReliabilityManager) ExecuteEmbeddings(ctx context.Context, idCtx *doma
 				if resp != nil {
 					usage = &resp.Usage
 				}
-				finishGenAIClientSpan(span, usage, callErr)
+				rm.finishGenAIClientSpan(spanCtx, span, usage, callErr)
 				if callErr != nil || resp == nil {
 					return nil, 0, 0, 0, false, callErr
 				}
@@ -530,7 +530,7 @@ func (rm *ReliabilityManager) ExecuteModeration(ctx context.Context, idCtx *doma
 				depCtx, depCancel := withDeploymentTimeout(spanCtx, d)
 				resp, callErr := modAdp.Moderate(depCtx, d, &reqCopy)
 				depCancel()
-				finishGenAIClientSpan(span, nil, callErr)
+				rm.finishGenAIClientSpan(spanCtx, span, nil, callErr)
 				if callErr != nil || resp == nil {
 					return nil, 0, 0, 0, false, callErr
 				}
@@ -595,7 +595,7 @@ func (rm *ReliabilityManager) ExecuteCompletion(ctx context.Context, idCtx *doma
 					if resp != nil {
 						usage = &resp.Usage
 					}
-					finishGenAIClientSpan(span, usage, callErr)
+					rm.finishGenAIClientSpan(spanCtx, span, usage, callErr)
 				} else {
 					promptText := strings.Join(req.Prompt.Strings, "\n\n")
 					rawChatReq := applyFallbackOverrides(&domain.CanonicalChatRequest{
@@ -634,7 +634,7 @@ func (rm *ReliabilityManager) ExecuteCompletion(ctx context.Context, idCtx *doma
 					if chatResp != nil {
 						usage = &chatResp.Usage
 					}
-					finishGenAIClientSpan(span, usage, cErr)
+					rm.finishGenAIClientSpan(spanCtx, span, usage, cErr)
 					if cErr != nil {
 						callErr = cErr
 					} else if chatResp != nil {
@@ -704,7 +704,7 @@ func (rm *ReliabilityManager) ExecuteCompletionStreamWithCallback(ctx context.Co
 				depCtx, depCancel := withDeploymentTimeout(spanCtx, d)
 				streamStart := time.Now()
 				ch, callErr := streamCompAdp.StreamTextCompletion(depCtx, d, &reqCopy)
-				finishGenAIClientSpan(span, nil, callErr)
+				rm.finishGenAIClientSpan(spanCtx, span, nil, callErr)
 				if callErr != nil || ch == nil {
 					depCancel()
 					return nil, 0, 0, 0, false, callErr
@@ -799,7 +799,7 @@ func (rm *ReliabilityManager) ExecuteAudioTranscription(ctx context.Context, idC
 				depCtx, depCancel := withDeploymentTimeout(spanCtx, d)
 				resp, callErr := audioAdp.TranscribeAudio(depCtx, d, &reqCopy)
 				depCancel()
-				finishGenAIClientSpan(span, nil, callErr)
+				rm.finishGenAIClientSpan(spanCtx, span, nil, callErr)
 				if callErr != nil || resp == nil {
 					return nil, 0, 0, 0, false, callErr
 				}
@@ -853,7 +853,7 @@ func (rm *ReliabilityManager) ExecuteAudioSpeech(ctx context.Context, idCtx *dom
 				spanCtx, span := rm.startGenAIClientSpan(callCtx, "audio_speech", d)
 				depCtx, depCancel := withDeploymentTimeout(spanCtx, d)
 				stream, contentType, callErr := audioAdp.GenerateSpeech(depCtx, d, &reqCopy)
-				finishGenAIClientSpan(span, nil, callErr)
+				rm.finishGenAIClientSpan(spanCtx, span, nil, callErr)
 				if callErr != nil || stream == nil {
 					depCancel()
 					return speechStreamResult{}, 0, 0, 0, false, callErr
@@ -928,7 +928,7 @@ func (rm *ReliabilityManager) ExecuteImage(ctx context.Context, idCtx *domain.Id
 				depCtx, depCancel := withDeploymentTimeout(spanCtx, d)
 				resp, callErr := imgAdp.GenerateImage(depCtx, d, &reqCopy)
 				depCancel()
-				finishGenAIClientSpan(span, nil, callErr)
+				rm.finishGenAIClientSpan(spanCtx, span, nil, callErr)
 				if callErr != nil || resp == nil {
 					return nil, 0, 0, 0, false, callErr
 				}

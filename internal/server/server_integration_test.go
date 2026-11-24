@@ -324,7 +324,7 @@ func TestEndToEndEnterpriseAIGateway(t *testing.T) {
 		t.Fatalf("embeddings failed (%d): %s", resp.StatusCode, string(raw))
 	}
 
-	// 15. Test Active Deployment Health Probing (`POST /admin/v1/health/probe`) & Observability Metrics (`GET /admin/v1/observability/metrics` & `GET /metrics`)
+	// 15. Test Active Deployment Health Probing (`POST /admin/v1/health/probe`) & Observability Metrics (`GET /admin/v1/observability/metrics`)
 	resp, raw = doJSON(http.MethodPost, "/admin/v1/health/probe", adminHeaders, nil, nil)
 	if resp.StatusCode != http.StatusOK || !strings.Contains(string(raw), "healthy") {
 		t.Fatalf("active deployment health probe failed (%d): %s", resp.StatusCode, string(raw))
@@ -335,17 +335,17 @@ func TestEndToEndEnterpriseAIGateway(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || obsSnap.TotalRequests < 5 || obsSnap.GuardrailBlocks < 1 || obsSnap.GuardrailRedactions < 1 {
 		t.Fatalf("unexpected observability snapshot (%d): %s", resp.StatusCode, string(raw))
 	}
+	if obsSnap.StreamRequests < 1 || obsSnap.StreamDurationCount < 1 {
+		t.Fatalf("expected stream timing metrics in observability snapshot after SSE request: %+v", obsSnap)
+	}
 
-	resp, promRaw := doJSON(http.MethodGet, "/metrics", nil, nil, nil)
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("expected unauthenticated Prometheus scrape to be rejected, got %d: %s", resp.StatusCode, string(promRaw))
+	// Prometheus /metrics endpoint is removed in v0.1 LTS (OTLP-only export).
+	legacyResp, _ := doJSON(http.MethodGet, "/metrics", adminHeaders, nil, nil)
+	if legacyResp.Body != nil {
+		_ = legacyResp.Body.Close()
 	}
-	resp, promRaw = doJSON(http.MethodGet, "/metrics", adminHeaders, nil, nil)
-	if resp.StatusCode != http.StatusOK || !strings.Contains(string(promRaw), "gateway_requests_total") {
-		t.Fatalf("expected authenticated Prometheus metrics on /metrics, got %d: %s", resp.StatusCode, string(promRaw))
-	}
-	if !strings.Contains(string(promRaw), "gateway_streams_total 1") || !strings.Contains(string(promRaw), "gateway_stream_ttft_seconds_count") {
-		t.Fatalf("expected stream timing metrics after SSE request: %s", string(promRaw))
+	if legacyResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected removed /metrics endpoint to return 404, got %d", legacyResp.StatusCode)
 	}
 
 	// 16. Test Versioned Model Pricing Update (`POST /admin/v1/catalogue/pricing`) & Cache Invalidation (`POST /admin/v1/cache/invalidate`)
