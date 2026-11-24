@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -12,8 +16,9 @@ concurrency:
 
 jobs:
   lint-and-validate:
-    name: Lint & Schema Validation
+    name: Lint, Contracts & Pure-Go Build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -36,15 +41,75 @@ jobs:
       - name: Static Analysis (go vet)
         run: go vet ./...
 
-      - name: Validate OpenAPI, MCP YAML & Protobuf Contracts (cmd/specgen + cmd/mcpgen)
+      - name: Verify Module Tidiness (go mod tidy -diff)
+        run: |
+          MOD_DIFF=$(go mod tidy -diff)
+          if [ -n "$MOD_DIFF" ]; then
+            echo "go.mod / go.sum are out of sync:"
+            echo "$MOD_DIFF"
+            exit 1
+          fi
+
+      - name: Validate OpenAPI & MCP Contracts (specgen + mcpgen)
         run: |
           go generate ./internal/mcp/spec
           go generate ./internal/openapi
-          git diff --exit-code -- internal/openapi/gateway.gen.go internal/mcp/spec/
+          git diff --exit-code -- internal/openapi/ internal/mcp/spec/
 
-  test:
-    name: Test Suite (Race Detector)
+      - name: Verify Pure-Go Build (CGO_ENABLED=0)
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          go build -trimpath -o /dev/null ./cmd/gateway
+          go build -trimpath -o /dev/null ./cmd/goroute
+
+  security-scan:
+    name: Security Scan (Gitleaks & Govulncheck)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Secret Scan (Gitleaks)
+        run: |
+          GITLEAKS_VER="8.30.1"
+          GITLEAKS_SHA256="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VER}/gitleaks_${GITLEAKS_VER}_linux_x64.tar.gz" -o /tmp/gitleaks.tar.gz
+          echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          /tmp/gitleaks detect --source=. --config=.gitleaks.toml --no-git --redact
+
+      - name: Go Vulnerability Scan (govulncheck)
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.10.0 ./...
+
+  unit-tests:
+    name: Unit & Guardrails Tests (Race)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Run Unit & Guardrails Tests with Race Detector
+        run: go test -race -count=1 ./internal/... ./pkg/... ./cmd/... ./tests/guardrails/...
+
+  e2e-live:
+    name: Live Postgres & Redis E2E (Strict)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:16-alpine
@@ -68,7 +133,6 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 5
-
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -79,36 +143,24 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
-      - name: Run Unit & Guardrails Tests with Race Detector
-        run: go test -race -v -count=1 ./internal/... ./pkg/... ./cmd/... ./tests/guardrails/...
-
-      - name: Run Live Stack E2E Tests
+      - name: Run Strict PostgreSQL Migration & Storage Tests
         env:
+          GATEWAY_REQUIRE_LIVE_DEPS: '1'
           GATEWAY_POSTGRES_DSN: "postgres://gateway:gateway@localhost:5432/aigateway?sslmode=disable"
           GATEWAY_REDIS_ADDR: "localhost:6379"
-        run: go test -race -v -count=1 ./tests/e2e
+        run: go test -race -count=1 ./internal/storage/...
 
-  docker-build:
-    name: Docker Container Build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
-
-      - name: Build Distroless Image
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
-        with:
-          context: .
-          file: deployments/Dockerfile
-          push: false
-          tags: goroute/ai-gateway:ci
+      - name: Run Strict Live-Stack E2E Tests
+        env:
+          GATEWAY_REQUIRE_LIVE_DEPS: '1'
+          GATEWAY_POSTGRES_DSN: "postgres://gateway:gateway@localhost:5432/aigateway?sslmode=disable"
+          GATEWAY_REDIS_ADDR: "localhost:6379"
+        run: go test -race -count=1 ./tests/e2e/...
 
   ui-verify:
     name: Web UI Build, Budget & Dist Parity
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -140,3 +192,78 @@ jobs:
             echo "❌ internal/ui/dist is out of sync with web/dist. Run 'make ui-build' to synchronize."
             exit 1
           fi
+
+  ui-e2e:
+    name: Operator Web UI E2E (Playwright Chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: gateway
+          POSTGRES_PASSWORD: gateway
+          POSTGRES_DB: aigateway_ui_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+
+      - name: Install Playwright & Chromium Dependencies
+        working-directory: tests/ui-e2e
+        run: |
+          npm install
+          npx playwright install --with-deps chromium
+
+      - name: Run Headless Chromium Operator Web UI E2E Suite
+        env:
+          GATEWAY_POSTGRES_DSN: "postgres://gateway:gateway@localhost:5432/aigateway_ui_e2e?sslmode=disable"
+          GATEWAY_REDIS_ADDR: "localhost:6379"
+        run: bash tests/ui-e2e/run_ui_e2e.sh
+
+  docker-build:
+    name: Docker Container Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      - name: Build Distroless Image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: 'false'
+        with:
+          context: .
+          file: deployments/Dockerfile
+          push: false
+          tags: goroute/ai-gateway:ci
