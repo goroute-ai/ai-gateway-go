@@ -3154,7 +3154,7 @@ type CredentialValidateRequest struct {
 	BaseUrl *string            `json:"base_url,omitempty"`
 	Headers *map[string]string `json:"headers,omitempty"`
 
-	// Provider Provider identifier (openai, anthropic, groq, openrouter, ollama)
+	// Provider Provider identifier (openai, anthropic, groq, openrouter, ollama, gemini)
 	Provider string `json:"provider"`
 }
 
@@ -3758,7 +3758,7 @@ type OrgProviderSubscription struct {
 	IsEnabled bool   `json:"is_enabled"`
 	OrgId     string `json:"org_id"`
 
-	// Provider Provider identifier (openai, anthropic, groq, openrouter, ollama)
+	// Provider Provider identifier (openai, anthropic, groq, openrouter, ollama, gemini)
 	Provider     string    `json:"provider"`
 	SubscribedAt time.Time `json:"subscribed_at"`
 }

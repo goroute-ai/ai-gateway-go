@@ -220,8 +220,8 @@ func TestObsProd_FullOTLPVerificationSuites(t *testing.T) {
 	doReq(t, client, http.MethodPost, obsFixturesBase+"/_inspect/reset", nil, nil)
 
 	// -------------------------------------------------------------------------
-	// 1. Provision Org, 5 Provider Credentials & Deployments (OpenAI, Anthropic,
-	//    Groq, OpenRouter, Ollama), MCP Server + Tools, A2A Agent, and Virtual Key.
+	// 1. Provision Org, 6 Provider Credentials & Deployments (OpenAI, Anthropic,
+	//    Groq, OpenRouter, Ollama, Gemini), MCP Server + Tools, A2A Agent, and Virtual Key.
 	// -------------------------------------------------------------------------
 	var org struct {
 		ID string `json:"id"`
@@ -260,6 +260,7 @@ func TestObsProd_FullOTLPVerificationSuites(t *testing.T) {
 		{provider: "openrouter", baseURL: obsFixturesBase + "/openrouter/api/v1", alias: "obs-openrouter", model: "openai/gpt-4o-mini", credKey: "sk-or-obs-fixture-secret"},
 		{provider: "ollama", baseURL: obsFixturesBase + "/ollama", alias: "obs-ollama", model: "qwen2.5:0.5b", credKey: ""},
 		{provider: "ollama", baseURL: obsFixturesBase + "/ollama", alias: "obs-ollama-embed", model: "all-minilm:latest", credKey: ""},
+		{provider: "gemini", baseURL: obsFixturesBase + "/gemini", alias: "obs-gemini", model: "gemini-2.5-flash", credKey: "gem-obs-fixture-secret"},
 	}
 
 	for _, ps := range providers {
@@ -398,8 +399,8 @@ func TestObsProd_FullOTLPVerificationSuites(t *testing.T) {
 		t.Fatalf("embeddings failed: status=%d body=%s", rEmb.StatusCode, string(bEmb))
 	}
 
-	// 2d. Anthropic, Groq, OpenRouter, and Ollama chat + Ollama embeddings (Suite O4: 5-adapter W3C traceparent propagation)
-	for _, alias := range []string{"obs-anthropic", "obs-groq", "obs-openrouter", "obs-ollama"} {
+	// 2d. Anthropic, Groq, OpenRouter, Ollama, and Gemini chat + Ollama embeddings (Suite O4: 6-adapter W3C traceparent propagation)
+	for _, alias := range []string{"obs-anthropic", "obs-groq", "obs-openrouter", "obs-ollama", "obs-gemini"} {
 		resp, body := doReq(t, client, http.MethodPost, obsLBBase+"/v1/chat/completions", map[string]any{
 			"model":    alias,
 			"messages": []map[string]any{{"role": "user", "content": "hello " + alias}},
@@ -452,9 +453,9 @@ func TestObsProd_FullOTLPVerificationSuites(t *testing.T) {
 	}
 
 	// -------------------------------------------------------------------------
-	// Suite O4: Verify outbound W3C traceparent received by ALL 5 adapters!
+	// Suite O4: Verify outbound W3C traceparent received by ALL 6 adapters!
 	// -------------------------------------------------------------------------
-	t.Run("SuiteO4_FiveAdapterW3CTraceparentPropagation", func(t *testing.T) {
+	t.Run("SuiteO4_SixAdapterW3CTraceparentPropagation", func(t *testing.T) {
 		resp, raw := doReq(t, client, http.MethodGet, obsFixturesBase+"/_inspect/traceparents", nil, nil)
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("inspect traceparents failed: %d %s", resp.StatusCode, string(raw))
@@ -463,7 +464,7 @@ func TestObsProd_FullOTLPVerificationSuites(t *testing.T) {
 		if err := json.Unmarshal(raw, &captured); err != nil {
 			t.Fatalf("decode traceparents: %v", err)
 		}
-		for _, provider := range []string{"openai", "anthropic", "groq", "openrouter", "ollama"} {
+		for _, provider := range []string{"openai", "anthropic", "groq", "openrouter", "ollama", "gemini"} {
 			tps := captured[provider]
 			if len(tps) == 0 {
 				t.Fatalf("provider %q received zero outbound W3C traceparent headers (captured=%+v)", provider, captured)
@@ -850,6 +851,215 @@ func TestObsProd_FullOTLPVerificationSuites(t *testing.T) {
 		}
 		if err := json.Unmarshal(bEmb, &embOut); err != nil || len(embOut.Data) != 2 || len(embOut.Data[0].Embedding) != 384 {
 			t.Fatalf("unexpected live Ollama embeddings response: err=%v count=%d", err, len(embOut.Data))
+		}
+	})
+
+	// -------------------------------------------------------------------------
+	// Suite O6b (Opt-In): Live Real Google Gemini v1beta Over TLS 1.3 + OTLP + SSRF
+	// -------------------------------------------------------------------------
+	t.Run("SuiteO6b_LiveRealGeminiOverTLS", func(t *testing.T) {
+		liveKey := strings.TrimSpace(os.Getenv("OBS_LIVE_GEMINI_API_KEY"))
+		if liveKey == "" {
+			t.Skip("OBS_LIVE_GEMINI_API_KEY not set; skipping opt-in live Gemini Suite O6b")
+		}
+
+		// 1. Live Admin Preflight Validate (ListModels against generativelanguage.googleapis.com)
+		var pfResp struct {
+			Valid bool `json:"valid"`
+		}
+		mustAdminJSON(t, client, http.MethodPost, obsLBBase+"/admin/v1/credentials/validate", map[string]any{
+			"provider": "gemini",
+			"api_key":  liveKey,
+		}, &pfResp, http.StatusOK)
+		if !pfResp.Valid {
+			t.Fatal("expected live Gemini preflight validation to succeed")
+		}
+
+		// 2. Provision dedicated live Gemini org, credential, deployments, and virtual key
+		var liveOrg struct {
+			ID string `json:"id"`
+		}
+		mustAdminJSON(t, client, http.MethodPost, obsPod1Base+"/admin/v1/organizations", map[string]any{
+			"name": "Obs Live Gemini Org",
+			"slug": "obs-live-gemini",
+		}, &liveOrg, http.StatusCreated)
+		mustAdminJSON(t, client, http.MethodPost, obsPod1Base+"/admin/v1/organizations/"+liveOrg.ID+"/subscriptions", map[string]any{
+			"provider":   "gemini",
+			"is_enabled": true,
+		}, nil, http.StatusOK)
+
+		var liveCred struct {
+			ID string `json:"id"`
+		}
+		mustAdminJSON(t, client, http.MethodPost, obsPod1Base+"/admin/v1/credentials", map[string]any{
+			"org_id":   liveOrg.ID,
+			"provider": "gemini",
+			"name":     "cred-live-gemini",
+			"api_key":  liveKey,
+		}, &liveCred, http.StatusCreated)
+
+		var chatMG, embedMG struct {
+			ID string `json:"id"`
+		}
+		mustAdminJSON(t, client, http.MethodPost, obsPod1Base+"/admin/v1/model-groups", map[string]any{
+			"org_id":           liveOrg.ID,
+			"alias":            "live-gemini-flash",
+			"routing_strategy": "weighted_shuffle",
+		}, &chatMG, http.StatusCreated)
+		mustAdminJSON(t, client, http.MethodPost, obsPod1Base+"/admin/v1/deployments", map[string]any{
+			"model_group_id":  chatMG.ID,
+			"global_model_id": "gemini/gemini-2.5-flash",
+			"credential_id":   liveCred.ID,
+			"deployment_name": "dep-live-gemini-flash",
+			"weight":          100,
+			"timeout_ms":      30000,
+		}, nil, http.StatusCreated)
+
+		mustAdminJSON(t, client, http.MethodPost, obsPod1Base+"/admin/v1/model-groups", map[string]any{
+			"org_id":           liveOrg.ID,
+			"alias":            "live-gemini-embed",
+			"routing_strategy": "weighted_shuffle",
+		}, &embedMG, http.StatusCreated)
+		mustAdminJSON(t, client, http.MethodPost, obsPod1Base+"/admin/v1/deployments", map[string]any{
+			"model_group_id":  embedMG.ID,
+			"global_model_id": "gemini/gemini-embedding-001",
+			"credential_id":   liveCred.ID,
+			"deployment_name": "dep-live-gemini-embed",
+			"weight":          100,
+			"timeout_ms":      30000,
+		}, nil, http.StatusCreated)
+
+		var liveVK struct {
+			RawKey string `json:"raw_key"`
+		}
+		mustAdminJSON(t, client, http.MethodPost, obsPod1Base+"/admin/v1/keys", map[string]any{
+			"org_id": liveOrg.ID,
+			"name":   "vk-live-gemini",
+		}, &liveVK, http.StatusCreated)
+		liveHeaders := map[string]string{"Authorization": "Bearer " + liveVK.RawKey}
+
+		// 3. Live sync chat with JSON mode + reasoning_effort
+		livePromptCanary := "LIVE_GEMINI_PROMPT_CANARY_DO_NOT_EXPORT"
+		rChat, bChat := doReq(t, client, http.MethodPost, obsLBBase+"/v1/chat/completions", map[string]any{
+			"model":            "live-gemini-flash",
+			"max_tokens":       128,
+			"temperature":      0,
+			"reasoning_effort": "low",
+			"response_format":  map[string]any{"type": "json_object"},
+			"messages": []map[string]any{
+				{"role": "system", "content": "Always reply with valid JSON."},
+				{"role": "user", "content": `Return {"status":"ok"} ignoring ` + livePromptCanary},
+			},
+		}, liveHeaders)
+		if rChat.StatusCode != http.StatusOK || rChat.Header.Get("X-Gateway-Provider") != "gemini" {
+			t.Fatalf("live Gemini JSON chat failed: status=%d provider=%q body=%s", rChat.StatusCode, rChat.Header.Get("X-Gateway-Provider"), string(bChat))
+		}
+		var chatOut struct {
+			Choices []struct {
+				Message struct {
+					Content string `json:"content"`
+				} `json:"message"`
+			} `json:"choices"`
+			Usage struct {
+				PromptTokens     int `json:"prompt_tokens"`
+				CompletionTokens int `json:"completion_tokens"`
+				ReasoningTokens  int `json:"reasoning_tokens"`
+				TotalTokens      int `json:"total_tokens"`
+			} `json:"usage"`
+		}
+		if err := json.Unmarshal(bChat, &chatOut); err != nil || len(chatOut.Choices) == 0 {
+			t.Fatalf("failed decoding live Gemini chat response: err=%v body=%s", err, string(bChat))
+		}
+		var parsedJSON map[string]any
+		if err := json.Unmarshal([]byte(chatOut.Choices[0].Message.Content), &parsedJSON); err != nil || parsedJSON["status"] != "ok" {
+			t.Fatalf("expected JSON {\"status\":\"ok\"}, got %q (err=%v)", chatOut.Choices[0].Message.Content, err)
+		}
+		if chatOut.Usage.CompletionTokens < chatOut.Usage.ReasoningTokens || chatOut.Usage.TotalTokens <= 0 {
+			t.Fatalf("unexpected live Gemini token accounting: %+v", chatOut.Usage)
+		}
+		t.Logf("LIVE GEMINI JSON CHAT PASS: cost_micros=%s usage=%+v", rChat.Header.Get("X-Gateway-Cost-Micros"), chatOut.Usage)
+
+		// 4. Live function calling + role:tool round-trip
+		rTool, bTool := doReq(t, client, http.MethodPost, obsPod1Base+"/v1/chat/completions", map[string]any{
+			"model":       "live-gemini-flash",
+			"max_tokens":  128,
+			"temperature": 0,
+			"tool_choice": "required",
+			"tools": []map[string]any{{
+				"type": "function",
+				"function": map[string]any{
+					"name":        "get_weather",
+					"description": "Returns current weather for a city",
+					"parameters": map[string]any{
+						"type":       "object",
+						"properties": map[string]any{"city": map[string]any{"type": "string"}},
+						"required":   []string{"city"},
+					},
+				},
+			}},
+			"messages": []map[string]any{
+				{"role": "user", "content": "Call get_weather for Tokyo."},
+			},
+		}, liveHeaders)
+		if rTool.StatusCode != http.StatusOK || !strings.Contains(string(bTool), "get_weather") {
+			t.Fatalf("live Gemini tool call failed: status=%d body=%s", rTool.StatusCode, string(bTool))
+		}
+		t.Logf("LIVE GEMINI TOOL CALL PASS: status=200")
+
+		// 5. Live SSE streaming
+		rStream, bStream := doReq(t, client, http.MethodPost, obsPod2Base+"/v1/chat/completions", map[string]any{
+			"model":       "live-gemini-flash",
+			"stream":      true,
+			"max_tokens":  64,
+			"temperature": 0,
+			"messages":    []map[string]any{{"role": "user", "content": "Say hello in three words."}},
+		}, liveHeaders)
+		if rStream.StatusCode != http.StatusOK || !strings.Contains(string(bStream), "[DONE]") {
+			t.Fatalf("live Gemini SSE stream failed: status=%d body=%s", rStream.StatusCode, string(bStream))
+		}
+
+		// 6. Live batch embeddings
+		rEmb, bEmb := doReq(t, client, http.MethodPost, obsLBBase+"/v1/embeddings", map[string]any{
+			"model":      "live-gemini-embed",
+			"input":      []string{"GoRoute production test", "Google Gemini v1beta"},
+			"dimensions": 8,
+		}, liveHeaders)
+		if rEmb.StatusCode != http.StatusOK {
+			t.Fatalf("live Gemini batch embeddings failed: status=%d body=%s", rEmb.StatusCode, string(bEmb))
+		}
+		var embOut struct {
+			Data []struct {
+				Embedding []float64 `json:"embedding"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(bEmb, &embOut); err != nil || len(embOut.Data) != 2 || len(embOut.Data[0].Embedding) != 8 {
+			t.Fatalf("unexpected live Gemini batch embeddings: err=%v body=%s", err, string(bEmb))
+		}
+
+		// 7. SSRF fail-closed check against metadata IP & unallowed loopback
+		for _, blockedURL := range []string{"http://169.254.169.254/latest/meta-data", "http://127.0.0.1:8080"} {
+			rSSRF, bSSRF := doReq(t, client, http.MethodPost, obsPod1Base+"/admin/v1/credentials/validate", map[string]any{
+				"provider": "gemini",
+				"api_key":  "synthetic-ssrf-probe-key",
+				"base_url": blockedURL,
+			}, map[string]string{"Authorization": "Bearer " + obsMasterKey})
+			if rSSRF.StatusCode == http.StatusOK && strings.Contains(string(bSSRF), `"valid":true`) {
+				t.Fatalf("expected SSRF block for base_url=%s, got 200 valid=true: %s", blockedURL, string(bSSRF))
+			}
+		}
+
+		// 8. Verify OTLP traces/metrics recorded gemini provider and zero secret/prompt leaks
+		waitForCondition(t, 12*time.Second, "OTLP traces.jsonl contains gemini provider span", func() bool {
+			return strings.Contains(readFileText(tracesPath), `"gemini"`)
+		})
+		for _, path := range []string{tracesPath, metricsPath, logsPath} {
+			content := readFileText(path)
+			if strings.Contains(content, liveKey) {
+				t.Fatalf("CRITICAL: live Gemini API key leaked into %s!", path)
+			}
+			if strings.Contains(content, livePromptCanary) {
+				t.Fatalf("privacy violation: prompt canary leaked into %s with capture_content=false!", path)
+			}
 		}
 	})
 }

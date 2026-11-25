@@ -305,13 +305,8 @@ func (s *GatewayServer) handleAudioSpeech(w http.ResponseWriter, r *http.Request
 	}
 
 	var raw domain.CanonicalAudioSpeechRequest
-	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
-		domain.WriteHTTPError(w, &domain.GatewayError{
-			StatusCode: http.StatusBadRequest,
-			Type:       domain.ErrorTypeInvalidRequest,
-			Code:       "invalid_json_body",
-			Message:    "Failed to parse speech request: " + err.Error(),
-		})
+	if gwErr := decodeBoundedJSON(w, r, maxDataPlaneSmallBodyBytes, &raw, "Failed to parse speech request"); gwErr != nil {
+		domain.WriteHTTPError(w, gwErr)
 		return
 	}
 	raw.RequestID = reqID

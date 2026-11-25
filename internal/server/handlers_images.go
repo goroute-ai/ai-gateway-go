@@ -93,13 +93,8 @@ func (s *GatewayServer) handleImageGenerations(w http.ResponseWriter, r *http.Re
 	}
 
 	var req domain.CanonicalImageRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		domain.WriteHTTPError(w, &domain.GatewayError{
-			StatusCode: http.StatusBadRequest,
-			Type:       domain.ErrorTypeInvalidRequest,
-			Code:       "invalid_json_body",
-			Message:    "Failed to parse Image Generation request body: " + err.Error(),
-		})
+	if gwErr := decodeBoundedJSON(w, r, maxDataPlaneSmallBodyBytes, &req, "Failed to parse Image Generation request body"); gwErr != nil {
+		domain.WriteHTTPError(w, gwErr)
 		return
 	}
 

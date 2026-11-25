@@ -9,6 +9,7 @@ import (
 
 // secretPattern matches known credential and token formats in structured log values:
 //   - Bearer <token> / Basic <credentials> (case-insensitive)
+//   - ?key=<val> / &key=<val> / x-goog-api-key[:=] <val> (Google/Gemini query & header keys)
 //   - sk-gw-<...> (gateway virtual keys)
 //   - sk-<...> (provider API keys such as OpenAI/Anthropic)
 //   - AQ.<...> / AIza<...> (Google/GCP/Gemini API tokens)
@@ -18,7 +19,7 @@ import (
 //   - PEM private key blocks
 //   - JWT tokens (eyJ...)
 //   - Database/broker DSNs with embedded credentials (scheme://user:pass@host)
-var secretPattern = regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+|\bBasic\s+[A-Za-z0-9+/=]{8,}|\bsk-gw-[A-Za-z0-9_-]+|\bsk-[A-Za-z0-9_-]{4,}|\bAQ\.[A-Za-z0-9._-]+|\bAIza[0-9A-Za-z_-]{20,}|\bAKIA[0-9A-Za-z]{8,}|\bgh[pousr]_[A-Za-z0-9_]{16,}|\bgithub_pat_[A-Za-z0-9_]{20,}|\bxox[baprs]-[A-Za-z0-9-]{10,}|-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----|\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b|\b(?:postgres(?:ql)?|mysql|redis|rediss|mongodb(?:\+srv)?|amqp|amqps)://[^:\s/@]+:[^@\s]+@`)
+var secretPattern = regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+|\bBasic\s+[A-Za-z0-9+/=]{8,}|(?:[?&]key=|x-goog-api-key\s*[:=]\s*)[^\s&"']+|\bsk-gw-[A-Za-z0-9_-]+|\bsk-[A-Za-z0-9_-]{4,}|\bAQ\.[A-Za-z0-9._-]+|\bAIza[0-9A-Za-z_-]{20,}|\bAKIA[0-9A-Za-z]{8,}|\bgh[pousr]_[A-Za-z0-9_]{16,}|\bgithub_pat_[A-Za-z0-9_]{20,}|\bxox[baprs]-[A-Za-z0-9-]{10,}|-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----|\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b|\b(?:postgres(?:ql)?|mysql|redis|rediss|mongodb(?:\+srv)?|amqp|amqps)://[^:\s/@]+:[^@\s]+@`)
 
 var (
 	emailPattern = regexp.MustCompile(`\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b`)
@@ -37,6 +38,15 @@ func ScrubSecrets(s string) string {
 			return "Bearer [REDACTED]"
 		case strings.HasPrefix(lower, "basic"):
 			return "Basic [REDACTED]"
+		case strings.HasPrefix(lower, "?key="):
+			return "?key=[REDACTED]"
+		case strings.HasPrefix(lower, "&key="):
+			return "&key=[REDACTED]"
+		case strings.HasPrefix(lower, "x-goog-api-key"):
+			if strings.Contains(match, ":") {
+				return "x-goog-api-key: [REDACTED]"
+			}
+			return "x-goog-api-key=[REDACTED]"
 		case strings.HasPrefix(lower, "sk-gw-"):
 			return "sk-gw-[REDACTED]"
 		case strings.HasPrefix(lower, "sk-"):

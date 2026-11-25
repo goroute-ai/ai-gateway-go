@@ -4,7 +4,7 @@ This document records the codebase-wide Go quality audit, dead-code removal, doc
 
 ## 1. Go Code-Quality Skills & Tooling Setup
 
-- **Installed Plugin**: `cc-skills-golang` (`46` skills from `https://github.com/samber/cc-skills-golang`) installed into `~/.gemini/config/plugins/cc-skills-golang/` with plugin-level routing rules at `~/.gemini/config/plugins/cc-skills-golang/rules/AGENTS.md`.
+- **Installed Plugin**: `cc-skills-golang` (`46` skills from `https://github.com/samber/cc-skills-golang`) installed as a local coding-agent plugin with plugin-level routing rules.
 - **Workspace Quick-Access Rules**: Added optional local skill-routing rules in `.agents/rules/golang-skills.md` and `.claude/rules/golang-skills.md` (gitignored and kept local per developer machine) so contributors and coding agents automatically apply `golang-code-style`, `golang-naming`, `golang-error-handling`, `golang-safety`, `golang-documentation`, `golang-refactoring`, and `golang-lint`.
 - **Repository Linting & Reachability Tooling**:
   - Added `.golangci.yml` (golangci-lint v2 configuration adapted for this repository, skipping generated `*.gen.go` and `*.pb.go` files).
@@ -62,7 +62,7 @@ Note: Several unexported helpers flagged by `deadcode` against binary entrypoint
 
 ## 3. Repository Checks Run
 
-- `agy plugin validate ~/.gemini/config/plugins/cc-skills-golang` (`46` skills processed)
+- `cc-skills-golang` plugin validation (`46` skills processed)
 - `gofmt -s -w .` and `gofmt -l .` (clean)
 - `go vet ./...`
 - `make specgen` and `git diff --exit-code -- internal/openapi/gateway.gen.go`

@@ -498,6 +498,7 @@ export const ModelsView: React.FC = () => {
               <option value="groq">Groq</option>
               <option value="openrouter">OpenRouter</option>
               <option value="ollama">Ollama</option>
+              <option value="gemini">Google Gemini</option>
             </select>
           </div>
 

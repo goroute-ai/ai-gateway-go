@@ -129,7 +129,7 @@ test-cache-prod-docker:
 	bash tests/cache-prod-docker/run_cache_prod_tests.sh
 
 test-obs-prod-docker:
-	@echo "==> Running production-grade 2-replica Docker OTLP Observability verification (Suites O0-O5+: traces, metrics, logs, 5-adapter traceparent, SIEM, Redis chaos)..."
+	@echo "==> Running production-grade 2-replica Docker OTLP Observability verification (Suites O0-O6: traces, metrics, logs, 6-adapter traceparent, SIEM, Redis chaos, opt-in live Gemini)..."
 	bash tests/obs-prod-docker/run_obs_prod_tests.sh
 
 test-security:

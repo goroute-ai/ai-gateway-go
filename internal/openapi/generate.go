@@ -6,4 +6,5 @@ package openapi
 //go:generate go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.0 -config ../../docs/openapi/groq.codegen.yaml ../../docs/openapi/groq.openapi.yaml
 //go:generate go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.0 -config ../../docs/openapi/openrouter.codegen.yaml ../../docs/openapi/openrouter.openapi.yaml
 //go:generate go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.0 -config ../../docs/openapi/ollama.codegen.yaml ../../docs/openapi/ollama.openapi.yaml
+//go:generate go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.0 -config ../../docs/openapi/gemini.codegen.yaml ../../docs/openapi/gemini.openapi.yaml
 //go:generate go run ../../cmd/specgen -root ../..

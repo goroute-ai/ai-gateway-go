@@ -10,6 +10,7 @@ import (
 
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/anthropic"
+	"github.com/goroute-ai/ai-gateway-go/internal/adapter/gemini"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/groq"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/ollama"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/openai"
@@ -59,6 +60,7 @@ func TestSupportsAssistantPrefill_Matrix(t *testing.T) {
 		{name: "groq", adp: groq.NewAdapter(nil), want: true},
 		{name: "openrouter", adp: openrouter.NewAdapter(nil), want: true},
 		{name: "ollama", adp: ollama.NewAdapter(nil), want: true},
+		{name: "gemini", adp: gemini.NewAdapter(nil), want: true},
 	}
 
 	for _, tc := range cases {
@@ -215,6 +217,34 @@ func TestTrailingAssistantMessageSerializationAcrossAdapters(t *testing.T) {
 		firstBlock := blocks[0].(map[string]any)
 		if last["role"] != "assistant" || firstBlock["type"] != "text" || firstBlock["text"] != "The quick brown" {
 			t.Fatalf("unexpected anthropic trailing message (expected trimmed trailing whitespace): %#v", last)
+		}
+	})
+
+	t.Run("gemini", func(t *testing.T) {
+		var captured map[string]any
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			b, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(b, &captured)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"responseId":"resp-1","modelVersion":"gemini-2.5-flash","candidates":[{"index":0,"content":{"role":"model","parts":[{"text":"fox"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":1,"totalTokenCount":6}}`))
+		}))
+		defer srv.Close()
+
+		adp := gemini.NewAdapter(srv.Client())
+		adp.SetSSRFPolicy(pol)
+		_, err := adp.ChatCompletion(ctx, &domain.Deployment{
+			Credential:  &domain.ProviderCredential{BaseURL: srv.URL, DecryptedAPIKey: "k"},
+			GlobalModel: &domain.GlobalModel{ModelName: "gemini-2.5-flash"},
+		}, req)
+		if err != nil {
+			t.Fatalf("ChatCompletion: %v", err)
+		}
+		contents := captured["contents"].([]any)
+		last := contents[len(contents)-1].(map[string]any)
+		parts := last["parts"].([]any)
+		firstPart := parts[0].(map[string]any)
+		if last["role"] != "model" || firstPart["text"] != "The quick brown " {
+			t.Fatalf("unexpected gemini trailing message: %#v", last)
 		}
 	})
 }

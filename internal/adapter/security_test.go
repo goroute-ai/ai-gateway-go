@@ -8,6 +8,7 @@ import (
 
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
+	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 )
 
@@ -182,5 +183,47 @@ func TestValidateAndSanitizeMediaURL(t *testing.T) {
 		if _, err := adapter.ValidateAndSanitizeMediaURL(bad, nil); err == nil {
 			t.Fatalf("expected ValidateAndSanitizeMediaURL to reject %q", bad)
 		}
+	}
+}
+
+func TestApplySafeCustomHeaders_AndAuthStrategyPrecedence(t *testing.T) {
+	req, err := http.NewRequest(http.MethodPost, "https://api.example.com/v1/chat/completions", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("traceparent", "00-original-trace-01")
+
+	cred := &domain.ProviderCredential{
+		DecryptedAPIKey: "vault-decrypted-key",
+		Headers: map[string]string{
+			"Authorization":     "Bearer spoofed-auth",
+			"Host":              "evil.example.com",
+			"Transfer-Encoding": "chunked",
+			"Content-Type":      "text/plain",
+			"traceparent":       "00-spoofed-00",
+			"x-api-key":         "spoofed-anthropic",
+			"api-key":           "spoofed-azure",
+			"x-goog-api-key":    "spoofed-gemini",
+			"X-Good-Header":     "allowed-val",
+			"X-Bad\r\nHeader":   "nope",
+		},
+	}
+
+	if err := (&adapter.BearerAuthStrategy{}).ApplyAuth(req, cred); err != nil {
+		t.Fatalf("BearerAuthStrategy.ApplyAuth: %v", err)
+	}
+	if req.Header.Get("Authorization") != "Bearer vault-decrypted-key" {
+		t.Fatalf("expected vault Authorization precedence, got %q", req.Header.Get("Authorization"))
+	}
+	if req.Header.Get("Content-Type") != "application/json" ||
+		req.Header.Get("traceparent") != "00-original-trace-01" ||
+		req.Header.Get("Host") != "" ||
+		req.Header.Get("Transfer-Encoding") != "" ||
+		req.Header.Get("x-api-key") != "" ||
+		req.Header.Get("api-key") != "" ||
+		req.Header.Get("x-goog-api-key") != "" ||
+		req.Header.Get("X-Good-Header") != "allowed-val" {
+		t.Fatalf("reserved/CRLF custom header filtering failed: %+v", req.Header)
 	}
 }

@@ -37,13 +37,8 @@ func (s *GatewayServer) handleLegacyCompletions(w http.ResponseWriter, r *http.R
 	}
 
 	var req domain.CanonicalCompletionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		domain.WriteHTTPError(w, &domain.GatewayError{
-			StatusCode: http.StatusBadRequest,
-			Type:       domain.ErrorTypeInvalidRequest,
-			Code:       "invalid_json_body",
-			Message:    "Failed to parse Completion request body: " + err.Error(),
-		})
+	if gwErr := decodeBoundedJSON(w, r, maxChatCompletionBodyBytes, &req, "Failed to parse Completion request body"); gwErr != nil {
+		domain.WriteHTTPError(w, gwErr)
 		return
 	}
 	req.RequestID = reqID

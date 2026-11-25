@@ -48,6 +48,30 @@ func TestScrubSecretsPatterns(t *testing.T) {
 			secret: "AKIAIOSFODNN7EXAMPLE",
 			want:   "AKIA[REDACTED]",
 		},
+		{
+			name:   "Google AIza key",
+			input:  "failed with key AIzaSyD_exampleSyntheticKeyValue123456",
+			secret: "exampleSyntheticKeyValue123456",
+			want:   "AIza[REDACTED]",
+		},
+		{
+			name:   "URL query key parameter",
+			input:  "GET https://generativelanguage.googleapis.com/v1beta/models?key=custom-gemini-token-999&pageSize=10",
+			secret: "custom-gemini-token-999",
+			want:   "?key=[REDACTED]",
+		},
+		{
+			name:   "URL secondary query key parameter",
+			input:  "GET https://generativelanguage.googleapis.com/v1beta/models?alt=sse&key=secondary-secret-token",
+			secret: "secondary-secret-token",
+			want:   "&key=[REDACTED]",
+		},
+		{
+			name:   "x-goog-api-key header",
+			input:  "header x-goog-api-key: synthetic-header-secret-value rejected",
+			secret: "synthetic-header-secret-value",
+			want:   "x-goog-api-key: [REDACTED]",
+		},
 	}
 
 	for _, tc := range cases {

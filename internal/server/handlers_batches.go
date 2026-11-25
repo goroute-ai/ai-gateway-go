@@ -51,13 +51,8 @@ func (s *GatewayServer) handleCreateBatch(w http.ResponseWriter, r *http.Request
 	}
 
 	var payload createBatchPayload
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		domain.WriteHTTPError(w, &domain.GatewayError{
-			StatusCode: http.StatusBadRequest,
-			Type:       domain.ErrorTypeInvalidRequest,
-			Code:       "invalid_json_body",
-			Message:    "Failed to parse batch request: " + err.Error(),
-		})
+	if gwErr := decodeBoundedJSON(w, r, maxDataPlaneSmallBodyBytes, &payload, "Failed to parse batch request"); gwErr != nil {
+		domain.WriteHTTPError(w, gwErr)
 		return
 	}
 

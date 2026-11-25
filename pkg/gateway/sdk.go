@@ -34,7 +34,7 @@ import (
 // ModelEntry defines a declarative model mapping item for in-code or YAML router setup.
 type ModelEntry struct {
 	ModelName              string           // Client-facing model name or alias (e.g. "fast", "reasoning", "gpt-4o-mini")
-	Model                  string           // Upstream provider/model (e.g. "openai/gpt-4o-mini", "anthropic/claude-sonnet-4-20250514", "groq/llama-3.1-8b-instant")
+	Model                  string           // Upstream provider/model (e.g. "openai/gpt-4o-mini", "anthropic/claude-sonnet-4-20250514", "groq/llama-3.1-8b-instant", "ollama/qwen2.5:0.5b", "gemini/gemini-2.5-flash")
 	APIKey                 string           // Literal key or "os.environ/OPENAI_API_KEY"
 	APIBase                string           // Optional custom upstream endpoint
 	RoutingStrategy        string           // Optional: "weighted-shuffle", "least-busy", "latency-based", "lowest-cost", "priority-tiered", "fastest-response"
@@ -212,7 +212,7 @@ func WithGuardrailScanner(name string, scanner GuardrailScanner, opts ...Guardra
 // New initializes a Gateway Client.
 //   - If `WithRemote(url, key)` is provided, it connects to that remote gateway.
 //   - Otherwise, it starts an embedded in-memory Gateway auto-configured from `WithModelList(...)`,
-//     `WithConfigFile(...)`, and/or standard environment variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`).
+//     `WithConfigFile(...)`, and/or standard environment variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `OLLAMA_HOST`/`OLLAMA_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`).
 func New(opts ...Option) (*Client, error) {
 	cc := &clientConfig{
 		httpClient: http.DefaultClient,
@@ -270,7 +270,7 @@ func New(opts ...Option) (*Client, error) {
 	}
 
 	var mockServers []*httptest.Server
-	var mockGroqURL, mockClaudeURL, mockOpenAIURL, mockOpenRouterURL, mockOllamaURL string
+	var mockGroqURL, mockClaudeURL, mockOpenAIURL, mockOpenRouterURL, mockOllamaURL, mockGeminiURL string
 	if cc.demoMocksFallback || cc.allowPrivateNetworks {
 		cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks = true
 		cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP = true
@@ -302,16 +302,31 @@ func New(opts ...Option) (*Client, error) {
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"id":"msg_demo","type":"message","role":"assistant","model":"claude-sonnet-4-20250514","content":[{"type":"text","text":"Raft guarantees election safety via monotonic term numbers and majority quorum intersection."}],"stop_reason":"end_turn","usage":{"input_tokens":28,"output_tokens":36}}`)
 		}))
+		mockGemini := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, ":embedContent") {
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprint(w, `{"embedding":{"values":[0.023,-0.041,0.088,0.114]}}`)
+				return
+			}
+			if strings.HasSuffix(r.URL.Path, ":streamGenerateContent") {
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprint(w, "data: {\"responseId\":\"resp_gem_demo\",\"modelVersion\":\"gemini-2.5-flash\",\"candidates\":[{\"index\":0,\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"GoRoute AI Gateway streams Gemini SSE tokens.\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":14,\"candidatesTokenCount\":16,\"totalTokenCount\":30}}\n\n")
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"responseId":"resp_gem_demo","modelVersion":"gemini-2.5-flash","candidates":[{"index":0,"content":{"role":"model","parts":[{"text":"Google Gemini 2.5 Flash handled this request through the unified canonical gateway contract."}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":15,"candidatesTokenCount":19,"totalTokenCount":34}}`)
+		}))
 		mockOpenAI := openAICompatDemo("openai", "gpt-4.1-mini", "OpenAI GPT-4.1-mini handled this request through the unified canonical gateway contract.")
 		mockGroq := openAICompatDemo("groq", "llama-3.1-8b-instant", "Groq Llama 3.1 handled this request through the unified canonical gateway contract.")
 		mockOpenRouter := openAICompatDemo("openrouter", "openai/gpt-4o-mini", "OpenRouter handled this request through the unified canonical gateway contract.")
 		mockOllama := openAICompatDemo("ollama", "qwen2.5:0.5b", "Ollama handled this request through the unified canonical gateway contract.")
-		mockServers = append(mockServers, mockGroq, mockClaude, mockOpenAI, mockOpenRouter, mockOllama)
+		mockServers = append(mockServers, mockGroq, mockClaude, mockOpenAI, mockOpenRouter, mockOllama, mockGemini)
 		mockGroqURL = mockGroq.URL
 		mockClaudeURL = mockClaude.URL
 		mockOpenAIURL = mockOpenAI.URL
 		mockOpenRouterURL = mockOpenRouter.URL
 		mockOllamaURL = mockOllama.URL
+		mockGeminiURL = mockGemini.URL
 	}
 
 	for _, e := range cc.modelList {
@@ -351,6 +366,8 @@ func New(opts ...Option) (*Client, error) {
 					apiBase = mockOpenRouterURL
 				case domain.ProviderOllama:
 					apiBase = mockOllamaURL
+				case domain.ProviderGemini:
+					apiBase = mockGeminiURL
 				default:
 					apiBase = mockOpenAIURL
 				}

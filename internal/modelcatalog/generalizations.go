@@ -90,6 +90,29 @@ var familyRules = []familyRule{
 			Streaming: domain.CapabilitySupported,
 		},
 	},
+	{
+		pattern: regexp.MustCompile(`(?i)^gemini-(?:2\.5|3)`),
+		in:      1048576,
+		out:     65536,
+		caps: domain.ModelCapabilities{
+			Tools:             domain.CapabilitySupported,
+			Streaming:         domain.CapabilitySupported,
+			Vision:            domain.CapabilitySupported,
+			Reasoning:         domain.CapabilitySupported,
+			StructuredOutputs: domain.CapabilitySupported,
+		},
+	},
+	{
+		pattern: regexp.MustCompile(`(?i)^gemini-2\.0`),
+		in:      1048576,
+		out:     8192,
+		caps: domain.ModelCapabilities{
+			Tools:             domain.CapabilitySupported,
+			Streaming:         domain.CapabilitySupported,
+			Vision:            domain.CapabilitySupported,
+			StructuredOutputs: domain.CapabilitySupported,
+		},
+	},
 }
 
 // StripRegionalModelPrefix trims surrounding whitespace and optional regional prefixes

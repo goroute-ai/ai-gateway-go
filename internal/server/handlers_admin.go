@@ -17,6 +17,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/logger"
 	"github.com/goroute-ai/ai-gateway-go/internal/mcp/spec"
 	catalog "github.com/goroute-ai/ai-gateway-go/internal/modelcatalog"
 	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
@@ -168,19 +169,70 @@ func (s *GatewayServer) validateCredentialBaseURL(raw string) (string, error) {
 }
 
 func (s *GatewayServer) authorizeCustomBaseURL(op *domain.OperatorContext, cleanBaseURL string) *domain.GatewayError {
-	if cleanBaseURL != "" && s.cfg != nil &&
-		(s.cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks ||
-			s.cfg.Security.Network.OutboundSSRF.AllowLoopbackHTTP ||
-			len(s.cfg.Security.Network.OutboundSSRF.AllowedPrivateCIDRs) > 0) &&
-		(op == nil || op.Role != domain.OperatorRolePlatformAdmin) {
-		return &domain.GatewayError{
-			StatusCode: http.StatusForbidden,
-			Type:       domain.ErrorTypePermission,
-			Code:       "platform_admin_required",
-			Message:    "Custom BaseURL with private or loopback network access requires platform_admin role",
+	if cleanBaseURL != "" && s.cfg != nil {
+		ssrf := s.cfg.Security.Network.OutboundSSRF
+		privilegedNetworkPolicy := ssrf.AllowPrivateNetworks ||
+			len(ssrf.AllowedPrivateCIDRs) > 0 ||
+			ssrf.AllowLoopbackHTTP ||
+			ssrf.AllowInsecureHTTP
+		if privilegedNetworkPolicy && (op == nil || op.Role != domain.OperatorRolePlatformAdmin) {
+			return &domain.GatewayError{
+				StatusCode: http.StatusForbidden,
+				Type:       domain.ErrorTypePermission,
+				Code:       "platform_admin_required",
+				Message:    "Custom BaseURL with private, loopback, or insecure HTTP network access requires platform_admin role",
+			}
 		}
 	}
 	return nil
+}
+
+func validateCredentialHeaders(headers map[string]string) *domain.GatewayError {
+	for rawKey, rawVal := range headers {
+		k := strings.TrimSpace(rawKey)
+		if k == "" {
+			return &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_credential_header",
+				Message:    "Custom credential header names cannot be empty",
+			}
+		}
+		if adapter.HasUnsafeHeaderChars(rawKey) {
+			return &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_credential_header",
+				Message:    "Custom credential header names must not contain control characters",
+			}
+		}
+		if adapter.HasUnsafeHeaderChars(rawVal) {
+			return &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_credential_header",
+				Message:    fmt.Sprintf("Custom credential header %q value must not contain control characters", k),
+			}
+		}
+		if adapter.IsReservedCustomHeader(k) {
+			return &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_credential_header",
+				Message:    fmt.Sprintf("Custom credential header %q is reserved and cannot be overridden", k),
+			}
+		}
+	}
+	return nil
+}
+
+func sanitizeCredentialForResponse(cred *domain.ProviderCredential) *domain.ProviderCredential {
+	if cred == nil {
+		return nil
+	}
+	cp := *cred
+	cp.Headers = redactHeaders(cred.Headers)
+	return &cp
 }
 
 func resolveScopedOrgID(r *http.Request, explicitOrgID string) string {
@@ -927,6 +979,10 @@ func (s *GatewayServer) handleAdminCreateCredential(w http.ResponseWriter, r *ht
 		domain.WriteHTTPError(w, gwErr)
 		return
 	}
+	if gwErr := validateCredentialHeaders(req.Headers); gwErr != nil {
+		domain.WriteHTTPError(w, gwErr)
+		return
+	}
 	cred := &domain.ProviderCredential{
 		OrgID:     req.OrgID,
 		Provider:  req.Provider,
@@ -949,7 +1005,7 @@ func (s *GatewayServer) handleAdminCreateCredential(w http.ResponseWriter, r *ht
 		"name":        cred.Name,
 		"key_version": cred.KeyVersion,
 	}, nil, cred)
-	writeJSON(w, http.StatusCreated, cred)
+	writeJSON(w, http.StatusCreated, sanitizeCredentialForResponse(cred))
 }
 
 func (s *GatewayServer) handleAdminListCredentials(w http.ResponseWriter, r *http.Request) {
@@ -962,7 +1018,11 @@ func (s *GatewayServer) handleAdminListCredentials(w http.ResponseWriter, r *htt
 		domain.WriteHTTPError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": creds})
+	safeCreds := make([]*domain.ProviderCredential, len(creds))
+	for i, c := range creds {
+		safeCreds[i] = sanitizeCredentialForResponse(c)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": safeCreds})
 }
 
 func (s *GatewayServer) handleAdminRotateCredential(w http.ResponseWriter, r *http.Request) {
@@ -1022,7 +1082,7 @@ func (s *GatewayServer) handleAdminRotateCredential(w http.ResponseWriter, r *ht
 		"provider":    cred.Provider,
 		"key_version": cred.KeyVersion,
 	}, &beforeCred, cred)
-	writeJSON(w, http.StatusOK, cred)
+	writeJSON(w, http.StatusOK, sanitizeCredentialForResponse(cred))
 }
 
 func (s *GatewayServer) handleAdminValidateCredential(w http.ResponseWriter, r *http.Request) {
@@ -1089,7 +1149,7 @@ func (s *GatewayServer) handleAdminValidateCredential(w http.ResponseWriter, r *
 			validationStatus = "unsupported_by_provider"
 		} else {
 			validationStatus = "failed"
-			errMsg = discErr.Error()
+			errMsg = logger.ScrubSecrets(discErr.Error())
 		}
 	}
 	s.auditWithDiff(r.Context(), cred.OrgID, "credential.validated", "provider_credential", cred.ID, map[string]any{
@@ -1141,6 +1201,10 @@ func (s *GatewayServer) handleAdminPreflightValidateCredential(w http.ResponseWr
 		domain.WriteHTTPError(w, gwErr)
 		return
 	}
+	if gwErr := validateCredentialHeaders(req.Headers); gwErr != nil {
+		domain.WriteHTTPError(w, gwErr)
+		return
+	}
 	if req.Provider == "" {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: "provider is required"})
 		return
@@ -1177,7 +1241,7 @@ func (s *GatewayServer) handleAdminPreflightValidateCredential(w http.ResponseWr
 			validationStatus = "unsupported_by_provider"
 		} else {
 			validationStatus = "failed"
-			errMsg = discErr.Error()
+			errMsg = logger.ScrubSecrets(discErr.Error())
 		}
 	}
 

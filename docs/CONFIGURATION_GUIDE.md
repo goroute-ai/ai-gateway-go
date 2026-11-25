@@ -36,6 +36,7 @@ export OPENAI_API_KEY="sk-proj-..."
 export ANTHROPIC_API_KEY="sk-ant-..."
 export GROQ_API_KEY="gsk_..."
 export OPENROUTER_API_KEY="sk-or-v1-..."
+export GEMINI_API_KEY="your-gemini-api-key"
 
 go run ./cmd/gateway -config configs/config.yaml
 ```
@@ -147,7 +148,7 @@ GoRoute AI Gateway embeds an operator web application directly into the binary. 
 ### Operator Console Features
 - **Streaming Chat Playground**: Test prompts against any configured alias (`fast`, `reasoning`) or model with real-time SSE token streaming, temperature/token dials, latency, micro-dollar cost, and guardrail action telemetry.
 - **Organizations, Teams & Policies**: Create and manage organizations, teams, users, micro-dollar budgets, provider subscriptions, and org-level model policies.
-- **Model Catalogue & Routing Explorer**: Search and filter models across `openai`, `anthropic`, `groq`, `openrouter`, and `ollama`, inspect micro-dollar pricing, context window boundaries, supported capabilities, and attach deployments to model groups.
+- **Model Catalogue & Routing Explorer**: Search and filter models across `openai`, `anthropic`, `groq`, `openrouter`, `ollama`, and `gemini`, inspect micro-dollar pricing, context window boundaries, supported capabilities, and attach deployments to model groups.
 - **Virtual Key Provisioning**: Create and revoke virtual API keys (`sk-gw-...`) with scoped team/user ownership, expiry, allowed MCP servers / A2A agents, monthly micro-dollar budget limits, and RPM/TPM rate limits.
 - **Live FinOps Analytics**: View real-time spend dashboards with breakdown by team, virtual key, model, and provider.
 - **Guardrails Console & Usage Metrics**: Configure Layer 0 baseline rules (prompt injection, PII, secrets, 5 toxicity categories), register & bind any of the 15 built-in guardrail drivers (external moderation/PII services, Starlark `custom_code`, webhooks, LLM judges, tool/MCP governance), manage cross-turn tool trust policies, simulate via `/v1/guardrails/apply`, and track micro-dollar guardrail cost attribution.
@@ -200,7 +201,7 @@ Custom Go hooks can also be injected at initialization with `WithRouterConfig`, 
 ### HTTP Request Routing Hints & Response Telemetry Headers
 Every `/v1/chat/completions` call accepts optional inbound routing hint headers (`X-Gateway-Allowed-Region`, `X-Gateway-Session-Id`, `X-Gateway-Preferred-Deployment-Id`, `X-Gateway-Priority`, `X-Gateway-Hedge-After-Ms`, `X-Gateway-Tags`, `X-Gateway-Tag-<Name>`) and returns real-time telemetry headers:
 - `X-Gateway-Request-Id`: Unique request correlation ID (`req_...`)
-- `X-Gateway-Provider`: Winning upstream provider (`openai`, `anthropic`, `groq`, `openrouter`, `ollama`)
+- `X-Gateway-Provider`: Winning upstream provider (`openai`, `anthropic`, `groq`, `openrouter`, `ollama`, `gemini`)
 - `X-Gateway-Model`: Resolved upstream model (`gpt-4o-mini`, `claude-sonnet-4-20250514`, etc.)
 - `X-Gateway-Cost-Micros`: Exact request cost in micro-USD ($10^{-6}\text{ USD}$)
 - `X-Gateway-Latency-Ms`: End-to-end request latency in milliseconds
@@ -218,7 +219,7 @@ Every `/v1/chat/completions` call accepts optional inbound routing hint headers 
 ### What It Does
 Enforces a strict **4-Layer Multi-Tenant Model Hierarchy** while supporting zero-friction **Dynamic `provider/model` Wildcard Routing** and **Automated Upstream Model Discovery**:
 1. **Layer 1 (Global Model Catalogue)**: Capabilities (`supports_tools`, `supports_reasoning`, `max_input_tokens`) and versioned pricing (`input_cost_micros_per_1m`, `output_cost_micros_per_1m`) for all models.
-2. **Layer 2 (Organization Provider Subscriptions)**: Controls which upstream vendors (`openai`, `anthropic`, `groq`, `openrouter`, `ollama`) a tenant organization is entitled to use.
+2. **Layer 2 (Organization Provider Subscriptions)**: Controls which upstream vendors (`openai`, `anthropic`, `groq`, `openrouter`, `ollama`, `gemini`) a tenant organization is entitled to use.
 3. **Layer 3 (Organization Model Policies)**: Explicit tenant compliance approval per `global_model_id`.
 4. **Layer 4 (Model Groups & Physical Deployments)**: Maps logical aliases (`"fast"`, `"reasoning"`) to physical provider endpoints and encrypted Vault credentials.
 
@@ -231,7 +232,7 @@ discovery:
 ```
 
 ### Go SDK & Dynamic Wildcard Usage
-You can pass any `"provider/model"` string (e.g., `"groq/llama-3.1-8b-instant"`, `"anthropic/claude-sonnet-4-20250514"`, `"openai/gpt-4.1-mini"`, `"openrouter/openai/gpt-4o-mini"`, `"ollama/qwen2.5:0.5b"`) directly to `gw.Chat(...)` without pre-creating an alias:
+You can pass any `"provider/model"` string (e.g., `"groq/llama-3.1-8b-instant"`, `"anthropic/claude-sonnet-4-20250514"`, `"openai/gpt-4.1-mini"`, `"openrouter/openai/gpt-4o-mini"`, `"ollama/qwen2.5:0.5b"`, `"gemini/gemini-2.5-flash"`) directly to `gw.Chat(...)` without pre-creating an alias:
 
 ```go
 models, _ := gw.ListModels(ctx) // Returns tenant-filtered model IDs from GET /v1/models
@@ -313,7 +314,7 @@ router:
   - **Operator OIDC SSO & CLI Login**: Browser sessions authenticate exclusively via standard OpenID Connect (`type: "oidc"`, PKCE `S256`, `state`, `nonce`, `at_hash`) and receive signed `goroute_session` cookies plus `X-CSRF-Token` validation on mutations; `/auth/logout` supports RP-Initiated Logout (`end_session_url`), and emergency break-glass access remains available via `GATEWAY_MASTER_ADMIN_KEY`. Both `auth.oidc_issuers[]` and `auth.sso_providers[]` support `group_role_mappings`, `group_team_mappings`, `role_mapping_strategy` (`highest_privilege` / `first_match`), and `sync_roles_on_login: true` (revoking stale sessions on role change).
   - **External Policy Authorizer & Audit SIEM Webhook**: Configure `auth.external_authorizer` (`mode: "webhook"` or `"opa"`, `fail_mode: "closed"`, `hmac_secret`) for post-auth policy checks across inference, MCP, A2A, and Admin APIs, and `audit.siem_webhook` for async HMAC-signed audit log streaming. See [AUTHORIZATION_AND_ACCESS_CONTROL.md](./AUTHORIZATION_AND_ACCESS_CONTROL.md) for full details and examples across all 19 access-control capabilities.
   - **SCIM 2.0 Provisioning & Key Rotation Grace Periods**: `/scim/v2/Users` and `/scim/v2/Groups` apply user and team membership changes in tenant-scoped atomic transactions. Scheduled or manual key rotations (`POST /admin/v1/keys/{keyID}/rotate`) support dual-valid grace windows emitting `X-Gateway-Key-Deprecated` and `X-Gateway-Key-Revoke-At`.
-- **Boundary 2 (Gateway $\rightarrow$ Upstream Provider)**: Upstream vendor keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`) are encrypted using **AES-256-GCM Envelope Encryption** (or resolved via opt-in `auth.allow_ambient_cloud_iam` / `storage.rds_iam`):
+- **Boundary 2 (Gateway $\rightarrow$ Upstream Provider)**: Upstream vendor keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`) are encrypted using **AES-256-GCM Envelope Encryption** (or resolved via opt-in `auth.allow_ambient_cloud_iam` / `storage.rds_iam`):
   - Every credential gets a unique random 32-byte **Data Encryption Key (DEK)** + 12-byte `DataNonce`.
   - The DEK is encrypted by the gateway's 32-byte **Master Key Encryption Key (`master_encryption_key`)** + 12-byte `DEKNonce`.
 
@@ -658,7 +659,7 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 | `auth.default_virtual_key` | `GATEWAY_DEFAULT_KEY` | `""` | Optional pre-seeded client virtual key for immediate local testing. |
 | `auth.l1_cache_ttl` | — | `15s` | In-memory L1 cache TTL for virtual key identity and permissions. |
 | `auth.l2_cache_ttl` | — | `5m` | Redis L2 cache TTL for virtual key identity and permissions. |
-| `security.network.outbound_ssrf.allow_loopback_http` | `GATEWAY_ALLOW_LOOPBACK_HTTP` | `false` | Permits plain `http://` strictly to loopback addresses (`127.0.0.1`, `::1`, `localhost`) for local OIDC IdPs like Keycloak dev while blocking private networks. |
+| `security.network.outbound_ssrf.allow_loopback_http` | `GATEWAY_ALLOW_LOOPBACK_HTTP` | `false` | Permits plain `http://` strictly to loopback addresses (`127.0.0.1`, `::1`, `localhost`) for local OIDC IdPs like Keycloak dev while blocking private networks. When `allow_loopback_http`, `allow_insecure_http`, `allow_private_networks`, or `allowed_private_cidrs` is enabled, custom credential `base_url` overrides require `platform_admin`. |
 | `router.default_fast_alias` | — | `"fast"` | Default model group aliased to low-latency models. |
 | `router.default_reasoning_alias` | — | `"reasoning"` | Default model group aliased to high-reasoning frontier models. |
 | `router.default_coding_alias` | — | `"coding"` | Default model group aliased to code generation models. |
@@ -827,7 +828,7 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 | `audit.siem_webhook.*` | `GATEWAY_AUDIT_SIEM_*` | disabled | Async HMAC-SHA256 signed SIEM audit webhook sink (`ENABLED`, `URL`, `SECRET`, `AUTH_HEADER`, `BATCH_SIZE`, `FLUSH_INTERVAL`, `TIMEOUT`, `MAX_QUEUE_SIZE`). |
 
 ### Provider Options
-- All supported upstream providers (`openai`, `anthropic`, `groq`, `openrouter`, `ollama`) are OpenAPI-backed with explicit per-adapter capabilities and operation sets.
+- All supported upstream providers (`openai`, `anthropic`, `groq`, `openrouter`, `ollama`, `gemini`) are OpenAPI-backed with explicit per-adapter capabilities and operation sets.
 - **Ollama Local & Production Guidance**:
   - For local development (`http://127.0.0.1:11434`), set `security.network.outbound_ssrf.allow_loopback_http: true` (`api_key` is optional for `ollama`; opt-in env vars `OLLAMA_HOST`/`OLLAMA_BASE_URL`, `OLLAMA_API_KEY`, and `OLLAMA_DEFAULT_MODEL` are supported).
   - In production (`GATEWAY_ENV=production`), keep `allow_loopback_http: false`, front network-exposed Ollama servers with TLS 1.3 + Bearer/mTLS auth, enforce RPM/TPM/`max_parallel_requests` quotas to protect GPU/VRAM capacity on `$0` self-hosted models, and promote dynamically discovered Ollama models via `/admin/v1/catalogue/{id}/pricing` before serving strictly budgeted virtual keys.

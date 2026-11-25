@@ -170,6 +170,7 @@ export const CredentialsView: React.FC = () => {
     { id: 'groq', label: 'Groq' },
     { id: 'openrouter', label: 'OpenRouter' },
     { id: 'ollama', label: 'Ollama' },
+    { id: 'gemini', label: 'Google Gemini' },
   ];
 
   return (
@@ -312,7 +313,7 @@ export const CredentialsView: React.FC = () => {
           ))
         ) : (
           <div className="col-span-full py-12 text-center text-brand-muted text-xs">
-            No upstream provider credentials stored in vault for {activeOrgId}. Click "Add Provider Credential" to connect OpenAI, Anthropic, Groq, OpenRouter, or Ollama.
+            No upstream provider credentials stored in vault for {activeOrgId}. Click "Add Provider Credential" to connect OpenAI, Anthropic, Groq, OpenRouter, Ollama, or Google Gemini.
           </div>
         )}
       </div>

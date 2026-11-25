@@ -75,12 +75,13 @@ func EnrichDiscoveredModel(dm domain.DiscoveredModel, autoApprove bool) *domain.
 		gm.MaxInputTokens = 8192
 		gm.MaxOutputTokens = 1536
 	}
-	if strings.Contains(lower, "gpt-4") || strings.Contains(lower, "claude") {
+	if strings.Contains(lower, "gpt-4") || strings.Contains(lower, "claude") || strings.Contains(lower, "gemini") {
 		gm.SupportsVision = true
 	}
 	if strings.HasPrefix(lower, "o1") || strings.HasPrefix(lower, "o3") || strings.HasPrefix(lower, "o4") ||
 		strings.Contains(lower, "sonnet-4") || strings.Contains(lower, "opus-4") ||
-		strings.Contains(lower, "deepseek-r1") {
+		strings.Contains(lower, "deepseek-r1") ||
+		strings.Contains(lower, "gemini-2.5") || strings.Contains(lower, "gemini-3") {
 		gm.SupportsReasoning = true
 	}
 
@@ -127,6 +128,31 @@ func EnrichDiscoveredModel(dm domain.DiscoveredModel, autoApprove bool) *domain.
 		gm.InputCostMicrosPer1M = 0
 		gm.OutputCostMicrosPer1M = 0
 		gm.CachedInputCostMicrosPer1M = 0
+	case domain.ProviderGemini:
+		if !gm.SupportsEmbeddings {
+			gm.MaxInputTokens = 1048576
+			gm.MaxOutputTokens = 65536
+		}
+		switch {
+		case strings.Contains(lower, "embed"):
+			gm.InputCostMicrosPer1M = 150000
+			gm.OutputCostMicrosPer1M = 0
+		case strings.Contains(lower, "flash-lite"):
+			gm.InputCostMicrosPer1M = 100000
+			gm.OutputCostMicrosPer1M = 400000
+			gm.CachedInputCostMicrosPer1M = 10000
+			gm.ReasoningCostMicrosPer1M = 400000
+		case strings.Contains(lower, "flash"):
+			gm.InputCostMicrosPer1M = 300000
+			gm.OutputCostMicrosPer1M = 2500000
+			gm.CachedInputCostMicrosPer1M = 30000
+			gm.ReasoningCostMicrosPer1M = 2500000
+		default:
+			gm.InputCostMicrosPer1M = 1250000
+			gm.OutputCostMicrosPer1M = 10000000
+			gm.CachedInputCostMicrosPer1M = 125000
+			gm.ReasoningCostMicrosPer1M = 10000000
+		}
 	}
 
 	return gm

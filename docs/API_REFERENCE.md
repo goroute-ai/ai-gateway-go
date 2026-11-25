@@ -44,8 +44,8 @@ Every response from GoRoute AI Gateway includes tracing, attribution, and lifecy
 | :--- | :--- | :--- |
 | `X-Gateway-Request-Id` | Unique UUID assigned to the request lifecycle | `req_991efda4-7fab-4b03` |
 | `X-Trace-Id` | W3C / OpenTelemetry Trace ID | `bad98e7deea34d7c810a963d9ed2c4ef` |
-| `X-Gateway-Provider` | The winning upstream provider selected (also emitted before first SSE chunk) | `openai`, `anthropic`, `groq`, `openrouter`, `ollama` |
-| `X-Gateway-Model` | The physical model that executed the inference (also emitted before first SSE chunk) | `gpt-4o-mini`, `claude-sonnet-4-20250514`, `llama-3.1-8b-instant` |
+| `X-Gateway-Provider` | The winning upstream provider selected (also emitted before first SSE chunk) | `openai`, `anthropic`, `groq`, `openrouter`, `ollama`, `gemini` |
+| `X-Gateway-Model` | The physical model that executed the inference (also emitted before first SSE chunk) | `gpt-4o-mini`, `claude-sonnet-4-20250514`, `llama-3.1-8b-instant`, `qwen2.5:0.5b`, `gemini-2.5-flash` |
 | `X-Gateway-Original-Model` | Original requested model name before budget-downgrade model fallback | `reasoning` |
 | `X-Gateway-Cost-Micros` | Micro-dollar spend incurred ($10^{-6}\text{ USD}$) | `45` ($0.000045 USD) |
 | `X-Gateway-Routing-Micros` | Gateway Stage 0–4 routing decision overhead in microseconds | `12` |
@@ -92,7 +92,7 @@ Enterprise identity providers synchronize users and groups over bearer-authentic
 ### 2.1 Chat Completions
 `POST /v1/chat/completions`
 
-Standardized endpoint supporting OpenAI, Anthropic Claude, Groq, and OpenRouter models in synchronous JSON or real-time Server-Sent Events (SSE) streaming mode.
+Standardized endpoint supporting OpenAI, Anthropic Claude, Groq, OpenRouter, and Google Gemini models in synchronous JSON or real-time Server-Sent Events (SSE) streaming mode.
 
 Chat request bodies are limited to 10 MiB; larger requests return `413 request_body_too_large`. The default outbound client allows two minutes for upstream response headers, applies a two-minute total deadline to non-streaming calls, and cancels a response body after two minutes without upstream data. Streaming calls have no total upstream deadline while chunks continue to arrive. These provider timeouts are configurable under `providers`; the HTTP server's configured write timeout still bounds the client connection.
 
@@ -186,6 +186,7 @@ GoRoute transparently normalizes requests targeting frontier reasoning models:
   - **Anthropic Claude**: Enables extended thinking with token budgets (`1024`, `4096`, `16384`) and automatically omits `temperature` and `top_p` as mandated by Anthropic.
   - **OpenRouter**: Maps `reasoning_effort` to OpenRouter's `reasoning` parameter object (`openrouter_reasoning`).
   - **Ollama**: Forwards `reasoning_effort` to Ollama's `/v1/chat/completions` thinking controls and extracts `reasoning` / `reasoning_content` deltas and responses.
+  - **Google Gemini**: Maps `reasoning_effort` to `generationConfig.thinkingConfig` (`includeThoughts: true`, `thinkingLevel: MINIMAL|LOW|MEDIUM|HIGH`) and reports `thoughtsTokenCount` in `usage.completion_tokens_details.reasoning_tokens` while including thinking tokens in `completion_tokens` for exact micro-dollar billing.
 - **Anthropic Role Alternation on Tools**: When returning multiple parallel tool outputs (`role: "tool"`), GoRoute automatically consolidates consecutive tool results into a single `user` message with multiple `tool_result` content blocks to satisfy Anthropic's strict alternating turn protocol.
 
 #### Upstream Error Handling & Safety Filters
@@ -203,9 +204,11 @@ When an upstream provider blocks or rejects a prompt, GoRoute maps upstream stat
 ### 2.2 Vector Embeddings
 `POST /v1/embeddings`
 
+Embedding request bodies are limited to 10 MiB (`413 request_body_too_large`), input arrays must contain strings and at most 2,048 items globally (100 items per request on Google Gemini `:batchEmbedContents`; larger batches return `400 invalid_embedding_batch_size`). When an upstream embedding endpoint omits token usage metadata (such as Google Gemini `:embedContent`/`:batchEmbedContents`), GoRoute falls back to its local token estimate (`estTokens`) for FinOps micro-dollar billing, hard/soft budget enforcement, and TPM quota settlement.
+
 ```json
 {
-  "model": "text-embedding-004",
+  "model": "gemini/gemini-embedding-001",
   "input": ["GoRoute AI Gateway is ultra-fast", "Pure Go architecture"]
 }
 ```
@@ -254,7 +257,7 @@ Returns a 4-layer tenant-filtered inventory accessible to the caller's Virtual A
 ```
 
 ### 2.4 Direct Dynamic `provider/model` Routing
-GoRoute supports direct model execution using `provider/model` notation (e.g. `openai/gpt-4o-mini`, `anthropic/claude-haiku-4-5-20251001`, `groq/llama-3.1-8b-instant`, `openrouter/openai/gpt-4o-mini`, `ollama/qwen2.5:0.5b`):
+GoRoute supports direct model execution using `provider/model` notation (e.g. `openai/gpt-4o-mini`, `anthropic/claude-haiku-4-5-20251001`, `groq/llama-3.1-8b-instant`, `openrouter/openai/gpt-4o-mini`, `ollama/qwen2.5:0.5b`, `gemini/gemini-2.5-flash`):
 - **Layer 2 Provider Subscription Check**: The caller's organization must have an active subscription for the requested provider (if subscriptions are configured).
 - **Layer 3 Model Policy Check**: The requested model must not be explicitly disabled by the organization's model availability policy.
 - **Tenant Credential Isolation**: The organization must have an active credential for the target provider. Server environment variables are never leaked across tenant boundaries.
@@ -819,7 +822,7 @@ Admin APIs authenticate via `Authorization: Bearer <MASTER_ADMIN_KEY>`, an organ
 - **Data Plane Self-Inspection & Developer Self-Service**: `GET /v1/key/info` inspects the caller's active key identity, effective limits, and spend; `GET /v1/self/keys`, `POST /v1/self/keys`, `POST /v1/self/keys/{keyID}/rotate`, and `DELETE /v1/self/keys/{keyID}` allow scoped self-service governed by `team_member_permissions` and `self_serve_budget_policy`.
 
 ### 5.5 Upstream Provider Credentials Vault
-- `POST /admin/v1/credentials`: Securely stores provider credentials encrypted with AES-256-GCM.
+- `POST /admin/v1/credentials`: Securely stores provider credentials encrypted with AES-256-GCM. Custom `headers` are validated against reserved framing/hop-by-hop/trace/auth header names (`Host`, `Transfer-Encoding`, `Content-Type`, `traceparent`, `x-goog-api-key`, `x-api-key`, `api-key`) and control characters (`400 invalid_credential_header`). Custom `base_url` overrides require `platform_admin` whenever private networks, `allowed_private_cidrs`, `allow_loopback_http`, or `allow_insecure_http` are enabled.
   ```json
   {
     "provider": "openai",
@@ -827,7 +830,7 @@ Admin APIs authenticate via `Authorization: Bearer <MASTER_ADMIN_KEY>`, an organ
     "base_url": "https://api.openai.com/v1"
   }
   ```
-- `GET /admin/v1/credentials`: Lists credentials (API keys are redacted as `sk-proj-***`).
+- `GET /admin/v1/credentials`: Lists credentials; encrypted API keys are omitted from responses and custom `headers` values are redacted as `"[REDACTED]"` (including in `POST`, `rotate`, and audit log diffs).
 - `POST /admin/v1/credentials/validate`: Preflight validator that tests raw credentials against the target provider API *before* saving them.
   ```bash
   curl -X POST http://localhost:8080/admin/v1/credentials/validate \
@@ -1099,6 +1102,7 @@ GoRoute separates **operation-level adapter support** (`OperationSupportChecker`
 | **`groq`** | `docs/openapi/groq.openapi.yaml` | Chat, Streaming, Tools, Structured Outputs, Completions, Audio (STT/TTS), `ListModels` | Dedicated OpenAPI-backed adapter in `internal/adapter/groq`; strips unsupported params (`logprobs`, `logit_bias`, `service_tier`), maps `max_completion_tokens` -> `max_tokens`, and enforces distill tool/temperature rules. |
 | **`openrouter`** | `docs/openapi/openrouter.openapi.yaml` | Chat, Streaming, Tools, Structured Outputs, `ListModels` | Dedicated OpenAPI-backed adapter in `internal/adapter/openrouter`; forwards attribution headers (`HTTP-Referer`, `X-Title`) and `openrouter_reasoning` mappings. |
 | **`ollama`** | `docs/openapi/ollama.openapi.yaml` | Chat, Streaming, Tools, Structured Outputs, Completions (sync & stream), Embeddings, `ListModels` (`/api/tags` + `/v1/models` fallback) | Dedicated OpenAPI-backed adapter in `internal/adapter/ollama`; supports optional Bearer auth (keyless for local Ollama), root or `/v1` base URL normalization, and fail-closed loopback SSRF opt-in (`allow_loopback_http: true`). |
+| **`gemini`** | `docs/openapi/gemini.openapi.yaml` | Chat, Streaming (SSE), Thinking/Reasoning, Tools, Structured Outputs, Vision/Documents, Single & Batch Embeddings, `ListModels` | Native OpenAPI-first adapter in `internal/adapter/gemini` targeting Google's `v1beta` Generative Language API via `x-goog-api-key` header authentication and exact `candidates + thoughts` micro-dollar token accounting. |
 
 ### Budgeted Caller Modality Coverage
 

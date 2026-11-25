@@ -1047,6 +1047,38 @@ func (s *GatewayServer) handleChatCompletionsSync(
 	)
 }
 
+const (
+	maxEmbeddingBodyBytes      = 10 << 20 // 10 MiB
+	maxEmbeddingBatchItems     = 2048
+	maxDataPlaneSmallBodyBytes = 2 << 20 // 2 MiB
+)
+
+func decodeBoundedJSON(w http.ResponseWriter, r *http.Request, maxBytes int64, dst any, parseErrPrefix string) *domain.GatewayError {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			return &domain.GatewayError{
+				StatusCode: http.StatusRequestEntityTooLarge,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "request_body_too_large",
+				Message:    fmt.Sprintf("Request body exceeds the %d byte limit", maxBytes),
+			}
+		}
+		msg := err.Error()
+		if parseErrPrefix != "" {
+			msg = parseErrPrefix + ": " + msg
+		}
+		return &domain.GatewayError{
+			StatusCode: http.StatusBadRequest,
+			Type:       domain.ErrorTypeInvalidRequest,
+			Code:       "invalid_json_body",
+			Message:    msg,
+		}
+	}
+	return nil
+}
+
 // handleEmbeddings serves `POST /v1/embeddings`.
 func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 	reqID := gatewayRequestID(r)
@@ -1065,13 +1097,8 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 		Metadata          map[string]string         `json:"metadata,omitempty"`
 		GoRouteExtensions *domain.GoRouteExtensions `json:"goroute_extensions,omitempty"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
-		domain.WriteHTTPError(w, &domain.GatewayError{
-			StatusCode: http.StatusBadRequest,
-			Type:       domain.ErrorTypeInvalidRequest,
-			Code:       "invalid_json_body",
-			Message:    err.Error(),
-		})
+	if gwErr := decodeBoundedJSON(w, r, maxEmbeddingBodyBytes, &raw, ""); gwErr != nil {
+		domain.WriteHTTPError(w, gwErr)
 		return
 	}
 
@@ -1080,8 +1107,27 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 	case string:
 		inputs = []string{v}
 	case []any:
+		if len(v) > maxEmbeddingBatchItems {
+			domain.WriteHTTPError(w, &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "invalid_embedding_batch_size",
+				Message:    fmt.Sprintf("input batch exceeds maximum of %d items", maxEmbeddingBatchItems),
+			})
+			return
+		}
 		for _, item := range v {
-			inputs = append(inputs, fmt.Sprintf("%v", item))
+			str, ok := item.(string)
+			if !ok {
+				domain.WriteHTTPError(w, &domain.GatewayError{
+					StatusCode: http.StatusBadRequest,
+					Type:       domain.ErrorTypeInvalidRequest,
+					Code:       "invalid_embedding_request",
+					Message:    "input array elements must be strings",
+				})
+				return
+			}
+			inputs = append(inputs, str)
 		}
 	}
 	if len(inputs) == 0 || raw.Model == "" {
@@ -1217,6 +1263,12 @@ func (s *GatewayServer) handleEmbeddings(w http.ResponseWriter, r *http.Request)
 		gm = meta.WinningDeployment.GlobalModel
 		if gm != nil {
 			pricingVer = gm.PricingVersion
+		}
+	}
+	if resp.Usage.PromptTokens <= 0 && estTokens > 0 {
+		resp.Usage.PromptTokens = estTokens
+		if resp.Usage.TotalTokens < estTokens {
+			resp.Usage.TotalTokens = estTokens
 		}
 	}
 	costMicros := finops.CalculateCostMicros(gm, resp.Usage)

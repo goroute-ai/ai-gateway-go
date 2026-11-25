@@ -429,6 +429,11 @@ async function run() {
     await providerFilterSelect.selectOption('ollama');
     await page.locator('tbody tr', { hasText: 'qwen2.5:0.5b' }).first().waitFor({ state: 'visible' });
 
+    // Check 5a-gemini: ModelsView Google Gemini filter/seeded catalogue
+    await providerFilterSelect.selectOption('gemini');
+    await page.getByText('gemini-2.5-flash', { exact: false }).first().waitFor({ state: 'visible' });
+    await page.getByText('gemini-embedding-001', { exact: false }).first().waitFor({ state: 'visible' });
+
     await page.locator('aside button', { hasText: 'Credentials Vault' }).click();
     await page.getByRole('button', { name: 'Add Provider Credential' }).click();
     const addCredModal = modalByTitle(page, 'Add Upstream Provider Credential');
@@ -438,7 +443,12 @@ async function run() {
     assert.equal(await ollamaKeyInput.getAttribute('required'), null, 'expected Ollama API Key input not to have required attribute');
     const preflightBtn = addCredModal.getByRole('button', { name: /Test Upstream Before Saving/i });
     assert.equal(await preflightBtn.isDisabled(), false, 'expected preflight button enabled for keyless Ollama');
-    await addCredModal.getByRole('button', { name: 'Cancel' }).click();
+    // Switch to Gemini and create synthetic Gemini credential
+    await fieldControl(addCredModal, 'Provider *').selectOption('gemini');
+    await fieldControl(addCredModal, 'Credential Label *').fill(`ui-e2e-gemini-${suffix}`);
+    await fieldControl(addCredModal, 'API Key *').fill('synthetic-gemini-ui-e2e-key');
+    await addCredModal.locator('button[type="submit"]').click();
+    await page.getByText(`ui-e2e-gemini-${suffix}`).waitFor({ state: 'visible' });
 
     // Check 5a-bis: Named Guardrail Registry sensitive_route_target persistence
     await page.locator('aside button', { hasText: 'Guardrails' }).click();

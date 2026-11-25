@@ -423,9 +423,59 @@ func (ir *IntelligentRouter) groupMatchesProvider(ctx context.Context, groupID s
 	return false
 }
 
+const maxDynamicModelNameLen = 128
+
+func isValidDynamicModelSegment(seg string) bool {
+	if seg == "" || strings.Contains(seg, "..") {
+		return false
+	}
+	for i := 0; i < len(seg); i++ {
+		c := seg[i]
+		isAlphaNum := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+		if i == 0 && !isAlphaNum {
+			return false
+		}
+		if !isAlphaNum && c != '.' && c != '_' && c != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func isBuiltInCatalogProvider(prov domain.ProviderType) bool {
+	switch prov {
+	case domain.ProviderOpenAI, domain.ProviderAnthropic, domain.ProviderGroq, domain.ProviderOpenRouter, domain.ProviderGemini:
+		return true
+	default:
+		return false
+	}
+}
+
+func isValidDynamicModelName(prov domain.ProviderType, bareModel string) bool {
+	if bareModel == "*" {
+		return true
+	}
+	if bareModel == "" || len(bareModel) > maxDynamicModelNameLen {
+		return false
+	}
+	if prov == domain.ProviderOpenRouter || prov == domain.ProviderGroq {
+		parts := strings.Split(bareModel, "/")
+		if len(parts) > 3 {
+			return false
+		}
+		for _, seg := range parts {
+			if !isValidDynamicModelSegment(seg) {
+				return false
+			}
+		}
+		return true
+	}
+	return isValidDynamicModelSegment(bareModel)
+}
+
 func (ir *IntelligentRouter) resolveDynamicProviderModel(ctx context.Context, orgID, requested string) *domain.ModelGroup {
 	prov, bareModel, globalModelID := config.ParseProviderModel(requested)
-	if prov == "" || globalModelID == "" {
+	if prov == "" || globalModelID == "" || !isValidDynamicModelName(prov, bareModel) {
 		return nil
 	}
 	aliasKey := bareModel
@@ -514,18 +564,25 @@ func (ir *IntelligentRouter) resolveDynamicProviderModel(ctx context.Context, or
 	gm, err := ir.repo.GetGlobalModel(ctx, globalModelID)
 	if err != nil || gm == nil {
 		var toImport *domain.GlobalModel
-		if catModel, ok := catalog.LookupByProviderAndModel(prov, bareModel); ok {
+		if catModel, ok := catalog.LookupByProviderAndModel(prov, bareModel); ok && catModel != nil {
 			catCopy := *catModel
 			toImport = &catCopy
-		} else {
+		} else if !isBuiltInCatalogProvider(prov) {
+			// Startup-registered custom provider profiles have no built-in catalog entries.
+			// Their models retain PricingStatusUnknown so pickWildcardProviderModel will never
+			// select them for cross-tenant wildcard routing unless explicitly policy-enabled.
 			toImport = modelmgmt.EnrichDiscoveredModel(domain.DiscoveredModel{
 				Provider:    prov,
 				ModelName:   bareModel,
 				DisplayName: bareModel,
 			}, true)
 			toImport.SupportsInference = true
+		} else {
+			// Fail closed for built-in catalog providers: never synthesize or persist untrusted
+			// data-plane model names into the shared cross-tenant global_models table.
+			return nil
 		}
-		if toImport != nil && !toImport.SupportsInference {
+		if toImport == nil || !toImport.SupportsInference {
 			return nil // Refuse to dynamically provision non-inference models (e.g. image dimension pricing)
 		}
 		toImport.LifecycleStatus = domain.ModelStatusActive
@@ -608,6 +665,16 @@ func (ir *IntelligentRouter) pickWildcardProviderModel(
 	if ir.repo != nil {
 		if repoModels, err := ir.repo.ListGlobalModels(ctx); err == nil {
 			for _, gm := range repoModels {
+				if gm == nil {
+					continue
+				}
+				// Guard against unverified/unknown-pricing rogue rows hijacking cross-tenant
+				// wildcard resolution unless explicitly enabled for this org or present in the trusted catalog.
+				if !enabledSet[gm.ID] && domain.ResolvePricingStatus(gm) == domain.PricingStatusUnknown {
+					if _, inCat := catalog.LookupByProviderAndModel(gm.Provider, gm.ModelName); !inCat {
+						continue
+					}
+				}
 				addCandidate(gm)
 			}
 		}

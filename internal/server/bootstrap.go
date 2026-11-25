@@ -17,7 +17,7 @@ import (
 
 // bootstrap automatically seeds the default Organization, Provider Subscriptions, Encrypted Vault Credentials,
 // ModelGroups, Deployments, and Default Virtual Key from `cfg.ModelList` and/or standard environment variables
-// (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`).
+// (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `OLLAMA_HOST`/`OLLAMA_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`).
 //
 // This provides zero-boilerplate startup while preserving 4-layer enterprise isolation.
 func (s *GatewayServer) bootstrap(ctx context.Context) error {
@@ -276,6 +276,11 @@ func resolveProviderEnvKey(prov domain.ProviderType) string {
 		return strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY"))
 	case domain.ProviderOllama:
 		return strings.TrimSpace(os.Getenv("OLLAMA_API_KEY"))
+	case domain.ProviderGemini:
+		if k := strings.TrimSpace(os.Getenv("GEMINI_API_KEY")); k != "" {
+			return k
+		}
+		return strings.TrimSpace(os.Getenv("GOOGLE_API_KEY"))
 	default:
 		return ""
 	}
@@ -367,6 +372,14 @@ func discoverEnvModelEntries(existing []config.ModelListEntry) []config.ModelLis
 			out = append(out, config.ModelListEntry{
 				ModelName:   defaultModel,
 				ModelParams: config.ModelParams{Model: "ollama/" + defaultModel, APIKey: ollamaKey, APIBase: ollamaBase},
+			})
+		}
+	}
+	if gemKey := resolveProviderEnvKey(domain.ProviderGemini); gemKey != "" {
+		if !hasAlias("gemini-2.5-flash") {
+			out = append(out, config.ModelListEntry{
+				ModelName:   "gemini-2.5-flash",
+				ModelParams: config.ModelParams{Model: "gemini/gemini-2.5-flash", APIKey: gemKey},
 			})
 		}
 	}

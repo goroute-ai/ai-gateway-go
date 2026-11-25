@@ -13,10 +13,11 @@ import (
 type TokenizerProfile string
 
 const (
-	ProfileO200K     TokenizerProfile = "o200k_base"  // GPT-4o, GPT-4.1, o1, o3, o4
-	ProfileCL100K    TokenizerProfile = "cl100k_base" // GPT-4, GPT-3.5, text-embedding-3
-	ProfileClaudeBPE TokenizerProfile = "claude_bpe"  // Anthropic Claude 3.x / 4.x
-	ProfileLlamaBPE  TokenizerProfile = "llama_bpe"   // Groq Llama / Qwen / DeepSeek BPE
+	ProfileO200K     TokenizerProfile = "o200k_base"           // GPT-4o, GPT-4.1, o1, o3, o4
+	ProfileCL100K    TokenizerProfile = "cl100k_base"          // GPT-4, GPT-3.5, text-embedding-3
+	ProfileClaudeBPE TokenizerProfile = "claude_bpe"           // Anthropic Claude 3.x / 4.x
+	ProfileLlamaBPE  TokenizerProfile = "llama_bpe"            // Groq Llama / Qwen / DeepSeek BPE
+	ProfileGeminiSP  TokenizerProfile = "gemini_sentencepiece" // Google Gemini 2.x / 3.x SentencePiece
 )
 
 // ResolveTokenizerProfile selects the appropriate subword tokenization profile for a model.
@@ -25,6 +26,8 @@ func ResolveTokenizerProfile(model string) TokenizerProfile {
 	switch {
 	case strings.Contains(m, "claude") || strings.HasPrefix(m, "anthropic/"):
 		return ProfileClaudeBPE
+	case strings.Contains(m, "gemini") || strings.HasPrefix(m, "gemini/"):
+		return ProfileGeminiSP
 	case strings.Contains(m, "llama") || strings.Contains(m, "qwen") || strings.Contains(m, "mistral") || strings.Contains(m, "gemma") || strings.Contains(m, "deepseek") || strings.HasPrefix(m, "groq/") || strings.HasPrefix(m, "ollama/"):
 		return ProfileLlamaBPE
 	case strings.Contains(m, "gpt-3.5") || strings.Contains(m, "embedding"):
@@ -48,6 +51,8 @@ func EstimateTextTokens(text string, profile TokenizerProfile) int {
 		charsPerTokenX100 = 360 // Claude BPE is slightly denser on prose/code (~3.6 chars/token)
 	case ProfileLlamaBPE:
 		charsPerTokenX100 = 380
+	case ProfileGeminiSP:
+		charsPerTokenX100 = 390
 	case ProfileCL100K:
 		charsPerTokenX100 = 390
 	case ProfileO200K:

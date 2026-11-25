@@ -2,7 +2,6 @@ package server
 
 import (
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -38,13 +37,8 @@ func (s *GatewayServer) handleModerations(w http.ResponseWriter, r *http.Request
 		Input             any                       `json:"input"`
 		GoRouteExtensions *domain.GoRouteExtensions `json:"goroute_extensions,omitempty"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
-		domain.WriteHTTPError(w, &domain.GatewayError{
-			StatusCode: http.StatusBadRequest,
-			Type:       domain.ErrorTypeInvalidRequest,
-			Code:       "invalid_json_body",
-			Message:    "Failed to parse Moderation request body: " + err.Error(),
-		})
+	if gwErr := decodeBoundedJSON(w, r, maxDataPlaneSmallBodyBytes, &raw, "Failed to parse Moderation request body"); gwErr != nil {
+		domain.WriteHTTPError(w, gwErr)
 		return
 	}
 
@@ -56,10 +50,18 @@ func (s *GatewayServer) handleModerations(w http.ResponseWriter, r *http.Request
 		}
 	case []any:
 		for _, item := range v {
-			if str, ok := item.(string); ok && strings.TrimSpace(str) != "" {
+			str, ok := item.(string)
+			if !ok {
+				domain.WriteHTTPError(w, &domain.GatewayError{
+					StatusCode: http.StatusBadRequest,
+					Type:       domain.ErrorTypeInvalidRequest,
+					Code:       "invalid_moderation_request",
+					Message:    "input array elements must be strings",
+				})
+				return
+			}
+			if strings.TrimSpace(str) != "" {
 				inputs = append(inputs, str)
-			} else {
-				inputs = append(inputs, fmt.Sprintf("%v", item))
 			}
 		}
 	case []string:

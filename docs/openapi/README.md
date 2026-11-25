@@ -16,6 +16,7 @@ The gateway is moving toward an **OpenAPI-first** workflow. The gateway contract
 | **Groq** | [`groq.openapi.yaml`](./groq.openapi.yaml) | OpenAPI 3.0.3 | Groq OpenAI-Compatible Inference REST Spec | `POST /openai/v1/chat/completions`, `POST /openai/v1/completions`, `POST /openai/v1/audio/*`, `GET /openai/v1/models` |
 | **OpenRouter** | [`openrouter.openapi.yaml`](./openrouter.openapi.yaml) | OpenAPI 3.0.3 | OpenRouter Unified Inference REST Spec | `POST /api/v1/chat/completions`, `GET /api/v1/models` |
 | **Ollama** | [`ollama.openapi.yaml`](./ollama.openapi.yaml) | OpenAPI 3.0.3 | Ollama Local & Cloud Inference REST Spec | `POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/embeddings`, `GET /api/tags`, `GET /v1/models` |
+| **Google Gemini** | [`gemini.openapi.yaml`](./gemini.openapi.yaml) | OpenAPI 3.0.3 | Official Google Discovery (`generativelanguage.googleapis.com/$discovery/OPENAPI3_0?version=v1beta`) | `POST /v1beta/models/{model}:generateContent`, `:streamGenerateContent?alt=sse`, `:embedContent`, `:batchEmbedContents`, `:countTokens`, `GET /v1beta/models` |
 
 ---
 
@@ -42,9 +43,9 @@ The gateway is moving toward an **OpenAPI-first** workflow. The gateway contract
 └──────────────┘ └──────────────┘ └──────────────┘ └───────────────┘ └───────────────┘
 ```
 
-1. **Reproducible Gateway Generation**: `gateway.gen.go` is generated from `gateway.openapi.yaml` with `oapi-codegen` v2.8.0 using [`gateway.codegen.yaml`](./gateway.codegen.yaml), alongside provider DTO packages generated from `openai.codegen.yaml`, `anthropic.codegen.yaml`, `groq.codegen.yaml`, `openrouter.codegen.yaml`, and `ollama.codegen.yaml`. CI regenerates via `make specgen` and fails if committed output is stale.
-2. **Contract Validation**: `oapi-codegen` validates the gateway and provider OpenAPI documents during generation. `cmd/specgen` semantically validates all checked-in OpenAPI documents (`gateway`, `openai`, `anthropic`, `groq`, `openrouter`, `ollama`), the MCP JSON Schema, and the generated A2A protobuf descriptor. Route parity is enforced across `/v1`, `/admin/v1`, `/auth`, `/openai/v1`, and `/anthropic/v1`.
-3. **Runtime Mapping**: Provider adapters (`internal/adapter/{openai,anthropic,groq,openrouter,ollama}`) translate canonical requests/responses using the OpenAPI-generated DTOs in `internal/openapi/providers`.
+1. **Reproducible Gateway Generation**: `gateway.gen.go` is generated from `gateway.openapi.yaml` with `oapi-codegen` v2.8.0 using [`gateway.codegen.yaml`](./gateway.codegen.yaml), alongside provider DTO packages generated from `openai.codegen.yaml`, `anthropic.codegen.yaml`, `groq.codegen.yaml`, `openrouter.codegen.yaml`, `ollama.codegen.yaml`, and `gemini.codegen.yaml`. CI regenerates via `make specgen` and fails if committed output is stale.
+2. **Contract Validation**: `oapi-codegen` validates the gateway and provider OpenAPI documents during generation. `cmd/specgen` semantically validates all checked-in OpenAPI documents (`gateway`, `openai`, `anthropic`, `groq`, `openrouter`, `ollama`, `gemini`), the MCP JSON Schema, and the generated A2A protobuf descriptor. Route parity is enforced across `/v1`, `/admin/v1`, `/auth`, `/openai/v1`, and `/anthropic/v1`.
+3. **Runtime Mapping**: Provider adapters (`internal/adapter/{openai,anthropic,groq,openrouter,ollama,gemini}`) translate canonical requests/responses using the OpenAPI-generated DTOs in `internal/openapi/providers`.
 
 ---
 

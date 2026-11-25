@@ -1,0 +1,634 @@
+openapi: 3.0.3
+info:
+  title: Google Gemini Generative Language API
+  version: v1beta
+  description: >-
+    OpenAPI 3.0.3 contract for the Google Gemini Generative Language API (v1beta),
+    derived from the official Google Discovery endpoint
+    (https://generativelanguage.googleapis.com/$discovery/OPENAPI3_0?version=v1beta)
+    and scoped to the endpoints consumed by GoRoute AI Gateway.
+servers:
+  - url: https://generativelanguage.googleapis.com
+    description: Global Gemini API endpoint
+  - url: https://generativelanguage.us.rep.googleapis.com
+    description: US Regional Gemini API endpoint
+security:
+  - ApiKeyAuth: []
+  - BearerAuth: []
+paths:
+  /v1beta/models/{model}:generateContent:
+    post:
+      operationId: geminiGenerateContent
+      summary: Generate a model response for the given conversation contents
+      parameters:
+        - $ref: '#/components/parameters/GeminiModelParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GeminiGenerateContentRequest'
+      responses:
+        '200':
+          description: Successful content generation response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeminiGenerateContentResponse'
+        default:
+          description: Upstream Google RPC error response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeminiErrorResponse'
+  /v1beta/models/{model}:streamGenerateContent:
+    post:
+      operationId: geminiStreamGenerateContent
+      summary: Stream generated content chunks via Server-Sent Events (alt=sse)
+      parameters:
+        - $ref: '#/components/parameters/GeminiModelParam'
+        - name: alt
+          in: query
+          required: false
+          description: Set to "sse" to receive Server-Sent Events data frames.
+          schema:
+            type: string
+            enum:
+              - sse
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GeminiGenerateContentRequest'
+      responses:
+        '200':
+          description: Stream of GeminiGenerateContentResponse SSE frames
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/GeminiGenerateContentResponse'
+        default:
+          description: Upstream Google RPC error response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeminiErrorResponse'
+  /v1beta/models/{model}:embedContent:
+    post:
+      operationId: geminiEmbedContent
+      summary: Generate a text embedding vector for a single content payload
+      parameters:
+        - $ref: '#/components/parameters/GeminiModelParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GeminiEmbedContentRequest'
+      responses:
+        '200':
+          description: Embedding vector response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeminiEmbedContentResponse'
+        default:
+          description: Upstream Google RPC error response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeminiErrorResponse'
+  /v1beta/models/{model}:batchEmbedContents:
+    post:
+      operationId: geminiBatchEmbedContents
+      summary: Generate embedding vectors for a batch of content payloads
+      parameters:
+        - $ref: '#/components/parameters/GeminiModelParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GeminiBatchEmbedContentsRequest'
+      responses:
+        '200':
+          description: Batch embedding vectors response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeminiBatchEmbedContentsResponse'
+        default:
+          description: Upstream Google RPC error response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeminiErrorResponse'
+  /v1beta/models/{model}:countTokens:
+    post:
+      operationId: geminiCountTokens
+      summary: Count tokens for a content or generateContent request
+      parameters:
+        - $ref: '#/components/parameters/GeminiModelParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GeminiCountTokensRequest'
+      responses:
+        '200':
+          description: Token count response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeminiCountTokensResponse'
+        default:
+          description: Upstream Google RPC error response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeminiErrorResponse'
+  /v1beta/models:
+    get:
+      operationId: geminiListModels
+      summary: List available Gemini models
+      parameters:
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+        - name: pageToken
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Paginated list of available Gemini models
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeminiListModelsResponse'
+        default:
+          description: Upstream Google RPC error response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeminiErrorResponse'
+  /v1beta/models/{model}:
+    get:
+      operationId: geminiGetModel
+      summary: Get metadata for a specific Gemini model
+      parameters:
+        - $ref: '#/components/parameters/GeminiModelParam'
+      responses:
+        '200':
+          description: Model metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeminiModel'
+        default:
+          description: Upstream Google RPC error response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeminiErrorResponse'
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-goog-api-key
+      description: Google Gemini API key supplied via the x-goog-api-key header.
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: Optional OAuth2 bearer authentication.
+  parameters:
+    GeminiModelParam:
+      name: model
+      in: path
+      required: true
+      description: Bare Gemini model identifier (e.g., gemini-2.5-flash).
+      schema:
+        type: string
+  schemas:
+    GeminiGenerateContentRequest:
+      type: object
+      required:
+        - contents
+      properties:
+        model:
+          type: string
+        contents:
+          type: array
+          items:
+            $ref: '#/components/schemas/GeminiContent'
+        systemInstruction:
+          $ref: '#/components/schemas/GeminiContent'
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/GeminiTool'
+        toolConfig:
+          $ref: '#/components/schemas/GeminiToolConfig'
+        safetySettings:
+          type: array
+          items:
+            $ref: '#/components/schemas/GeminiSafetySetting'
+        generationConfig:
+          $ref: '#/components/schemas/GeminiGenerationConfig'
+        cachedContent:
+          type: string
+    GeminiContent:
+      type: object
+      properties:
+        role:
+          type: string
+          description: Producer of the content ("user" or "model").
+        parts:
+          type: array
+          items:
+            $ref: '#/components/schemas/GeminiPart'
+    GeminiPart:
+      type: object
+      properties:
+        text:
+          type: string
+        thought:
+          type: boolean
+        thoughtSignature:
+          type: string
+        inlineData:
+          $ref: '#/components/schemas/GeminiBlob'
+        fileData:
+          $ref: '#/components/schemas/GeminiFileData'
+        functionCall:
+          $ref: '#/components/schemas/GeminiFunctionCall'
+        functionResponse:
+          $ref: '#/components/schemas/GeminiFunctionResponse'
+    GeminiBlob:
+      type: object
+      required:
+        - mimeType
+        - data
+      properties:
+        mimeType:
+          type: string
+        data:
+          type: string
+          description: Base64-encoded raw bytes.
+    GeminiFileData:
+      type: object
+      required:
+        - fileUri
+      properties:
+        mimeType:
+          type: string
+        fileUri:
+          type: string
+    GeminiFunctionCall:
+      type: object
+      required:
+        - name
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        args:
+          type: object
+          additionalProperties: true
+    GeminiFunctionResponse:
+      type: object
+      required:
+        - name
+        - response
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        response:
+          type: object
+          additionalProperties: true
+    GeminiTool:
+      type: object
+      properties:
+        functionDeclarations:
+          type: array
+          items:
+            $ref: '#/components/schemas/GeminiFunctionDeclaration'
+    GeminiFunctionDeclaration:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        parameters:
+          type: object
+          additionalProperties: true
+        parametersJsonSchema:
+          type: object
+          additionalProperties: true
+    GeminiToolConfig:
+      type: object
+      properties:
+        functionCallingConfig:
+          $ref: '#/components/schemas/GeminiFunctionCallingConfig'
+    GeminiFunctionCallingConfig:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum:
+            - MODE_UNSPECIFIED
+            - AUTO
+            - ANY
+            - NONE
+            - VALIDATED
+        allowedFunctionNames:
+          type: array
+          items:
+            type: string
+    GeminiSafetySetting:
+      type: object
+      required:
+        - category
+        - threshold
+      properties:
+        category:
+          type: string
+        threshold:
+          type: string
+    GeminiGenerationConfig:
+      type: object
+      properties:
+        stopSequences:
+          type: array
+          items:
+            type: string
+        responseMimeType:
+          type: string
+        responseSchema:
+          type: object
+          additionalProperties: true
+        responseJsonSchema:
+          type: object
+          additionalProperties: true
+        candidateCount:
+          type: integer
+          format: int32
+        maxOutputTokens:
+          type: integer
+          format: int32
+        temperature:
+          type: number
+          format: double
+        topP:
+          type: number
+          format: double
+        topK:
+          type: integer
+          format: int32
+        seed:
+          type: integer
+          format: int32
+        presencePenalty:
+          type: number
+          format: double
+        frequencyPenalty:
+          type: number
+          format: double
+        responseLogprobs:
+          type: boolean
+        logprobs:
+          type: integer
+          format: int32
+        thinkingConfig:
+          $ref: '#/components/schemas/GeminiThinkingConfig'
+    GeminiThinkingConfig:
+      type: object
+      properties:
+        includeThoughts:
+          type: boolean
+        thinkingBudget:
+          type: integer
+          format: int32
+        thinkingLevel:
+          type: string
+          enum:
+            - THINKING_LEVEL_UNSPECIFIED
+            - MINIMAL
+            - LOW
+            - MEDIUM
+            - HIGH
+    GeminiGenerateContentResponse:
+      type: object
+      properties:
+        candidates:
+          type: array
+          items:
+            $ref: '#/components/schemas/GeminiCandidate'
+        promptFeedback:
+          $ref: '#/components/schemas/GeminiPromptFeedback'
+        usageMetadata:
+          $ref: '#/components/schemas/GeminiUsageMetadata'
+        modelVersion:
+          type: string
+        responseId:
+          type: string
+    GeminiCandidate:
+      type: object
+      properties:
+        index:
+          type: integer
+          format: int32
+        content:
+          $ref: '#/components/schemas/GeminiContent'
+        finishReason:
+          type: string
+        finishMessage:
+          type: string
+        tokenCount:
+          type: integer
+          format: int32
+    GeminiPromptFeedback:
+      type: object
+      properties:
+        blockReason:
+          type: string
+    GeminiUsageMetadata:
+      type: object
+      properties:
+        promptTokenCount:
+          type: integer
+          format: int32
+        cachedContentTokenCount:
+          type: integer
+          format: int32
+        candidatesTokenCount:
+          type: integer
+          format: int32
+        toolUsePromptTokenCount:
+          type: integer
+          format: int32
+        thoughtsTokenCount:
+          type: integer
+          format: int32
+        totalTokenCount:
+          type: integer
+          format: int32
+        promptTokensDetails:
+          type: array
+          items:
+            $ref: '#/components/schemas/GeminiModalityTokenCount'
+        candidatesTokensDetails:
+          type: array
+          items:
+            $ref: '#/components/schemas/GeminiModalityTokenCount'
+    GeminiModalityTokenCount:
+      type: object
+      properties:
+        modality:
+          type: string
+        tokenCount:
+          type: integer
+          format: int32
+    GeminiEmbedContentRequest:
+      type: object
+      required:
+        - content
+      properties:
+        model:
+          type: string
+        content:
+          $ref: '#/components/schemas/GeminiContent'
+        taskType:
+          type: string
+        title:
+          type: string
+        outputDimensionality:
+          type: integer
+          format: int32
+    GeminiEmbedContentResponse:
+      type: object
+      properties:
+        embedding:
+          $ref: '#/components/schemas/GeminiContentEmbedding'
+        usageMetadata:
+          $ref: '#/components/schemas/GeminiUsageMetadata'
+    GeminiBatchEmbedContentsRequest:
+      type: object
+      required:
+        - requests
+      properties:
+        requests:
+          type: array
+          items:
+            $ref: '#/components/schemas/GeminiEmbedContentRequest'
+    GeminiBatchEmbedContentsResponse:
+      type: object
+      properties:
+        embeddings:
+          type: array
+          items:
+            $ref: '#/components/schemas/GeminiContentEmbedding'
+        usageMetadata:
+          $ref: '#/components/schemas/GeminiUsageMetadata'
+    GeminiContentEmbedding:
+      type: object
+      properties:
+        values:
+          type: array
+          items:
+            type: number
+            format: double
+    GeminiCountTokensRequest:
+      type: object
+      properties:
+        contents:
+          type: array
+          items:
+            $ref: '#/components/schemas/GeminiContent'
+        generateContentRequest:
+          $ref: '#/components/schemas/GeminiGenerateContentRequest'
+    GeminiCountTokensResponse:
+      type: object
+      properties:
+        totalTokens:
+          type: integer
+          format: int32
+        cachedContentTokenCount:
+          type: integer
+          format: int32
+    GeminiModel:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+        baseModelId:
+          type: string
+        version:
+          type: string
+        displayName:
+          type: string
+        description:
+          type: string
+        inputTokenLimit:
+          type: integer
+          format: int32
+        outputTokenLimit:
+          type: integer
+          format: int32
+        supportedGenerationMethods:
+          type: array
+          items:
+            type: string
+        thinking:
+          type: boolean
+        temperature:
+          type: number
+          format: double
+        maxTemperature:
+          type: number
+          format: double
+        topP:
+          type: number
+          format: double
+        topK:
+          type: integer
+          format: int32
+    GeminiListModelsResponse:
+      type: object
+      properties:
+        models:
+          type: array
+          items:
+            $ref: '#/components/schemas/GeminiModel'
+        nextPageToken:
+          type: string
+    GeminiErrorResponse:
+      type: object
+      properties:
+        error:
+          $ref: '#/components/schemas/GeminiErrorDetail'
+    GeminiErrorDetail:
+      type: object
+      properties:
+        code:
+          type: integer
+          format: int32
+        message:
+          type: string
+        status:
+          type: string

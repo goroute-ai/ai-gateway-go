@@ -2121,6 +2121,8 @@ func NormalizeProvider(raw string) domain.ProviderType {
 		return domain.ProviderOpenRouter
 	case lower == "ollama" || lower == "ollama_chat":
 		return domain.ProviderOllama
+	case lower == "gemini" || lower == "google" || lower == "google_ai" || lower == "google-ai" || lower == "generativelanguage":
+		return domain.ProviderGemini
 	default:
 		return domain.ProviderType(lower)
 	}
@@ -2162,6 +2164,8 @@ func ParseProviderModel(modelSpec string) (domain.ProviderType, string, string) 
 		return domain.ProviderAnthropic, spec, fmt.Sprintf("%s/%s", domain.ProviderAnthropic, spec)
 	case strings.HasPrefix(lower, "gpt-") || strings.HasPrefix(lower, "o1") || strings.HasPrefix(lower, "o3") || strings.HasPrefix(lower, "o4") || strings.HasPrefix(lower, "text-embedding-3") || strings.HasPrefix(lower, "omni-moderation"):
 		return domain.ProviderOpenAI, spec, fmt.Sprintf("%s/%s", domain.ProviderOpenAI, spec)
+	case strings.HasPrefix(lower, "gemini-"):
+		return domain.ProviderGemini, spec, fmt.Sprintf("%s/%s", domain.ProviderGemini, spec)
 	default:
 		return "", spec, spec
 	}

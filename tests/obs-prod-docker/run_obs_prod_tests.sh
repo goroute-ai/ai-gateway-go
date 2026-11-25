@@ -143,6 +143,9 @@ SECRETS_TO_SCAN=(
   "obs-prod-pg-password-2026"
   "private.user.canary@secret-corp.example"
 )
+if [[ -n "${OBS_LIVE_GEMINI_API_KEY:-}" ]]; then
+  SECRETS_TO_SCAN+=("$OBS_LIVE_GEMINI_API_KEY")
+fi
 for secret in "${SECRETS_TO_SCAN[@]}"; do
   if echo "$ALL_LOGS" | grep -qF "$secret"; then
     echo "FAIL: secret/PII leaked in container stdout logs!" >&2
