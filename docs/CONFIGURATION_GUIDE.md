@@ -94,7 +94,7 @@ go get github.com/goroute-ai/ai-gateway-go/pkg/gateway
 ```
 
 ```go
-// Embedded gateway with silent stdout logging, v0.1.0 routing/rotation, and custom auth options
+// Embedded gateway with silent stdout logging, v0.2.0 routing/rotation, and custom auth options
 gw, err := gateway.New(
     gateway.WithModelList(
         gateway.ModelEntry{

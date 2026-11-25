@@ -1,6 +1,6 @@
 .PHONY: all build fmt vet lint deadcode test test-unit test-guardrails test-e2e test-live-up test-live-down test-keycloak-up test-keycloak-down test-postgres test-e2e-strict test-ui-e2e test-prod-docker test-cache-prod-docker test-obs-prod-docker test-security specgen catalog-sync run docker-build docker-up docker-down clean release-assets release-check ui-install ui-build ui-check-dist ui-dev
 
-VERSION ?= v0.1.0
+VERSION ?= v0.2.0
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 

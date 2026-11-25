@@ -75,7 +75,7 @@ docs/
    - Complete configuration parameters table with default values and security notes.
 
 7. **[Upgrade & Rollback Guide (`UPGRADING.md`)](./UPGRADING.md)**  
-   *Upgrade guidance for `v0.1.0`, migrations `0001`–`0042`, `0034` rollback duplicate-subject preflight checks, and `rolling_24h` cold recovery boundaries.*
+   *Upgrade guidance for `v0.2.0`, migrations `0001`–`0042`, `0034` rollback duplicate-subject preflight checks, and `rolling_24h` cold recovery boundaries.*
 
 8. **[Testing & Verification Guide (`TESTING.md`)](./TESTING.md)**  
    *Complete 3-tier testing workflow covering static/contract parity, unit/race checks, live PostgreSQL 16 & Redis 8 E2E suites, Playwright headless Chromium Web UI tests, and production Docker OIDC, Caching & OTLP Observability HA suites.*

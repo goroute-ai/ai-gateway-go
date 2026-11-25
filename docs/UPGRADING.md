@@ -1,17 +1,31 @@
 # GoRoute AI Gateway — Upgrade & Rollback Guide
 
-This guide covers safe zero-downtime upgrades, schema migration lifecycle (`0001`–`0042`), and rollback precautions for GoRoute AI Gateway **`v0.1.0`**.
+This guide covers safe zero-downtime upgrades, schema migration lifecycle (`0001`–`0042`), and rollback precautions for GoRoute AI Gateway **`v0.2.0`**.
 
 > [!IMPORTANT]
 > Always back up your PostgreSQL database before running schema migrations, and upgrade gateway replicas in lockstep with schema migrations.
 
 ---
 
+## Upgrading from `v0.1.0` to `v0.2.0`
+
+1. **Apply Migration `0042_seed_ollama_models`**:
+   - Run `ai-gateway -migrate-only` (or wait for startup auto-migration) before rolling new replicas. Migration `0042` idempotently seeds baseline local Ollama models (`ollama/qwen2.5:0.5b` and `ollama/all-minilm:latest`) at `0 µ$` default cost using `ON CONFLICT (id) DO NOTHING`.
+2. **Switch Telemetry Collection from Prometheus `/metrics` to Pure OpenTelemetry (`OTLP/HTTP`)**:
+   - `GET /metrics`, `deployments/prometheus/prometheus.yml`, and legacy `gw_*` / `gateway_*_total` metric names were removed in `v0.2.0`.
+   - Configure the top-level `otel:` section (or standard `OTEL_*` / `GATEWAY_OTEL_*` env vars) to export Traces, Metrics (`gen_ai.*`, `gateway.*`), and opt-in Logs over OTLP/HTTP directly to an OpenTelemetry Collector or OTLP-compatible backend.
+3. **Update Response Cache Configuration & Redis Version (`redis:8-alpine` for Semantic Caching)**:
+   - Dual-tier L1+L2 Redis Lua epoch caching, raw SSE chunk-array stream caching, and `router.cache_aware_routing` were removed. Select a single backend via `cache.type`: `"local"` (default), `"redis"`, or `"redis-semantic"` (requires Redis 8+ with RediSearch). Legacy `cache.max_l1_entries` remains supported as a silent deprecated YAML alias for `cache.max_entries`.
+4. **Review Loopback Custom `BaseURL` RBAC**:
+   - When `security.network.outbound_ssrf.allow_loopback_http` is enabled, creating/rotating/validating custom `BaseURL` provider credentials now requires `platform_admin` role (matching `allow_private_networks` and `allowed_private_cidrs`). Caller-supplied `keep_alive` extra params on Ollama chat requests are automatically stripped to protect shared GPU VRAM.
+
+---
+
 ## Release Baseline (`v0.1.0`)
 
-`v0.1.0` establishes the baseline with strict 4-provider OpenAPI-first consolidation (`0037_prune_unsupported_providers`, supporting OpenAI, Anthropic, Groq, and OpenRouter), the UI-selectable 5-release MCP YAML schema engine (`0038_mcp_runtime_spec`), vendor-neutral OIDC-only federation (`0039`–`0040`), 19-feature action-based authorization parity (`0041_authorization_parity`), production routing hardening (`0036`), rolling KEK decryption (`auth.previous_master_encryption_keys`), and transactional secret sinks (`webhook`, `vault_kv2`). Run `ai-gateway -migrate-only` (or wait for startup migration completion) before rolling new replicas. Before restarting replicas that use AWS RDS IAM, check that the PostgreSQL DSN verifies the server certificate; image, speech, and individual batch requests enforce applicable descriptor limits before provider dispatch. See the [API reference](./API_REFERENCE.md#budgeted-caller-modality-coverage) for endpoint behavior.
+`v0.1.0` established the baseline (`0001`–`0041`) with OpenAPI-first provider consolidation (`0037_prune_unsupported_providers`), the UI-selectable 5-release MCP YAML schema engine (`0038_mcp_runtime_spec`), vendor-neutral OIDC-only federation (`0039`–`0040`), 19-feature action-based authorization parity (`0041_authorization_parity`), production routing hardening (`0036`), rolling KEK decryption (`auth.previous_master_encryption_keys`), and transactional secret sinks (`webhook`, `vault_kv2`). Run `ai-gateway -migrate-only` (or wait for startup migration completion) before rolling new replicas. Before restarting replicas that use AWS RDS IAM, check that the PostgreSQL DSN verifies the server certificate; image, speech, and individual batch requests enforce applicable descriptor limits before provider dispatch. See the [API reference](./API_REFERENCE.md#budgeted-caller-modality-coverage) for endpoint behavior.
 
-## 1. Summary of Security & Behavior Invariants (`v0.1.0`)
+## 1. Summary of Security & Behavior Invariants (`v0.2.0`)
 
 1. **Ambient Cloud IAM Is Disabled by Default (`auth.allow_ambient_cloud_iam: false`)**:
    - AWS RDS IAM no longer consumes ambient host/pod metadata credentials automatically unless `auth.allow_ambient_cloud_iam: true` is explicitly configured (or explicit static credentials are supplied).

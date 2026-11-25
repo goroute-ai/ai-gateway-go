@@ -2,7 +2,7 @@
 
 Ultra-fast, lightweight AI Gateway, MCP Virtual Hub, and Agent-to-Agent (A2A) Router in 100% Pure Go with an embedded Operator Web UI.
 
-GoRoute sits between your applications and major AI providers (OpenAI, Anthropic, Groq, and OpenRouter), exposing one unified OpenAI-compatible API (`/v1/*`) with intelligent routing, circuit breakers, distributed Redis rate limits, integer micro-dollar FinOps, vendor-neutral OIDC SSO, 15 built-in guardrail drivers, and a zero-dependency React Operator Console embedded directly in the Go binary.
+GoRoute sits between your applications and major AI providers (OpenAI, Anthropic, Groq, OpenRouter, and Ollama), exposing one unified OpenAI-compatible API (`/v1/*`) with intelligent routing, circuit breakers, distributed Redis rate limits, single-backend response & semantic caching, pure OpenTelemetry OTLP/HTTP observability, integer micro-dollar FinOps, vendor-neutral OIDC SSO, 15 built-in guardrail drivers, and a zero-dependency React Operator Console embedded directly in the Go binary.
 
 - **GitHub Repository**: https://github.com/goroute-ai/ai-gateway-go
 - **Go SDK (`pkg/gateway`)**: https://pkg.go.dev/github.com/goroute-ai/ai-gateway-go/pkg/gateway
@@ -17,11 +17,11 @@ GoRoute sits between your applications and major AI providers (OpenAI, Anthropic
 Multi-arch Distroless non-root images (`gcr.io/distroless/static-debian12:nonroot`, `linux/amd64` + `linux/arm64`) are published to Docker Hub (`docker.io/qaadir/ai-gateway`) and GitHub Container Registry (`ghcr.io/goroute-ai/ai-gateway-go`).
 
 - `latest` — Latest stable release
-- `0.1.0` / `v0.1.0` — Pinned release (both bare and `v`-prefixed tags supported)
-- `0.1` — Minor rolling release channel
+- `0.2.0` / `v0.2.0` — Pinned release (both bare and `v`-prefixed tags supported)
+- `0.2` — Minor rolling release channel
 
 ```bash
-docker pull qaadir/ai-gateway:0.1.0
+docker pull qaadir/ai-gateway:0.2.0
 # or
 docker pull qaadir/ai-gateway:latest
 ```
@@ -36,7 +36,7 @@ docker pull qaadir/ai-gateway:latest
 docker run --rm -p 8080:8080 \
   -e GATEWAY_MASTER_ADMIN_KEY="sk-gw-change-me" \
   -e OPENAI_API_KEY="sk-..." \
-  qaadir/ai-gateway:0.1.0
+  qaadir/ai-gateway:0.2.0
 ```
 
 Open the embedded Operator Web UI at `http://localhost:8080/ui/`.
@@ -48,12 +48,12 @@ curl -O https://raw.githubusercontent.com/goroute-ai/ai-gateway-go/main/deployme
 docker compose up -d
 ```
 
-To pull the prebuilt image instead of building from source, replace `build:` with `image: qaadir/ai-gateway:0.1.0` (or `ghcr.io/goroute-ai/ai-gateway-go:0.1.0`).
+To pull the prebuilt image instead of building from source, replace `build:` with `image: qaadir/ai-gateway:0.2.0` (or `ghcr.io/goroute-ai/ai-gateway-go:0.2.0`).
 
 ### 3. Kubernetes (Helm OCI)
 
 ```bash
-helm install goroute oci://ghcr.io/goroute-ai/charts/goroute --version 0.1.0
+helm install goroute oci://ghcr.io/goroute-ai/charts/goroute --version 0.2.0
 ```
 
 ---
@@ -64,7 +64,7 @@ helm install goroute oci://ghcr.io/goroute-ai/charts/goroute --version 0.1.0
 | :--- | :--- |
 | `GATEWAY_PORT` | HTTP listener port (default `8080`) |
 | `GATEWAY_POSTGRES_DSN` | PostgreSQL DSN for persistence, migrations, audit logs, and FinOps ledgers |
-| `GATEWAY_REDIS_ADDR` | Redis `host:port` for distributed sliding-window rate limits, quotas, and L2 cache |
+| `GATEWAY_REDIS_ADDR` | Redis `host:port` for distributed sliding-window rate limits, quotas, and response/semantic caching |
 | `GATEWAY_MASTER_ADMIN_KEY` | Control plane bootstrap admin bearer token |
 | `GATEWAY_MASTER_ENCRYPTION_KEY` | 32-byte hex key for encrypted provider credentials & staged key rotation |
 | `GATEWAY_SESSION_SECRET` | `>= 32`-byte secret used to sign `goroute_session` operator cookies |
@@ -78,7 +78,7 @@ Health endpoints for container orchestrators: `GET /healthz`, `GET /readyz`, or 
 Every release image digest is signed with Sigstore Cosign keyless OIDC and backed by BuildKit provenance & SPDX SBOM attestations:
 
 ```bash
-cosign verify docker.io/qaadir/ai-gateway:0.1.0 \
+cosign verify docker.io/qaadir/ai-gateway:0.2.0 \
   --certificate-identity-regexp="^https://github.com/goroute-ai/ai-gateway-go/.github/workflows/docker-publish.yml@" \
   --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
 ```

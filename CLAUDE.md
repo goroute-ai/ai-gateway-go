@@ -26,7 +26,7 @@ Use [the codebase map](docs/CODEBASE_MAP.md) to find implementation, tests, and 
 
 `make release-check` runs `gofmt -w` through its `fmt` prerequisite, then vet, generation, unit tests, and E2E tests. It modifies files and requires PostgreSQL and Redis; inspect its prerequisites before running it on an existing worktree. `make ui-build` writes generated files under `internal/ui/dist/`.
 
-## Release Invariants (v0.1.0)
+## Release Invariants (v0.2.0)
 
 - Route provider and tool egress through `internal/security/network`; validate custom `BaseURL` inputs via `adapter.ValidateAndResolveBaseURL`, isolate untrusted user media fetches behind `DefaultPublicMediaPolicy` (`mediaPolicy`/`mediaClient`), and keep private-network preflight probes restricted to `platform_admin`.
 - Preserve tenant identity, `(org_id, oidc_issuer, oidc_subject)` federated binding (`0034`, including the transaction-locked duplicate-subject rollback preflight), single-transaction SCIM group updates, `team_member_permissions` and `self_serve_budget_policy` enforcement, `team_admin` hierarchy boundaries (`0035`), tri-state JSON allowlist semantics (`null` = Inherit vs `[]` = Deny All via `optionalStringSlice` and explicit JSON tags without `,omitempty` on `IdentityContext`, `Team`, and `VirtualKey`), and fail-closed authorization across `PreRouter`, `DeploymentFilterChain`, operator roles, virtual keys, `CustomAuthenticator`, MCP tools, and A2A agents.

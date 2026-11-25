@@ -6,11 +6,12 @@ The GoRoute team takes the security of GoRoute AI Gateway seriously. We apprecia
 
 ## Supported Versions
 
-Only the latest minor release branch (`0.1.x`) receives active security updates and vulnerability patches.
+Only the latest minor release branch (`0.2.x`) receives active security updates and vulnerability patches.
 
 | Version | Supported          | Status         |
 | :------ | :----------------- | :------------- |
-| `0.1.x` | :white_check_mark: | Active Support |
+| `0.2.x` | :white_check_mark: | Active Support |
+| `0.1.x` | :x:                | End of Life (upgrade to `0.2.x`) |
 
 ---
 
@@ -38,7 +39,7 @@ To help us triage and resolve the issue quickly, please include:
 1. **Acknowledgment**: We will acknowledge receipt of your vulnerability report within **48 business hours**.
 2. **Investigation & Assessment**: Our engineering team will assess severity, verify exploitability, and determine affected versions.
 3. **Patch Development**: We will prepare and test an emergency patch cleanly against the supported release branch.
-4. **Coordinated Release**: We adhere to standard 90-day coordinated vulnerability disclosure guidelines. A patched release (e.g., `v0.1.1`) will be published alongside an official GitHub Security Advisory crediting the finder.
+4. **Coordinated Release**: We adhere to standard 90-day coordinated vulnerability disclosure guidelines. A patched release (e.g., `v0.2.1`) will be published alongside an official GitHub Security Advisory crediting the finder.
 
 ---
 
