@@ -2119,6 +2119,8 @@ func NormalizeProvider(raw string) domain.ProviderType {
 		return domain.ProviderGroq
 	case lower == "openrouter":
 		return domain.ProviderOpenRouter
+	case lower == "ollama" || lower == "ollama_chat":
+		return domain.ProviderOllama
 	default:
 		return domain.ProviderType(lower)
 	}

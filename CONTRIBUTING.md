@@ -2,7 +2,7 @@
 
 Thank you for your interest in contributing to **GoRoute AI Gateway**!
 
-GoRoute AI Gateway is a Go service and embeddable SDK (`v0.1.0`) that routes inference requests across OpenAPI-first model providers (`openai`, `anthropic`, `groq`, `openrouter`), exposes UI-selectable multi-release Model Context Protocol (MCP) virtual hubs, and connects Agent-to-Agent (A2A) networks.
+GoRoute AI Gateway is a Go service and embeddable SDK (`v0.1.0`) that routes inference requests across OpenAPI-first model providers (`openai`, `anthropic`, `groq`, `openrouter`, `ollama`), exposes UI-selectable multi-release Model Context Protocol (MCP) virtual hubs, and connects Agent-to-Agent (A2A) networks.
 
 ---
 
@@ -99,7 +99,7 @@ If you are new to the codebase, look for issues labeled [`good first issue`](htt
 Here are great areas to get started:
 
 ### 1. Add or Extend an OpenAPI-First Provider Adapter
-All first-class providers (`openai`, `anthropic`, `groq`, `openrouter`) generate wire DTOs directly from pinned specifications under [`docs/openapi/`](./docs/openapi/README.md) via `make specgen`:
+All first-class providers (`openai`, `anthropic`, `groq`, `openrouter`, `ollama`) generate wire DTOs directly from pinned specifications under [`docs/openapi/`](./docs/openapi/README.md) via `make specgen` (see [`.agents/skills/goroute-add-provider/SKILL.md`](./.agents/skills/goroute-add-provider/SKILL.md) for the complete onboarding checklist):
 1. Pin the upstream OpenAPI spec (`docs/openapi/<provider>.openapi.yaml`) and codegen config (`docs/openapi/<provider>.codegen.yaml`).
 2. Add the `//go:generate` directive in `internal/openapi/generate.go` and run `make specgen`.
 3. Implement `adapter.ProviderAdapter` under `internal/adapter/<provider>/` using the generated DTOs and `internal/security/network`.

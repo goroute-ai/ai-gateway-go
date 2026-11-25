@@ -119,7 +119,7 @@ export const CredentialsView: React.FC = () => {
   };
 
   const handlePreflightTest = async () => {
-    if (!apiKey.trim()) return;
+    if (provider !== 'ollama' && !apiKey.trim()) return;
     const headers = parseHeaders();
     if (headers === false) return;
     setPreflightTesting(true);
@@ -169,6 +169,7 @@ export const CredentialsView: React.FC = () => {
     { id: 'anthropic', label: 'Anthropic Claude' },
     { id: 'groq', label: 'Groq' },
     { id: 'openrouter', label: 'OpenRouter' },
+    { id: 'ollama', label: 'Ollama' },
   ];
 
   return (
@@ -311,7 +312,7 @@ export const CredentialsView: React.FC = () => {
           ))
         ) : (
           <div className="col-span-full py-12 text-center text-brand-muted text-xs">
-            No upstream provider credentials stored in vault for {activeOrgId}. Click "Add Provider Credential" to connect OpenAI, Anthropic, Groq, or OpenRouter.
+            No upstream provider credentials stored in vault for {activeOrgId}. Click "Add Provider Credential" to connect OpenAI, Anthropic, Groq, OpenRouter, or Ollama.
           </div>
         )}
       </div>
@@ -339,12 +340,25 @@ export const CredentialsView: React.FC = () => {
             </Field>
           </div>
 
-          <Field label="API Key *">
-            <input type="password" required value={apiKey} onChange={(e) => { setApiKey(e.target.value); setPreflightResult(null); }} placeholder="sk-..." className={MONO_INPUT_CLS} />
+          <Field label={provider === 'ollama' ? 'API Key (Optional for local Ollama)' : 'API Key *'}>
+            <input
+              type="password"
+              required={provider !== 'ollama'}
+              value={apiKey}
+              onChange={(e) => { setApiKey(e.target.value); setPreflightResult(null); }}
+              placeholder={provider === 'ollama' ? 'Leave blank for local Ollama; set for Ollama Cloud or auth proxy' : 'sk-...'}
+              className={MONO_INPUT_CLS}
+            />
           </Field>
 
           <Field label="Custom Base URL (Optional)">
-            <input type="text" value={baseURL} onChange={(e) => setBaseURL(e.target.value)} placeholder="e.g. https://api.openai.com/v1 or https://openrouter.ai/api/v1" className={MONO_INPUT_CLS} />
+            <input
+              type="text"
+              value={baseURL}
+              onChange={(e) => setBaseURL(e.target.value)}
+              placeholder={provider === 'ollama' ? 'e.g. http://127.0.0.1:11434 or https://ollama.example.com' : 'e.g. https://api.openai.com/v1 or https://openrouter.ai/api/v1'}
+              className={MONO_INPUT_CLS}
+            />
           </Field>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -388,7 +402,7 @@ export const CredentialsView: React.FC = () => {
             <button
               type="button"
               onClick={handlePreflightTest}
-              disabled={preflightTesting || !apiKey.trim()}
+              disabled={preflightTesting || (provider !== 'ollama' && !apiKey.trim())}
               className={BTN_ACC}
             >
               <Zap className={`w-3.5 h-3.5 ${preflightTesting ? 'animate-spin' : ''}`} />

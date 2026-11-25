@@ -220,8 +220,8 @@ func TestObsProd_FullOTLPVerificationSuites(t *testing.T) {
 	doReq(t, client, http.MethodPost, obsFixturesBase+"/_inspect/reset", nil, nil)
 
 	// -------------------------------------------------------------------------
-	// 1. Provision Org, 4 Provider Credentials & Deployments (OpenAI, Anthropic,
-	//    Groq, OpenRouter), MCP Server + Tools, A2A Agent, and Virtual Key.
+	// 1. Provision Org, 5 Provider Credentials & Deployments (OpenAI, Anthropic,
+	//    Groq, OpenRouter, Ollama), MCP Server + Tools, A2A Agent, and Virtual Key.
 	// -------------------------------------------------------------------------
 	var org struct {
 		ID string `json:"id"`
@@ -229,6 +229,21 @@ func TestObsProd_FullOTLPVerificationSuites(t *testing.T) {
 	mustAdminJSON(t, client, http.MethodPost, obsPod1Base+"/admin/v1/organizations", map[string]any{
 		"name": "Obs Prod Org",
 	}, &org, http.StatusCreated)
+
+	// Verify keyless Ollama preflight validation succeeds over TLS 1.3 in production mode
+	var ollamaPreflight struct {
+		Valid            bool `json:"valid"`
+		DiscoveredModels int  `json:"discovered_models"`
+	}
+	mustAdminJSON(t, client, http.MethodPost, obsPod1Base+"/admin/v1/credentials/validate", map[string]any{
+		"org_id":   org.ID,
+		"provider": "ollama",
+		"api_key":  "",
+		"base_url": obsFixturesBase + "/ollama",
+	}, &ollamaPreflight, http.StatusOK)
+	if !ollamaPreflight.Valid || ollamaPreflight.DiscoveredModels < 2 {
+		t.Fatalf("expected valid keyless Ollama preflight with >=2 models, got %+v", ollamaPreflight)
+	}
 
 	type providerSetup struct {
 		provider string
@@ -243,6 +258,8 @@ func TestObsProd_FullOTLPVerificationSuites(t *testing.T) {
 		{provider: "anthropic", baseURL: obsFixturesBase + "/anthropic", alias: "obs-anthropic", model: "claude-3-5-haiku-latest", credKey: "sk-ant-obs-fixture-secret"},
 		{provider: "groq", baseURL: obsFixturesBase + "/groq/openai/v1", alias: "obs-groq", model: "llama-3.3-70b-versatile", credKey: "gsk_obs_fixture_secret"},
 		{provider: "openrouter", baseURL: obsFixturesBase + "/openrouter/api/v1", alias: "obs-openrouter", model: "openai/gpt-4o-mini", credKey: "sk-or-obs-fixture-secret"},
+		{provider: "ollama", baseURL: obsFixturesBase + "/ollama", alias: "obs-ollama", model: "qwen2.5:0.5b", credKey: ""},
+		{provider: "ollama", baseURL: obsFixturesBase + "/ollama", alias: "obs-ollama-embed", model: "all-minilm:latest", credKey: ""},
 	}
 
 	for _, ps := range providers {
@@ -381,8 +398,8 @@ func TestObsProd_FullOTLPVerificationSuites(t *testing.T) {
 		t.Fatalf("embeddings failed: status=%d body=%s", rEmb.StatusCode, string(bEmb))
 	}
 
-	// 2d. Anthropic, Groq, and OpenRouter chat calls (Suite O4: 4-adapter W3C traceparent propagation)
-	for _, alias := range []string{"obs-anthropic", "obs-groq", "obs-openrouter"} {
+	// 2d. Anthropic, Groq, OpenRouter, and Ollama chat + Ollama embeddings (Suite O4: 5-adapter W3C traceparent propagation)
+	for _, alias := range []string{"obs-anthropic", "obs-groq", "obs-openrouter", "obs-ollama"} {
 		resp, body := doReq(t, client, http.MethodPost, obsLBBase+"/v1/chat/completions", map[string]any{
 			"model":    alias,
 			"messages": []map[string]any{{"role": "user", "content": "hello " + alias}},
@@ -390,6 +407,13 @@ func TestObsProd_FullOTLPVerificationSuites(t *testing.T) {
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("chat %s failed: status=%d body=%s", alias, resp.StatusCode, string(body))
 		}
+	}
+	rOllamaEmb, bOllamaEmb := doReq(t, client, http.MethodPost, obsPod2Base+"/v1/embeddings", map[string]any{
+		"model": "obs-ollama-embed",
+		"input": []string{"ollama prod docker embedding check"},
+	}, vkHeaders)
+	if rOllamaEmb.StatusCode != http.StatusOK {
+		t.Fatalf("ollama embeddings failed: status=%d body=%s", rOllamaEmb.StatusCode, string(bOllamaEmb))
 	}
 
 	// 2e. Guardrail block (triggers guardrail.evaluate span + gateway.guardrail.* metrics)
@@ -428,9 +452,9 @@ func TestObsProd_FullOTLPVerificationSuites(t *testing.T) {
 	}
 
 	// -------------------------------------------------------------------------
-	// Suite O4: Verify outbound W3C traceparent received by ALL 4 adapters!
+	// Suite O4: Verify outbound W3C traceparent received by ALL 5 adapters!
 	// -------------------------------------------------------------------------
-	t.Run("SuiteO4_FourAdapterW3CTraceparentPropagation", func(t *testing.T) {
+	t.Run("SuiteO4_FiveAdapterW3CTraceparentPropagation", func(t *testing.T) {
 		resp, raw := doReq(t, client, http.MethodGet, obsFixturesBase+"/_inspect/traceparents", nil, nil)
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("inspect traceparents failed: %d %s", resp.StatusCode, string(raw))
@@ -439,7 +463,7 @@ func TestObsProd_FullOTLPVerificationSuites(t *testing.T) {
 		if err := json.Unmarshal(raw, &captured); err != nil {
 			t.Fatalf("decode traceparents: %v", err)
 		}
-		for _, provider := range []string{"openai", "anthropic", "groq", "openrouter"} {
+		for _, provider := range []string{"openai", "anthropic", "groq", "openrouter", "ollama"} {
 			tps := captured[provider]
 			if len(tps) == 0 {
 				t.Fatalf("provider %q received zero outbound W3C traceparent headers (captured=%+v)", provider, captured)
@@ -671,6 +695,161 @@ func TestObsProd_FullOTLPVerificationSuites(t *testing.T) {
 			if strings.Contains(logsText, forbidden) {
 				t.Fatalf("sensitive value leaked into OTLP logs.jsonl!")
 			}
+		}
+	})
+
+	// -------------------------------------------------------------------------
+	// Suite O6 (Opt-In): Live Real-Ollama Verification Over TLS 1.3 in Production Docker
+	// Activated only when OBS_LIVE_OLLAMA_BASE_URL is set (e.g. https://fixtures.prod.test:20443/ollama-live)
+	// so default CI runs remain 100% deterministic without host Ollama installed.
+	// -------------------------------------------------------------------------
+	t.Run("SuiteO6_LiveRealOllamaOverTLS", func(t *testing.T) {
+		liveBase := strings.TrimSpace(os.Getenv("OBS_LIVE_OLLAMA_BASE_URL"))
+		if liveBase == "" {
+			t.Skip("OBS_LIVE_OLLAMA_BASE_URL not set; skipping live real-Ollama Docker verification")
+		}
+
+		// 1. Fail-closed SSRF negative check: plaintext http://127.0.0.1:11434 must be rejected in production mode
+		ssrfRes, ssrfBody := doReq(t, client, http.MethodPost, obsPod1Base+"/admin/v1/credentials/validate", map[string]any{
+			"org_id":   org.ID,
+			"provider": "ollama",
+			"api_key":  "",
+			"base_url": "http://127.0.0.1:11434",
+		}, map[string]string{"Authorization": "Bearer " + obsMasterKey})
+		if ssrfRes.StatusCode != http.StatusBadRequest || !strings.Contains(string(ssrfBody), "invalid_base_url") {
+			t.Fatalf("expected fail-closed 400 invalid_base_url for plaintext loopback Ollama in production container, got %d: %s", ssrfRes.StatusCode, string(ssrfBody))
+		}
+
+		// 2. Keyless preflight validation against real host Ollama via Caddy TLS 1.3 (/api/tags)
+		var livePre struct {
+			Valid            bool `json:"valid"`
+			DiscoveredModels int  `json:"discovered_models"`
+		}
+		mustAdminJSON(t, client, http.MethodPost, obsPod1Base+"/admin/v1/credentials/validate", map[string]any{
+			"org_id":   org.ID,
+			"provider": "ollama",
+			"api_key":  "",
+			"base_url": liveBase,
+		}, &livePre, http.StatusOK)
+		if !livePre.Valid || livePre.DiscoveredModels < 2 {
+			t.Fatalf("real Ollama TLS preflight failed: %+v", livePre)
+		}
+
+		// 3. Provision real-Ollama credential + deployments across both replicas
+		var liveCred struct {
+			ID string `json:"id"`
+		}
+		mustAdminJSON(t, client, http.MethodPost, obsPod1Base+"/admin/v1/credentials", map[string]any{
+			"org_id":   org.ID,
+			"provider": "ollama",
+			"name":     "cred-ollama-live-tls",
+			"api_key":  "",
+			"base_url": liveBase,
+		}, &liveCred, http.StatusCreated)
+
+		var liveChatMG, liveEmbedMG struct {
+			ID string `json:"id"`
+		}
+		mustAdminJSON(t, client, http.MethodPost, obsPod1Base+"/admin/v1/model-groups", map[string]any{
+			"org_id": org.ID, "alias": "live-ollama-qwen", "routing_strategy": "round_robin",
+		}, &liveChatMG, http.StatusCreated)
+		mustAdminJSON(t, client, http.MethodPost, obsPod1Base+"/admin/v1/deployments", map[string]any{
+			"model_group_id": liveChatMG.ID, "global_model_id": "ollama/qwen2.5:0.5b", "credential_id": liveCred.ID, "deployment_name": "dep-live-ollama-qwen", "priority": 1, "weight": 100,
+		}, nil, http.StatusCreated)
+
+		mustAdminJSON(t, client, http.MethodPost, obsPod1Base+"/admin/v1/model-groups", map[string]any{
+			"org_id": org.ID, "alias": "live-ollama-embed", "routing_strategy": "round_robin",
+		}, &liveEmbedMG, http.StatusCreated)
+		mustAdminJSON(t, client, http.MethodPost, obsPod1Base+"/admin/v1/deployments", map[string]any{
+			"model_group_id": liveEmbedMG.ID, "global_model_id": "ollama/all-minilm:latest", "credential_id": liveCred.ID, "deployment_name": "dep-live-ollama-embed", "priority": 1, "weight": 100,
+		}, nil, http.StatusCreated)
+
+		// 4. Live Sync Chat through LB across hardened replicas
+		rSync, bSync := doReq(t, client, http.MethodPost, obsLBBase+"/v1/chat/completions", map[string]any{
+			"model":       "live-ollama-qwen",
+			"messages":    []map[string]any{{"role": "user", "content": "Reply with OK only"}},
+			"temperature": 0,
+			"max_tokens":  8,
+		}, vkHeaders)
+		if rSync.StatusCode != http.StatusOK || rSync.Header.Get("X-Gateway-Provider") != "ollama" {
+			t.Fatalf("live Ollama sync chat failed: status=%d hdr=%q body=%s", rSync.StatusCode, rSync.Header.Get("X-Gateway-Provider"), string(bSync))
+		}
+
+		// 5. Live SSE Streaming Chat on Pod 2
+		rStream, bStream := doReq(t, client, http.MethodPost, obsPod2Base+"/v1/chat/completions", map[string]any{
+			"model":          "live-ollama-qwen",
+			"messages":       []map[string]any{{"role": "user", "content": "Say hi"}},
+			"stream":         true,
+			"stream_options": map[string]any{"include_usage": true},
+			"max_tokens":     8,
+		}, vkHeaders)
+		if rStream.StatusCode != http.StatusOK || !strings.Contains(string(bStream), "data: [DONE]") {
+			t.Fatalf("live Ollama stream chat failed: status=%d body=%s", rStream.StatusCode, string(bStream))
+		}
+
+		// 6. Live Tool Calling + Structured JSON Schema
+		rTool, bTool := doReq(t, client, http.MethodPost, obsPod1Base+"/v1/chat/completions", map[string]any{
+			"model":    "live-ollama-qwen",
+			"messages": []map[string]any{{"role": "user", "content": "What is the weather in Tokyo?"}},
+			"tools": []map[string]any{{
+				"type": "function",
+				"function": map[string]any{
+					"name":        "get_weather",
+					"description": "Get weather",
+					"parameters":  map[string]any{"type": "object", "properties": map[string]any{"city": map[string]any{"type": "string"}}, "required": []string{"city"}},
+				},
+			}},
+			"max_tokens": 64,
+		}, vkHeaders)
+		if rTool.StatusCode != http.StatusOK || !strings.Contains(string(bTool), "get_weather") {
+			t.Fatalf("live Ollama tool call failed: status=%d body=%s", rTool.StatusCode, string(bTool))
+		}
+
+		rSchema, bSchema := doReq(t, client, http.MethodPost, obsPod2Base+"/v1/chat/completions", map[string]any{
+			"model":    "live-ollama-qwen",
+			"messages": []map[string]any{{"role": "user", "content": "Return JSON with key ok=true"}},
+			"response_format": map[string]any{
+				"type": "json_schema",
+				"json_schema": map[string]any{
+					"name":   "ok_schema",
+					"schema": map[string]any{"type": "object", "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}, "required": []string{"ok"}},
+				},
+			},
+			"max_tokens": 32,
+		}, vkHeaders)
+		if rSchema.StatusCode != http.StatusOK {
+			t.Fatalf("live Ollama json_schema failed: status=%d body=%s", rSchema.StatusCode, string(bSchema))
+		}
+		var schemaWrap struct {
+			Choices []struct {
+				Message struct {
+					Content string `json:"content"`
+				} `json:"message"`
+			} `json:"choices"`
+		}
+		var parsedJSON map[string]any
+		if err := json.Unmarshal(bSchema, &schemaWrap); err != nil || len(schemaWrap.Choices) == 0 || json.Unmarshal([]byte(schemaWrap.Choices[0].Message.Content), &parsedJSON) != nil {
+			t.Fatalf("live Ollama json_schema did not return valid JSON object: body=%s", string(bSchema))
+		}
+		if _, ok := parsedJSON["ok"]; !ok {
+			t.Fatalf("live Ollama json_schema missing 'ok' key: %+v", parsedJSON)
+		}
+
+		// 7. Live Batch Embeddings (all-minilm:latest -> 384-dim)
+		rEmb, bEmb := doReq(t, client, http.MethodPost, obsLBBase+"/v1/embeddings", map[string]any{
+			"model": "live-ollama-embed",
+			"input": []string{"production docker test", "ollama embeddings"},
+		}, vkHeaders)
+		if rEmb.StatusCode != http.StatusOK {
+			t.Fatalf("live Ollama embeddings failed: status=%d body=%s", rEmb.StatusCode, string(bEmb))
+		}
+		var embOut struct {
+			Data []struct {
+				Embedding []float64 `json:"embedding"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(bEmb, &embOut); err != nil || len(embOut.Data) != 2 || len(embOut.Data[0].Embedding) != 384 {
+			t.Fatalf("unexpected live Ollama embeddings response: err=%v count=%d", err, len(embOut.Data))
 		}
 	})
 }

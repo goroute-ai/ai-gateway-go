@@ -39,6 +39,14 @@ func TestResolveEnvValueAndParseProviderModel(t *testing.T) {
 		t.Fatalf("unexpected ParseProviderModel for openrouter/openai/gpt-4o-mini: %v %v %v", prov, bare, globalID)
 	}
 
+	prov, bare, globalID = config.ParseProviderModel("ollama/qwen2.5:0.5b")
+	if prov != domain.ProviderOllama || bare != "qwen2.5:0.5b" || globalID != "ollama/qwen2.5:0.5b" {
+		t.Fatalf("unexpected ParseProviderModel for ollama/qwen2.5:0.5b: %v %v %v", prov, bare, globalID)
+	}
+	if config.NormalizeProvider("ollama_chat") != domain.ProviderOllama || !config.IsKnownProviderAlias("ollama") {
+		t.Fatalf("expected ollama/ollama_chat to normalize to ProviderOllama")
+	}
+
 	prov, bare, globalID = config.ParseProviderModel("claude-sonnet-4-20250514")
 	if prov != domain.ProviderAnthropic || bare != "claude-sonnet-4-20250514" || globalID != "anthropic/claude-sonnet-4-20250514" {
 		t.Fatalf("unexpected ParseProviderModel for bare claude model: %v %v %v", prov, bare, globalID)

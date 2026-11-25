@@ -36,6 +36,11 @@ https://gateway.prod.test:20445 {
 
 https://fixtures.prod.test:20443 {
   tls /certs/server.crt /certs/server.key
+  handle_path /ollama-live/* {
+    reverse_proxy host.docker.internal:11434 {
+      header_up Host localhost:11434
+    }
+  }
   reverse_proxy obs-test-fixtures:8080 {
     header_up Host {http.request.host}
     header_up X-Forwarded-Proto https

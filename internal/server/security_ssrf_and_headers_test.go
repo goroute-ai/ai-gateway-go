@@ -225,6 +225,113 @@ func TestAdminPreflightValidate_PrivateNetworkRequiresPlatformAdmin(t *testing.T
 	assert.Equal(t, http.StatusOK, adminValidateStoredRec.Code)
 }
 
+func TestAllowLoopbackHTTP_CustomBaseURLRequiresPlatformAdmin(t *testing.T) {
+	ctx := t.Context()
+	repo := storage.NewMemoryRepository()
+	cfg := config.Default()
+	cfg.Auth.MasterAdminKey = "admin_master_secret"
+	cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks = false
+	cfg.Security.Network.OutboundSSRF.AllowedPrivateCIDRs = nil
+	cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP = false
+	cfg.Security.Network.OutboundSSRF.AllowLoopbackHTTP = true
+
+	upstreamSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"models":[{"name":"qwen2.5:0.5b","model":"qwen2.5:0.5b"}]}`))
+	}))
+	defer upstreamSrv.Close()
+
+	gw, err := server.New(cfg, repo, nil, upstreamSrv.Client())
+	require.NoError(t, err)
+	h := gw.Handler()
+
+	org := &domain.Organization{ID: "org-rbac-loopback", Name: "RBAC Loopback Org", Slug: "rbac-loopback", IsActive: true}
+	require.NoError(t, repo.CreateOrganization(ctx, org))
+
+	keyBody, _ := json.Marshal(map[string]any{
+		"org_id": org.ID,
+		"name":   "org-admin-loopback-vk",
+		"role":   domain.RoleOrgAdmin,
+	})
+	keyReq := httptest.NewRequest(http.MethodPost, "/admin/v1/keys", bytes.NewReader(keyBody))
+	keyReq.Header.Set("Authorization", "Bearer admin_master_secret")
+	keyReq.Header.Set("Content-Type", "application/json")
+	keyRec := httptest.NewRecorder()
+	h.ServeHTTP(keyRec, keyReq)
+	require.Equal(t, http.StatusCreated, keyRec.Code)
+
+	var orgAdminVK domain.VirtualKey
+	require.NoError(t, json.Unmarshal(keyRec.Body.Bytes(), &orgAdminVK))
+	require.NotEmpty(t, orgAdminVK.RawKey)
+
+	// org_admin must be blocked from probing loopback URLs when AllowLoopbackHTTP is enabled.
+	preflightBody, _ := json.Marshal(map[string]any{
+		"org_id":   org.ID,
+		"provider": "ollama",
+		"api_key":  "",
+		"base_url": upstreamSrv.URL,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/admin/v1/credentials/validate", bytes.NewReader(preflightBody))
+	req.Header.Set("Authorization", "Bearer "+orgAdminVK.RawKey)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+	assert.Contains(t, rec.Body.String(), "platform_admin_required")
+
+	// platform_admin can preflight-validate keyless loopback Ollama URLs.
+	adminReq := httptest.NewRequest(http.MethodPost, "/admin/v1/credentials/validate", bytes.NewReader(preflightBody))
+	adminReq.Header.Set("Authorization", "Bearer admin_master_secret")
+	adminReq.Header.Set("Content-Type", "application/json")
+	adminRec := httptest.NewRecorder()
+	h.ServeHTTP(adminRec, adminReq)
+	assert.Equal(t, http.StatusOK, adminRec.Code)
+
+	// org_admin cannot create a credential targeting a loopback base_url.
+	createBody, _ := json.Marshal(map[string]any{
+		"org_id":   org.ID,
+		"provider": "ollama",
+		"name":     "loopback-ollama",
+		"api_key":  "",
+		"base_url": upstreamSrv.URL,
+	})
+	createReq := httptest.NewRequest(http.MethodPost, "/admin/v1/credentials", bytes.NewReader(createBody))
+	createReq.Header.Set("Authorization", "Bearer "+orgAdminVK.RawKey)
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	h.ServeHTTP(createRec, createReq)
+	assert.Equal(t, http.StatusForbidden, createRec.Code)
+	assert.Contains(t, createRec.Body.String(), "platform_admin_required")
+
+	// platform_admin creates the credential; org_admin must still be blocked on validate and rotate.
+	adminCreateReq := httptest.NewRequest(http.MethodPost, "/admin/v1/credentials", bytes.NewReader(createBody))
+	adminCreateReq.Header.Set("Authorization", "Bearer admin_master_secret")
+	adminCreateReq.Header.Set("Content-Type", "application/json")
+	adminCreateRec := httptest.NewRecorder()
+	h.ServeHTTP(adminCreateRec, adminCreateReq)
+	require.Equal(t, http.StatusCreated, adminCreateRec.Code)
+
+	var createdLoopback domain.ProviderCredential
+	require.NoError(t, json.Unmarshal(adminCreateRec.Body.Bytes(), &createdLoopback))
+
+	valStoredReq := httptest.NewRequest(http.MethodPost, "/admin/v1/credentials/"+createdLoopback.ID+"/validate", nil)
+	valStoredReq.Header.Set("Authorization", "Bearer "+orgAdminVK.RawKey)
+	valStoredRec := httptest.NewRecorder()
+	h.ServeHTTP(valStoredRec, valStoredReq)
+	assert.Equal(t, http.StatusForbidden, valStoredRec.Code)
+	assert.Contains(t, valStoredRec.Body.String(), "platform_admin_required")
+
+	rotBody, _ := json.Marshal(map[string]any{"api_key": "", "base_url": upstreamSrv.URL})
+	rotReq := httptest.NewRequest(http.MethodPost, "/admin/v1/credentials/"+createdLoopback.ID+"/rotate", bytes.NewReader(rotBody))
+	rotReq.Header.Set("Authorization", "Bearer "+orgAdminVK.RawKey)
+	rotReq.Header.Set("Content-Type", "application/json")
+	rotRec := httptest.NewRecorder()
+	h.ServeHTTP(rotRec, rotReq)
+	assert.Equal(t, http.StatusForbidden, rotRec.Code)
+	assert.Contains(t, rotRec.Body.String(), "platform_admin_required")
+}
+
 func TestGenerateSpeech_ContentTypeSanitization(t *testing.T) {
 	ctx := context.Background()
 	repo := storage.NewMemoryRepository()

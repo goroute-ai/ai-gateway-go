@@ -44,7 +44,7 @@ Every response from GoRoute AI Gateway includes tracing, attribution, and lifecy
 | :--- | :--- | :--- |
 | `X-Gateway-Request-Id` | Unique UUID assigned to the request lifecycle | `req_991efda4-7fab-4b03` |
 | `X-Trace-Id` | W3C / OpenTelemetry Trace ID | `bad98e7deea34d7c810a963d9ed2c4ef` |
-| `X-Gateway-Provider` | The winning upstream provider selected (also emitted before first SSE chunk) | `openai`, `anthropic`, `groq`, `openrouter` |
+| `X-Gateway-Provider` | The winning upstream provider selected (also emitted before first SSE chunk) | `openai`, `anthropic`, `groq`, `openrouter`, `ollama` |
 | `X-Gateway-Model` | The physical model that executed the inference (also emitted before first SSE chunk) | `gpt-4o-mini`, `claude-sonnet-4-20250514`, `llama-3.1-8b-instant` |
 | `X-Gateway-Original-Model` | Original requested model name before budget-downgrade model fallback | `reasoning` |
 | `X-Gateway-Cost-Micros` | Micro-dollar spend incurred ($10^{-6}\text{ USD}$) | `45` ($0.000045 USD) |
@@ -185,6 +185,7 @@ GoRoute transparently normalizes requests targeting frontier reasoning models:
   - **OpenAI Reasoning (`o1`, `o3`, `o3-mini`)**: Converts `role: "system"` to `role: "developer"`, translates `max_tokens` to `max_completion_tokens`, and omits unsupported parameters (`temperature`, `top_p`).
   - **Anthropic Claude**: Enables extended thinking with token budgets (`1024`, `4096`, `16384`) and automatically omits `temperature` and `top_p` as mandated by Anthropic.
   - **OpenRouter**: Maps `reasoning_effort` to OpenRouter's `reasoning` parameter object (`openrouter_reasoning`).
+  - **Ollama**: Forwards `reasoning_effort` to Ollama's `/v1/chat/completions` thinking controls and extracts `reasoning` / `reasoning_content` deltas and responses.
 - **Anthropic Role Alternation on Tools**: When returning multiple parallel tool outputs (`role: "tool"`), GoRoute automatically consolidates consecutive tool results into a single `user` message with multiple `tool_result` content blocks to satisfy Anthropic's strict alternating turn protocol.
 
 #### Upstream Error Handling & Safety Filters
@@ -253,7 +254,7 @@ Returns a 4-layer tenant-filtered inventory accessible to the caller's Virtual A
 ```
 
 ### 2.4 Direct Dynamic `provider/model` Routing
-GoRoute supports direct model execution using `provider/model` notation (e.g. `openai/gpt-4o-mini`, `anthropic/claude-haiku-4-5-20251001`, `groq/llama-3.1-8b-instant`, `openrouter/openai/gpt-4o-mini`):
+GoRoute supports direct model execution using `provider/model` notation (e.g. `openai/gpt-4o-mini`, `anthropic/claude-haiku-4-5-20251001`, `groq/llama-3.1-8b-instant`, `openrouter/openai/gpt-4o-mini`, `ollama/qwen2.5:0.5b`):
 - **Layer 2 Provider Subscription Check**: The caller's organization must have an active subscription for the requested provider (if subscriptions are configured).
 - **Layer 3 Model Policy Check**: The requested model must not be explicitly disabled by the organization's model availability policy.
 - **Tenant Credential Isolation**: The organization must have an active credential for the target provider. Server environment variables are never leaked across tenant boundaries.
@@ -1097,6 +1098,7 @@ GoRoute separates **operation-level adapter support** (`OperationSupportChecker`
 | **`anthropic`** | `docs/openapi/anthropic.openapi.yaml` | Chat (`Messages` & OpenAI bridge), Streaming, Tools, Vision/Documents, Token Counting (`/v1/messages/count_tokens`), Batches | Native adapter using generated `providers.Anthropic*` DTOs; supports adaptive thinking, prompt caching (`cache_control`), tool-name sanitization, and structured `output_config`. |
 | **`groq`** | `docs/openapi/groq.openapi.yaml` | Chat, Streaming, Tools, Structured Outputs, Completions, Audio (STT/TTS), `ListModels` | Dedicated OpenAPI-backed adapter in `internal/adapter/groq`; strips unsupported params (`logprobs`, `logit_bias`, `service_tier`), maps `max_completion_tokens` -> `max_tokens`, and enforces distill tool/temperature rules. |
 | **`openrouter`** | `docs/openapi/openrouter.openapi.yaml` | Chat, Streaming, Tools, Structured Outputs, `ListModels` | Dedicated OpenAPI-backed adapter in `internal/adapter/openrouter`; forwards attribution headers (`HTTP-Referer`, `X-Title`) and `openrouter_reasoning` mappings. |
+| **`ollama`** | `docs/openapi/ollama.openapi.yaml` | Chat, Streaming, Tools, Structured Outputs, Completions (sync & stream), Embeddings, `ListModels` (`/api/tags` + `/v1/models` fallback) | Dedicated OpenAPI-backed adapter in `internal/adapter/ollama`; supports optional Bearer auth (keyless for local Ollama), root or `/v1` base URL normalization, and fail-closed loopback SSRF opt-in (`allow_loopback_http: true`). |
 
 ### Budgeted Caller Modality Coverage
 

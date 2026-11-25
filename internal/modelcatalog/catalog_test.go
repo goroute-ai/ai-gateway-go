@@ -30,6 +30,7 @@ func TestCatalog_IsCallableProvider(t *testing.T) {
 		domain.ProviderAnthropic,
 		domain.ProviderGroq,
 		domain.ProviderOpenRouter,
+		domain.ProviderOllama,
 	}
 	for _, p := range callableProviders {
 		if !catalog.IsCallableProvider(p) {
@@ -43,7 +44,6 @@ func TestCatalog_IsCallableProvider(t *testing.T) {
 		"vertex",
 		"cohere",
 		"mistral",
-		"ollama",
 		"azure",
 		"deepseek",
 		"apiserpent",

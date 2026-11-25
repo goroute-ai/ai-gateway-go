@@ -169,13 +169,15 @@ func (s *GatewayServer) validateCredentialBaseURL(raw string) (string, error) {
 
 func (s *GatewayServer) authorizeCustomBaseURL(op *domain.OperatorContext, cleanBaseURL string) *domain.GatewayError {
 	if cleanBaseURL != "" && s.cfg != nil &&
-		(s.cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks || len(s.cfg.Security.Network.OutboundSSRF.AllowedPrivateCIDRs) > 0) &&
+		(s.cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks ||
+			s.cfg.Security.Network.OutboundSSRF.AllowLoopbackHTTP ||
+			len(s.cfg.Security.Network.OutboundSSRF.AllowedPrivateCIDRs) > 0) &&
 		(op == nil || op.Role != domain.OperatorRolePlatformAdmin) {
 		return &domain.GatewayError{
 			StatusCode: http.StatusForbidden,
 			Type:       domain.ErrorTypePermission,
 			Code:       "platform_admin_required",
-			Message:    "Custom BaseURL with private network access requires platform_admin role",
+			Message:    "Custom BaseURL with private or loopback network access requires platform_admin role",
 		}
 	}
 	return nil
@@ -1143,7 +1145,8 @@ func (s *GatewayServer) handleAdminPreflightValidateCredential(w http.ResponseWr
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: "provider is required"})
 		return
 	}
-	if req.APIKey == "" {
+	req.Provider = config.NormalizeProvider(string(req.Provider))
+	if req.APIKey == "" && req.Provider != domain.ProviderOllama {
 		domain.WriteHTTPError(w, &domain.GatewayError{StatusCode: 400, Type: domain.ErrorTypeInvalidRequest, Message: "api_key is required"})
 		return
 	}

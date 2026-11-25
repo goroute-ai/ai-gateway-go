@@ -2,8 +2,8 @@
 name: goroute-openapi-contract
 description: >-
   Update OpenAPI 3.1/3.0 contracts, add or modify HTTP endpoints or provider adapters, and regenerate Go DTOs and MCP protocol packages via make specgen.
-  Use when changing /v1, /admin/v1, /auth routes, provider specs (openai, anthropic, groq, openrouter), or MCP YAML schemas.
-  Do not use for database-only or UI-only edits.
+  Use when changing /v1, /admin/v1, /auth routes, provider specs (openai, anthropic, groq, openrouter, ollama), or MCP YAML schemas.
+  Do not use for database-only or UI-only edits; use goroute-add-provider when onboarding a brand-new upstream provider.
 ---
 
 # GoRoute OpenAPI & Protocol Contract Workflow
@@ -11,7 +11,7 @@ description: >-
 ## Step 1: Edit the Authoritative Specification First
 
 - **Gateway HTTP routes (`/v1`, `/admin/v1`, `/auth`, `/openai/v1`, `/anthropic/v1`)**: Edit `docs/openapi/gateway.openapi.yaml`.
-- **Provider wire contracts**: Edit `docs/openapi/{openai,anthropic,groq,openrouter}.openapi.yaml` and its matching `*.codegen.yaml`.
+- **Provider wire contracts**: Edit `docs/openapi/{openai,anthropic,groq,openrouter,ollama}.openapi.yaml` and its matching `*.codegen.yaml`.
 - **MCP protocol schemas**: Update `docs/specs/mcp/<version>/schema.yaml` (`2024-11-05`..`2026-07-28`) and keep `internal/mcp/spec/schemas/` synced via `cmd/mcpgen`.
 
 Never hand-edit generated files under `internal/openapi/` or `internal/mcp/spec/v*`.

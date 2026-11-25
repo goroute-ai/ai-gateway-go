@@ -1,0 +1,593 @@
+openapi: 3.0.3
+info:
+  title: Ollama Local & Cloud Inference API
+  version: 1.0.0
+  description: >
+    Authoritative OpenAPI specification for Ollama OpenAI-compatible inference endpoints
+    (/v1/chat/completions, /v1/completions, /v1/embeddings, /v1/models) and native model
+    discovery (/api/tags) supported by GoRoute AI Gateway.
+servers:
+  - url: http://127.0.0.1:11434
+paths:
+  /v1/chat/completions:
+    post:
+      operationId: createOllamaChatCompletion
+      summary: Create an Ollama chat completion (sync or SSE stream)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OllamaChatCompletionRequest'
+      responses:
+        '200':
+          description: Chat completion response or SSE stream
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OllamaChatCompletionResponse'
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/OllamaStreamChunk'
+  /v1/completions:
+    post:
+      operationId: createOllamaCompletion
+      summary: Create an Ollama legacy text completion (sync or SSE stream)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OllamaCompletionRequest'
+      responses:
+        '200':
+          description: Text completion response or SSE stream
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OllamaCompletionResponse'
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/OllamaCompletionStreamChunk'
+  /v1/embeddings:
+    post:
+      operationId: createOllamaEmbedding
+      summary: Generate vector embeddings using an Ollama embedding model
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OllamaEmbeddingRequest'
+      responses:
+        '200':
+          description: Embedding vectors and token usage
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OllamaEmbeddingResponse'
+  /api/tags:
+    get:
+      operationId: listOllamaTags
+      summary: List locally available models on the Ollama server with metadata and capabilities
+      responses:
+        '200':
+          description: Available Ollama models
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OllamaTagsResponse'
+  /v1/models:
+    get:
+      operationId: listOllamaModels
+      summary: List available Ollama models in OpenAI-compatible format
+      responses:
+        '200':
+          description: Available Ollama models
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OllamaModelsResponse'
+components:
+  schemas:
+    OllamaStreamOptions:
+      type: object
+      required:
+        - include_usage
+      properties:
+        include_usage:
+          type: boolean
+    OllamaResponseFormat:
+      type: object
+      required:
+        - type
+      properties:
+        type:
+          type: string
+        json_schema:
+          type: object
+          additionalProperties: true
+    OllamaFunctionCall:
+      type: object
+      properties:
+        name:
+          type: string
+        arguments:
+          type: string
+    OllamaToolCall:
+      type: object
+      required:
+        - function
+      properties:
+        index:
+          type: integer
+        id:
+          type: string
+        type:
+          type: string
+        function:
+          $ref: '#/components/schemas/OllamaFunctionCall'
+    OllamaFunction:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        parameters:
+          type: object
+          additionalProperties: true
+        strict:
+          type: boolean
+    OllamaTool:
+      type: object
+      required:
+        - type
+        - function
+      properties:
+        type:
+          type: string
+        function:
+          $ref: '#/components/schemas/OllamaFunction'
+    OllamaMessage:
+      type: object
+      required:
+        - role
+      properties:
+        role:
+          type: string
+        content:
+          description: Plain text string or array of multimodal content parts
+          nullable: true
+        name:
+          type: string
+        tool_call_id:
+          type: string
+        tool_calls:
+          type: array
+          items:
+            $ref: '#/components/schemas/OllamaToolCall'
+        reasoning_content:
+          type: string
+        reasoning:
+          type: string
+    OllamaChatCompletionRequest:
+      type: object
+      required:
+        - model
+        - messages
+      properties:
+        model:
+          type: string
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/OllamaMessage'
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/OllamaTool'
+        tool_choice:
+          description: Auto, none, required, or specific function selector
+          nullable: true
+        temperature:
+          type: number
+          format: double
+        top_p:
+          type: number
+          format: double
+        max_tokens:
+          type: integer
+        max_completion_tokens:
+          type: integer
+        stop:
+          type: array
+          items:
+            type: string
+        stream:
+          type: boolean
+        stream_options:
+          $ref: '#/components/schemas/OllamaStreamOptions'
+        response_format:
+          $ref: '#/components/schemas/OllamaResponseFormat'
+        reasoning_effort:
+          type: string
+        seed:
+          type: integer
+        frequency_penalty:
+          type: number
+          format: double
+        presence_penalty:
+          type: number
+          format: double
+        user:
+          type: string
+    OllamaPromptTokensDetails:
+      type: object
+      properties:
+        cached_tokens:
+          type: integer
+    OllamaCompletionTokensDetails:
+      type: object
+      properties:
+        reasoning_tokens:
+          type: integer
+    OllamaUsage:
+      type: object
+      required:
+        - prompt_tokens
+        - completion_tokens
+        - total_tokens
+      properties:
+        prompt_tokens:
+          type: integer
+        completion_tokens:
+          type: integer
+        total_tokens:
+          type: integer
+        prompt_tokens_details:
+          $ref: '#/components/schemas/OllamaPromptTokensDetails'
+        completion_tokens_details:
+          $ref: '#/components/schemas/OllamaCompletionTokensDetails'
+    OllamaChatChoice:
+      type: object
+      required:
+        - index
+        - message
+        - finish_reason
+      properties:
+        index:
+          type: integer
+        message:
+          $ref: '#/components/schemas/OllamaMessage'
+        finish_reason:
+          type: string
+    OllamaChatCompletionResponse:
+      type: object
+      required:
+        - id
+        - object
+        - created
+        - model
+        - choices
+        - usage
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+        created:
+          type: integer
+          format: int64
+        model:
+          type: string
+        system_fingerprint:
+          type: string
+        choices:
+          type: array
+          items:
+            $ref: '#/components/schemas/OllamaChatChoice'
+        usage:
+          $ref: '#/components/schemas/OllamaUsage'
+    OllamaStreamDelta:
+      type: object
+      properties:
+        role:
+          type: string
+        content:
+          type: string
+        reasoning_content:
+          type: string
+        reasoning:
+          type: string
+        tool_calls:
+          type: array
+          items:
+            $ref: '#/components/schemas/OllamaToolCall'
+    OllamaStreamChoice:
+      type: object
+      required:
+        - index
+        - delta
+      properties:
+        index:
+          type: integer
+        delta:
+          $ref: '#/components/schemas/OllamaStreamDelta'
+        finish_reason:
+          type: string
+          nullable: true
+    OllamaStreamChunk:
+      type: object
+      required:
+        - id
+        - object
+        - created
+        - model
+        - choices
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+        created:
+          type: integer
+          format: int64
+        model:
+          type: string
+        system_fingerprint:
+          type: string
+        choices:
+          type: array
+          items:
+            $ref: '#/components/schemas/OllamaStreamChoice'
+        usage:
+          $ref: '#/components/schemas/OllamaUsage'
+    OllamaCompletionRequest:
+      type: object
+      required:
+        - model
+        - prompt
+      properties:
+        model:
+          type: string
+        prompt:
+          description: Prompt string or array of prompt strings
+        max_tokens:
+          type: integer
+        temperature:
+          type: number
+          format: double
+        top_p:
+          type: number
+          format: double
+        stop:
+          type: array
+          items:
+            type: string
+        stream:
+          type: boolean
+        stream_options:
+          $ref: '#/components/schemas/OllamaStreamOptions'
+        user:
+          type: string
+    OllamaCompletionChoice:
+      type: object
+      required:
+        - index
+        - text
+        - finish_reason
+      properties:
+        index:
+          type: integer
+        text:
+          type: string
+        finish_reason:
+          type: string
+    OllamaCompletionResponse:
+      type: object
+      required:
+        - id
+        - object
+        - created
+        - model
+        - choices
+        - usage
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+        created:
+          type: integer
+          format: int64
+        model:
+          type: string
+        system_fingerprint:
+          type: string
+        choices:
+          type: array
+          items:
+            $ref: '#/components/schemas/OllamaCompletionChoice'
+        usage:
+          $ref: '#/components/schemas/OllamaUsage'
+    OllamaCompletionStreamChoice:
+      type: object
+      required:
+        - index
+        - text
+      properties:
+        index:
+          type: integer
+        text:
+          type: string
+        finish_reason:
+          type: string
+          nullable: true
+    OllamaCompletionStreamChunk:
+      type: object
+      required:
+        - id
+        - object
+        - created
+        - model
+        - choices
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+        created:
+          type: integer
+          format: int64
+        model:
+          type: string
+        system_fingerprint:
+          type: string
+        choices:
+          type: array
+          items:
+            $ref: '#/components/schemas/OllamaCompletionStreamChoice'
+        usage:
+          $ref: '#/components/schemas/OllamaUsage'
+    OllamaEmbeddingRequest:
+      type: object
+      required:
+        - model
+        - input
+      properties:
+        model:
+          type: string
+        input:
+          description: Input string or array of strings to embed
+        encoding_format:
+          type: string
+        dimensions:
+          type: integer
+        user:
+          type: string
+    OllamaEmbeddingData:
+      type: object
+      required:
+        - object
+        - index
+        - embedding
+      properties:
+        object:
+          type: string
+        index:
+          type: integer
+        embedding:
+          type: array
+          items:
+            type: number
+            format: double
+    OllamaEmbeddingUsage:
+      type: object
+      required:
+        - prompt_tokens
+        - total_tokens
+      properties:
+        prompt_tokens:
+          type: integer
+        total_tokens:
+          type: integer
+    OllamaEmbeddingResponse:
+      type: object
+      required:
+        - object
+        - data
+        - model
+        - usage
+      properties:
+        object:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/OllamaEmbeddingData'
+        model:
+          type: string
+        usage:
+          $ref: '#/components/schemas/OllamaEmbeddingUsage'
+    OllamaTagModelDetails:
+      type: object
+      properties:
+        parent_model:
+          type: string
+        format:
+          type: string
+        family:
+          type: string
+        families:
+          type: array
+          items:
+            type: string
+        parameter_size:
+          type: string
+        quantization_level:
+          type: string
+        context_length:
+          type: integer
+        embedding_length:
+          type: integer
+        runner:
+          type: string
+    OllamaTagModel:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+        model:
+          type: string
+        modified_at:
+          type: string
+        size:
+          type: integer
+          format: int64
+        digest:
+          type: string
+        details:
+          $ref: '#/components/schemas/OllamaTagModelDetails'
+        capabilities:
+          type: array
+          items:
+            type: string
+    OllamaTagsResponse:
+      type: object
+      required:
+        - models
+      properties:
+        models:
+          type: array
+          items:
+            $ref: '#/components/schemas/OllamaTagModel'
+    OllamaModel:
+      type: object
+      required:
+        - id
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+        created:
+          type: integer
+          format: int64
+        owned_by:
+          type: string
+    OllamaModelsResponse:
+      type: object
+      required:
+        - data
+      properties:
+        object:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/OllamaModel'

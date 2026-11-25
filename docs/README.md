@@ -17,7 +17,7 @@ docs/
 ├── CONFIGURATION_GUIDE.md     # Configuration & developer reference (YAML, Go SDK & REST APIs)
 ├── UPGRADING.md               # Zero-downtime upgrade path, schema notes & 0034 rollback safety runbook
 ├── TESTING.md                 # 3-tier verification manual (static/contracts, unit/Postgres/Redis E2E, Chromium UI)
-├── openapi/                   # Formal OpenAPI 3.0/3.1 contracts (Gateway + MCP + A2A + 4 providers)
+├── openapi/                   # Formal OpenAPI 3.0/3.1 contracts (Gateway + MCP + A2A + 5 providers)
 │   ├── gateway.openapi.yaml
 │   ├── gateway.codegen.yaml
 │   ├── mcp.openapi.yaml
@@ -33,7 +33,7 @@ docs/
 ## Core Guides & Specifications
 
 1. **[Codebase Map (`CODEBASE_MAP.md`)](./CODEBASE_MAP.md)**  
-   *Implementation paths, tests, SQL migrations (`0001`–`0041`), change workflows, and authoritative source locations.*
+   *Implementation paths, tests, SQL migrations (`0001`–`0042`), change workflows, and authoritative source locations.*
 
 2. **[Authorization & Access Control Guide (`AUTHORIZATION_AND_ACCESS_CONTROL.md`)](./AUTHORIZATION_AND_ACCESS_CONTROL.md)**  
    *Single authoritative reference for all 19 enterprise authorization & governance capabilities, 7-role RBAC hierarchy (with LiteLLM role mapping), tri-state allowlist truth table (`null` vs `[]` vs `[...]`), Unified Access Groups & dynamic ABAC rules, OIDC/JWT/SSO role mapping, `ExternalAuthorizer` (Webhook/OPA) & SDK hooks, multi-window micro-dollar budgets, Redis Lua rate/concurrency limits, full audit action catalog (including MCP/A2A mutations), and Dockerized production testing runbooks.*
@@ -65,7 +65,7 @@ docs/
    - Low-level design of embedded assets, zero-node container build, and bundle budget constraints.
    - Centralized outbound SSRF protection network engine and connect-time IP pinning.
    - 6-stage routing pipeline and Reliability Manager (`CLOSED` $\rightarrow$ `OPEN` $\rightarrow$ `HALF_OPEN`, priority tier step-downs, specialized fallback chains, and mid-stream recovery).
-   - Horizontal pod scalability, PostgreSQL schema (`migrations/0001`–`0041`), single-backend response & Redis 8 semantic vector caching (`local` | `redis` | `redis-semantic`), and Redis cluster keyspace.
+   - Horizontal pod scalability, PostgreSQL schema (`migrations/0001`–`0042`), single-backend response & Redis 8 semantic vector caching (`local` | `redis` | `redis-semantic`), and Redis cluster keyspace.
 
 6. **[Configuration & Developer Guide (`CONFIGURATION_GUIDE.md`)](./CONFIGURATION_GUIDE.md)**  
    *Step-by-step setup and operations guide:*
@@ -75,7 +75,7 @@ docs/
    - Complete configuration parameters table with default values and security notes.
 
 7. **[Upgrade & Rollback Guide (`UPGRADING.md`)](./UPGRADING.md)**  
-   *Upgrade guidance for `v0.1.0`, migrations `0001`–`0041`, `0034` rollback duplicate-subject preflight checks, and `rolling_24h` cold recovery boundaries.*
+   *Upgrade guidance for `v0.1.0`, migrations `0001`–`0042`, `0034` rollback duplicate-subject preflight checks, and `rolling_24h` cold recovery boundaries.*
 
 8. **[Testing & Verification Guide (`TESTING.md`)](./TESTING.md)**  
    *Complete 3-tier testing workflow covering static/contract parity, unit/race checks, live PostgreSQL 16 & Redis 8 E2E suites, Playwright headless Chromium Web UI tests, and production Docker OIDC, Caching & OTLP Observability HA suites.*
@@ -85,7 +85,7 @@ docs/
    - Unified Gateway Data Plane contract (`gateway.openapi.yaml`).
    - Model Context Protocol contract (`mcp.openapi.yaml`) and multi-release YAML schema generator (`cmd/mcpgen`).
    - Agent-to-Agent Protocol contract (`a2a.openapi.yaml`).
-   - Official upstream provider contracts (`openai`, `anthropic`, `groq`, `openrouter`).
+   - Official upstream provider contracts (`openai`, `anthropic`, `groq`, `openrouter`, `ollama`).
 
 10. **[Code Quality Audit & Standards (`CODE_QUALITY_AUDIT.md`)](./CODE_QUALITY_AUDIT.md)**  
     *Inventory of dead-code removal, static analysis fixes, Go documentation coverage (`doc.go` & exported APIs), structural decompositions, and Go tooling setup (`.golangci.yml`, `make lint`, `make deadcode`, `cc-skills-golang`).*

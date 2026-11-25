@@ -35,11 +35,16 @@ func (s *GatewayServer) bootstrap(ctx context.Context) error {
 		if resolvedKey == "" {
 			resolvedKey = resolveProviderEnvKey(prov)
 		}
-		if resolvedKey == "" {
+		if resolvedKey == "" && prov != domain.ProviderOllama {
 			continue
 		}
 		eCopy := e
 		eCopy.ModelParams.APIKey = resolvedKey
+		if prov == domain.ProviderOllama && strings.TrimSpace(eCopy.ModelParams.APIBase) == "" {
+			if envBase := resolveOllamaEnvBaseURL(); envBase != "" {
+				eCopy.ModelParams.APIBase = envBase
+			}
+		}
 		entries = append(entries, eCopy)
 	}
 
@@ -149,6 +154,10 @@ func (s *GatewayServer) bootstrap(ctx context.Context) error {
 			}
 			if apiKey != "" {
 				if err := s.vault.EncryptCredential(cred, apiKey); err != nil {
+					return err
+				}
+			} else if prov == domain.ProviderOllama {
+				if err := s.vault.EncryptCredential(cred, ""); err != nil {
 					return err
 				}
 			} else {
@@ -265,9 +274,25 @@ func resolveProviderEnvKey(prov domain.ProviderType) string {
 		return strings.TrimSpace(os.Getenv("GROQ_API_KEY"))
 	case domain.ProviderOpenRouter:
 		return strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY"))
+	case domain.ProviderOllama:
+		return strings.TrimSpace(os.Getenv("OLLAMA_API_KEY"))
 	default:
 		return ""
 	}
+}
+
+func resolveOllamaEnvBaseURL() string {
+	raw := strings.TrimSpace(os.Getenv("OLLAMA_BASE_URL"))
+	if raw == "" {
+		raw = strings.TrimSpace(os.Getenv("OLLAMA_HOST"))
+	}
+	if raw == "" {
+		return ""
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "http://" + raw
+	}
+	return strings.TrimRight(raw, "/")
 }
 
 func discoverEnvModelEntries(existing []config.ModelListEntry) []config.ModelListEntry {
@@ -328,6 +353,20 @@ func discoverEnvModelEntries(existing []config.ModelListEntry) []config.ModelLis
 			out = append(out, config.ModelListEntry{
 				ModelName:   "openai/gpt-4o-mini",
 				ModelParams: config.ModelParams{Model: "openrouter/openai/gpt-4o-mini", APIKey: orKey},
+			})
+		}
+	}
+	ollamaBase := resolveOllamaEnvBaseURL()
+	ollamaKey := resolveProviderEnvKey(domain.ProviderOllama)
+	if ollamaBase != "" || ollamaKey != "" {
+		defaultModel := strings.TrimSpace(os.Getenv("OLLAMA_DEFAULT_MODEL"))
+		if defaultModel == "" {
+			defaultModel = "qwen2.5:0.5b"
+		}
+		if !hasAlias(defaultModel) {
+			out = append(out, config.ModelListEntry{
+				ModelName:   defaultModel,
+				ModelParams: config.ModelParams{Model: "ollama/" + defaultModel, APIKey: ollamaKey, APIBase: ollamaBase},
 			})
 		}
 	}

@@ -443,7 +443,7 @@ func TestPostgres_Migration0034_UpgradeAndRollbackConflictPreflight(t *testing.T
 	}
 }
 
-func TestPostgres_MigrationLifecycle_0001_to_0034(t *testing.T) {
+func TestPostgres_MigrationLifecycle_0001_to_0042(t *testing.T) {
 	ctx := context.Background()
 	pool, err := NewPostgresPool(ctx, livePostgresDSN())
 	if err != nil {
@@ -560,7 +560,7 @@ func TestPostgres_MigrationLifecycle_0001_to_0034(t *testing.T) {
 		}
 	}
 
-	// Exercise reverse down migrations from latest (0041) down through 0022.
+	// Exercise reverse down migrations from latest (0042) down through 0022.
 	entries, err := os.ReadDir(migrationsDir)
 	if err != nil {
 		t.Fatalf("read migrations dir: %v", err)
@@ -573,8 +573,12 @@ func TestPostgres_MigrationLifecycle_0001_to_0034(t *testing.T) {
 		}
 	}
 	sort.Sort(sort.Reverse(sort.StringSlice(waveDowns)))
-	if len(waveDowns) != 20 {
-		t.Fatalf("expected 20 down migrations for 0022..0041, got %d: %v", len(waveDowns), waveDowns)
+	if len(waveDowns) != 21 {
+		t.Fatalf("expected 21 down migrations for 0022..0042, got %d: %v", len(waveDowns), waveDowns)
+	}
+	var ollamaSeedCount int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM global_models WHERE id IN ('ollama/qwen2.5:0.5b', 'ollama/all-minilm:latest') AND input_cost_micros_per_1m = 0 AND pricing_status = 'verified'`).Scan(&ollamaSeedCount); err != nil || ollamaSeedCount != 2 {
+		t.Fatalf("expected 2 seeded ollama models after 0042.up.sql (count=%d, err=%v)", ollamaSeedCount, err)
 	}
 	for _, f := range waveDowns {
 		sqlBytes, err := os.ReadFile(filepath.Join(migrationsDir, f))
@@ -601,9 +605,9 @@ func TestPostgres_MigrationLifecycle_0001_to_0034(t *testing.T) {
 		}
 	}
 
-	// Reapply 0022..0034 cleanly and verify idempotency.
+	// Reapply 0022..0042 cleanly and verify idempotency.
 	if err := RunMigrationsDir(ctx, pool, migrationsDir); err != nil {
-		t.Fatalf("RunMigrationsDir reapply 0022..0034 failed: %v", err)
+		t.Fatalf("RunMigrationsDir reapply 0022..0042 failed: %v", err)
 	}
 	if err := RunMigrationsDir(ctx, pool, migrationsDir); err != nil {
 		t.Fatalf("RunMigrationsDir second idempotent reapply failed: %v", err)
@@ -622,6 +626,10 @@ func TestPostgres_MigrationLifecycle_0001_to_0034(t *testing.T) {
 			SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'idx_audit_logs_org_created_id'
 		)`).Scan(&auditIdxExists); err != nil || !auditIdxExists {
 		t.Fatalf("expected idx_audit_logs_org_created_id restored after 0041 reapply (exists=%v, err=%v)", auditIdxExists, err)
+	}
+	var restoredOllamaCount int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM global_models WHERE id IN ('ollama/qwen2.5:0.5b', 'ollama/all-minilm:latest')`).Scan(&restoredOllamaCount); err != nil || restoredOllamaCount != 2 {
+		t.Fatalf("expected 2 seeded ollama models restored after 0042 reapply (count=%d, err=%v)", restoredOllamaCount, err)
 	}
 
 	// Verify live Postgres RotateKEKsTransactionally re-wraps virtual_keys.staged_key_dek atomically.

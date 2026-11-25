@@ -134,6 +134,22 @@ func main() {
 	mux.HandleFunc("/groq/", handleOpenAICompat("groq", "llama-3.3-70b-versatile", "groq-obs-ok"))
 	mux.HandleFunc("/openrouter/", handleOpenAICompat("openrouter", "openai/gpt-4o-mini", "openrouter-obs-ok"))
 
+	// Ollama mock handler (supports /api/tags, /v1/models, /v1/chat/completions, /v1/completions, /v1/embeddings)
+	ollamaOpenAI := handleOpenAICompat("ollama", "qwen2.5:0.5b", "ollama-obs-ok")
+	mux.HandleFunc("/ollama/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/api/tags") {
+			st.recordTraceparent("ollama", r.Header.Get("traceparent"))
+			writeJSON(w, http.StatusOK, map[string]any{
+				"models": []map[string]any{
+					{"name": "qwen2.5:0.5b", "model": "qwen2.5:0.5b", "modified_at": time.Now().UTC().Format(time.RFC3339)},
+					{"name": "all-minilm:latest", "model": "all-minilm:latest", "modified_at": time.Now().UTC().Format(time.RFC3339)},
+				},
+			})
+			return
+		}
+		ollamaOpenAI(w, r)
+	})
+
 	// Anthropic Messages API mock handler
 	mux.HandleFunc("/anthropic/", func(w http.ResponseWriter, r *http.Request) {
 		st.recordTraceparent("anthropic", r.Header.Get("traceparent"))

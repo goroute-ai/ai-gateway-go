@@ -15,7 +15,7 @@ description: "Go backend architecture, public SDK isolation, router performance,
 - **Tri-State Model Capabilities & Pricing**:
   - Preserve explicit tri-state capabilities (`supported`, `unsupported`, `unknown`); never downgrade `unknown` to `unsupported` without verification.
   - Keep model pricing history append-only.
-- **Strict 4-Provider Surface**: Only `openai`, `anthropic`, `groq`, and `openrouter` adapters are first-class OpenAPI-first providers.
+- **OpenAPI-First Provider Architecture**: Every first-class provider adapter under `internal/adapter/<provider>/` must be backed by a pinned OpenAPI spec (`docs/openapi/<provider>.openapi.yaml` + `*.codegen.yaml`), generated DTOs in `internal/openapi/providers/` via `make specgen`, `internal/security/network` SSRF enforcement, W3C `traceparent` injection, and bounded body reads. Load the `goroute-add-provider` skill when integrating a new provider.
 - **Code Quality & Documentation**:
   - Exported APIs (especially `pkg/gateway/`) require intent-focused godoc comments starting with the symbol name and ending with a period (`revive: exported`, `godot`).
   - Wrap errors with `%w`, inspect with `errors.Is`/`errors.As`, pass `context.Context` as the first argument, and close HTTP bodies and SQL rows (`errorlint`, `noctx`, `bodyclose`, `sqlclosecheck`, `rowserrcheck`).

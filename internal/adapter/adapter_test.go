@@ -12,6 +12,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/anthropic"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/groq"
+	"github.com/goroute-ai/ai-gateway-go/internal/adapter/ollama"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/openai"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/openrouter"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
@@ -19,7 +20,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 )
 
-func TestAllFourProviderAdapters_ChatStreamEmbeddingsAndModels(t *testing.T) {
+func TestAllProviderAdapters_ChatStreamEmbeddingsAndModels(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. Mock OpenAI Server
@@ -86,6 +87,19 @@ func TestAllFourProviderAdapters_ChatStreamEmbeddingsAndModels(t *testing.T) {
 	}))
 	defer orSrv.Close()
 
+	// 5. Mock Ollama Server
+	ollamaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/chat/completions":
+			fmt.Fprint(w, `{"id":"chatcmpl-ol1","object":"chat.completion","created":1700000000,"model":"qwen2.5:0.5b","choices":[{"index":0,"message":{"role":"assistant","content":"Ollama ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}`)
+		case "/v1/embeddings":
+			fmt.Fprint(w, `{"object":"list","model":"all-minilm:latest","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2,0.3]}],"usage":{"prompt_tokens":5,"total_tokens":5}}`)
+		case "/api/tags":
+			fmt.Fprint(w, `{"models":[{"name":"qwen2.5:0.5b","model":"qwen2.5:0.5b"}]}`)
+		}
+	}))
+	defer ollamaSrv.Close()
+
 	loopbackPol, err := network.NewPolicy(config.OutboundSSRFConfig{
 		AllowPrivateNetworks: true,
 		AllowInsecureHTTP:    true,
@@ -103,11 +117,14 @@ func TestAllFourProviderAdapters_ChatStreamEmbeddingsAndModels(t *testing.T) {
 	groqAdp.SetSSRFPolicy(loopbackPol)
 	orAdp := openrouter.NewAdapter(orSrv.Client())
 	orAdp.SetSSRFPolicy(loopbackPol)
+	ollamaAdp := ollama.NewAdapter(ollamaSrv.Client())
+	ollamaAdp.SetSSRFPolicy(loopbackPol)
 
 	reg.Register(oaiAdp)
 	reg.Register(antAdp)
 	reg.Register(groqAdp)
 	reg.Register(orAdp)
+	reg.Register(ollamaAdp)
 
 	req := &domain.CanonicalChatRequest{
 		Model: "test-model",
@@ -126,6 +143,7 @@ func TestAllFourProviderAdapters_ChatStreamEmbeddingsAndModels(t *testing.T) {
 		{domain.ProviderAnthropic, antSrv.URL, "Claude ok"},
 		{domain.ProviderGroq, groqSrv.URL, "Groq ok"},
 		{domain.ProviderOpenRouter, orSrv.URL, "OpenRouter ok"},
+		{domain.ProviderOllama, ollamaSrv.URL, "Ollama ok"},
 	}
 
 	for _, tc := range testCases {
