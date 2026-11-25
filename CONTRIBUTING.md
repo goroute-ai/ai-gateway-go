@@ -2,7 +2,7 @@
 
 Thank you for your interest in contributing to **GoRoute AI Gateway**!
 
-GoRoute AI Gateway is a Go service and embeddable SDK (`v0.1.0`) that routes inference requests across OpenAPI-first model providers (`openai`, `anthropic`, `groq`, `openrouter`, `ollama`), exposes UI-selectable multi-release Model Context Protocol (MCP) virtual hubs, and connects Agent-to-Agent (A2A) networks.
+GoRoute AI Gateway is a Go service and embeddable SDK (`v0.2.0`) that routes inference requests across OpenAPI-first model providers (`openai`, `anthropic`, `groq`, `openrouter`, `ollama`), exposes UI-selectable multi-release Model Context Protocol (MCP) virtual hubs, and connects Agent-to-Agent (A2A) networks.
 
 ---
 

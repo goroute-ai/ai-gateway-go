@@ -6,7 +6,7 @@
 
 **One simple, secure hub for all your AI models, safety checks, and spending controls.**
 
-[![Release](https://img.shields.io/badge/Release-v0.1.0-success)](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v0.1.0)
+[![Release](https://img.shields.io/badge/Release-v0.2.0-success)](https://github.com/goroute-ai/ai-gateway-go/releases/tag/v0.2.0)
 [![Docker Hub](https://img.shields.io/badge/Docker%20Hub-qaadir%2Fai--gateway-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/qaadir/ai-gateway)
 [![GHCR](https://img.shields.io/badge/GHCR-ghcr.io%2Fgoroute--ai%2Fai--gateway--go-2496ED?logo=docker&logoColor=white)](https://github.com/goroute-ai/ai-gateway-go/pkgs/container/ai-gateway-go)
 [![Go Version](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go)](https://go.dev/)
@@ -40,7 +40,7 @@ GoRoute sits between your apps and major AI providers (**OpenAI**, **Anthropic**
 docker run --rm -p 8080:8080 \
   -e GATEWAY_MASTER_ADMIN_KEY="sk-gw-change-me" \
   -e OPENAI_API_KEY="sk-..." \
-  qaadir/ai-gateway:0.1.0
+  qaadir/ai-gateway:0.2.0
 ```
 
 ### Option B: Install the Standalone Binary

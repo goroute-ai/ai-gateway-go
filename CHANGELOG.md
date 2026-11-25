@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [0.2.0] - 2026-11-25
+
+> **Upgrade & Breaking Changes (from `v0.1.0`)**:
+> - **Database Migration `0042_seed_ollama_models`**: Run `ai-gateway -migrate-only` (or allow startup auto-migration) to seed baseline local Ollama chat and embedding models (`0 µ$` default local cost).
+> - **Pure OpenTelemetry (`OTLP/HTTP`) Only**: Prometheus `GET /metrics`, `deployments/prometheus/prometheus.yml`, and legacy `gw_*` / `gateway_*_total` metric names have been **removed**. Configure `otel:` (`OTEL_*` / `GATEWAY_OTEL_*`) to export Traces, Metrics (`gen_ai.*`, `gateway.*`), and opt-in Logs over OTLP/HTTP.
+> - **Single-Backend Response Caching & Redis 8+**: Dual-tier L1+L2 Redis Lua epoch caching, raw SSE chunk-array stream caching, and `router.cache_aware_routing` have been **removed**. Configure `cache.type` as `"local"`, `"redis"`, or `"redis-semantic"` (requires Redis 8+ with RediSearch).
+> - **Loopback Custom `BaseURL` RBAC Hardening**: `authorizeCustomBaseURL` now enforces `platform_admin` whenever `security.network.outbound_ssrf.allow_loopback_http` is enabled.
+
 ### First-Class OpenAPI-First Ollama Provider, Security Hardening & Production Verification
 
 #### Added
@@ -23,15 +33,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Security
 - **Loopback Custom BaseURL RBAC Hardening (`internal/server/handlers_admin.go`)**: Extended `authorizeCustomBaseURL` to enforce `platform_admin` role whenever `security.network.outbound_ssrf.allow_loopback_http` is enabled (matching `allow_private_networks` and `allowed_private_cidrs`), preventing tenant `org_admin` actors from probing arbitrary loopback ports in multi-tenant deployments.
 - **Ollama VRAM Eviction Protection (`internal/adapter/ollama/adapter.go`)**: Stripped caller-supplied `keep_alive` from `ExtraParams` in `marshalOllamaChatPayload` so untrusted callers cannot pass `keep_alive: 0` to force-evict shared models from GPU VRAM.
+- **19-Capability Authorization Hardening & 9-Check CI Pipeline**: Enforced deterministic org-policy `403`s (`provider_not_subscribed`, `model_disabled_by_org_policy`), tri-state key issuance allowlists, `X-Gateway-Client-App` filtering, least-privilege `viewer` RBAC separation, uniform A2A authz & `CustomAuthorizer` checks, MCP/A2A admin audit diffs, expanded 2-replica Docker E2E matrix, and a 9-check CI pipeline (strict live E2E, Playwright UI E2E, Gitleaks, Docker build).
 
-### OpenTelemetry (OTLP/HTTP) 3-Signal Observability Standardization (`v0.1` LTS)
+### OpenTelemetry (OTLP/HTTP) 3-Signal Observability Standardization
 
 #### Added
 - **Unified 3-Signal OpenTelemetry OTLP/HTTP Runtime (`internal/observability/otel.go`, `instruments.go`, `genai_spans.go`)**:
   - Standardized GoRoute telemetry export exclusively on pure-Go official OpenTelemetry OTLP/HTTP SDKs across **Traces** (`otlptracehttp`), **Metrics** (`otlpmetrichttp`), and opt-in post-scrub **Logs** (`otelslog` + `otlploghttp`), with every signal endpoint validated against `internal/security/network` outbound SSRF policies.
   - Adopted OpenTelemetry **GenAI Semantic Conventions** (`gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.first_token` streaming event, `execute_tool` MCP spans, `invoke_agent` A2A spans, `cache.lookup` spans, and privacy-first `capture_content: false` default).
   - Standardized all OTLP metric names to pure OpenTelemetry dot-separated naming under `gen_ai.*` (`gen_ai.client.operation.duration`, `gen_ai.client.token.usage`, `gen_ai.server.time_to_first_token`) and `gateway.*` (`gateway.requests`, `gateway.cache.*`, `gateway.guardrail.*`, `gateway.mcp.requests`, `gateway.a2a.requests`, `gateway.finops.outbox.*`, `gateway.audit.siem.*`, `gateway.redis.circuit_breaker.state`, `gateway.deployment.healthy`, and non-STW `runtime/metrics` Go runtime gauges).
-  - Added W3C `traceparent` propagation across all 4 OpenAPI-first provider adapters (`openai`, `anthropic`, `groq`, `openrouter`), fixed real `spanContext.TraceFlags()` formatting, and low-cardinality `chi` route-template span naming (`HTTP POST /v1/chat/completions`).
+  - Added W3C `traceparent` propagation across all 5 OpenAPI-first provider adapters (`openai`, `anthropic`, `groq`, `openrouter`, `ollama`), fixed real `spanContext.TraceFlags()` formatting, and low-cardinality `chi` route-template span naming (`HTTP POST /v1/chat/completions`).
   - Added top-level `otel:` and `health:` configuration sections with full standard `OTEL_*` and `GATEWAY_OTEL_*` / `GATEWAY_AUDIT_SIEM_*` / `GATEWAY_HEALTH_PROBE_*` environment overrides, fail-closed `os.environ/` validation on `otel.headers` & `audit.siem_webhook.*`, and silent deprecated `tracing:` YAML alias compatibility.
   - Fixed tenant identity attribution (`org_id`, `team_id`, `virtual_key_id`, `key_prefix`) on HTTP access logs & spans, replaced lifetime Algorithm-R latency reservoir with a bounded 1,024-sample sliding window, replaced STW `runtime.ReadMemStats()` with lock-free `runtime/metrics`, wired `pkg/gateway.WithLogger` to global `logger.SetGlobal`, and surfaced live OTLP 3-signal status, FinOps outbox depth, SIEM webhook delivery stats, and Redis circuit-breaker state in `GET /admin/v1/observability/metrics` and Operator Web UI (`OverviewView` + `ConfigView`).
   - Added Tier 3c `make test-obs-prod-docker` 2-replica HA production Docker OTLP verification suite (`Suites O0–O5`) using a real `otel/opentelemetry-collector-contrib` instance writing traces, metrics, and logs JSONL alongside 4-adapter `traceparent` capture, HMAC-SHA256 SIEM webhook verification, and Redis circuit-breaker chaos testing.

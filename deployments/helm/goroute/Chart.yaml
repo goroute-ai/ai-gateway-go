@@ -2,8 +2,8 @@ apiVersion: v2
 name: goroute
 description: Production Helm chart for GoRoute AI Gateway
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.2.0
+appVersion: "0.2.0"
 home: https://github.com/goroute-ai/ai-gateway-go
 icon: https://raw.githubusercontent.com/goroute-ai/ai-gateway-go/main/assets/logo-dark.png
 sources:
@@ -28,10 +28,16 @@ annotations:
       url: https://hub.docker.com/r/qaadir/ai-gateway
   artifacthub.io/images: |
     - name: ai-gateway
-      image: ghcr.io/goroute-ai/ai-gateway-go:0.1.0
+      image: ghcr.io/goroute-ai/ai-gateway-go:0.2.0
   artifacthub.io/changes: |
     - kind: added
-      description: Initial release of GoRoute AI Gateway with 4 OpenAPI-first model providers (OpenAI, Anthropic, Groq, OpenRouter), OIDC-only federation, 19-feature action-based authorization parity, 5-release MCP YAML engine, Linux Foundation A2A v1.0 router, and embedded Operator Web UI.
+      description: First-class OpenAPI-first Ollama provider (5th provider alongside OpenAI, Anthropic, Groq, and OpenRouter), paired migration 0042_seed_ollama_models, keyless local auth, and GPU VRAM keep_alive eviction protection.
+    - kind: added
+      description: Unified 3-signal OpenTelemetry OTLP/HTTP observability (Traces, Metrics, opt-in Logs), GenAI semantic conventions, W3C traceparent across all 5 adapters, and Operator Web UI telemetry correlation.
+    - kind: added
+      description: Single-backend response caching (local LRU, Redis KV, and Redis 8+ RediSearch semantic vector similarity search) with Operator Web UI Playground/Overview/FinOps controls.
+    - kind: changed
+      description: Removed Prometheus /metrics exposition (replaced by pure OTLP/HTTP), dual-tier L1+L2 Redis Lua epoch caching, and raw SSE chunk-array caching; hardened loopback BaseURL RBAC and 19-capability authorization parity.
 dependencies:
   - name: postgresql
     version: "16.x.x"

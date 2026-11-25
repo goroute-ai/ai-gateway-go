@@ -1,6 +1,6 @@
 # Enterprise AI Gateway (Pure Go) — Complete High-Level & Low-Level Architecture Specification
 
-> **Document Status**: Production Reference Architecture (`v0.1.0`)  
+> **Document Status**: Production Reference Architecture (`v0.2.0`)  
 > **Target Runtime**: Go version declared in `go.mod` (`net/http` + `go-chi/chi/v5`), PostgreSQL 16+, Redis 8+  
 > **Provider Integrations**: OpenAPI-first adapters under `internal/adapter/` (`openai`, `anthropic`, `groq`, `openrouter`, `ollama`); consult those packages for exact wire translation.  
 > **Contract Architecture**: Gateway and provider OpenAPI contracts are maintained under `docs/openapi/`. `make specgen` regenerates gateway/provider DTOs and multi-release MCP types (`cmd/mcpgen`), validates all contracts, and checks `/v1`, `/admin/v1`, `/auth`, and provider alias route parity (`127` OpenAPI paths). A2A protobuf generation is documented in `docs/specs/a2a/v1.0/generate.go`.
