@@ -3,6 +3,7 @@ export type ProviderType =
   | 'anthropic'
   | 'groq'
   | 'openrouter'
+  | 'ollama'
   | string;
 
 export type BudgetResetPeriod = 'daily' | 'monthly' | 'never';

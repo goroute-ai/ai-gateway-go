@@ -17,6 +17,7 @@ const (
 	ProviderAnthropic  ProviderType = "anthropic"
 	ProviderGroq       ProviderType = "groq"
 	ProviderOpenRouter ProviderType = "openrouter"
+	ProviderOllama     ProviderType = "ollama"
 )
 
 // AllProviders returns the list of supported upstream providers.
@@ -26,6 +27,7 @@ func AllProviders() []ProviderType {
 		ProviderAnthropic,
 		ProviderGroq,
 		ProviderOpenRouter,
+		ProviderOllama,
 	}
 }
 

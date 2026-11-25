@@ -11,6 +11,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/anthropic"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/groq"
+	"github.com/goroute-ai/ai-gateway-go/internal/adapter/ollama"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/openai"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/openrouter"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
@@ -57,6 +58,7 @@ func TestSupportsAssistantPrefill_Matrix(t *testing.T) {
 		{name: "anthropic", adp: anthropic.NewAdapter(nil), want: true},
 		{name: "groq", adp: groq.NewAdapter(nil), want: true},
 		{name: "openrouter", adp: openrouter.NewAdapter(nil), want: true},
+		{name: "ollama", adp: ollama.NewAdapter(nil), want: true},
 	}
 
 	for _, tc := range cases {
@@ -161,6 +163,31 @@ func TestTrailingAssistantMessageSerializationAcrossAdapters(t *testing.T) {
 		last := msgs[len(msgs)-1].(map[string]any)
 		if last["role"] != "assistant" || last["content"] != "The quick brown " {
 			t.Fatalf("unexpected openrouter trailing message: %#v", last)
+		}
+	})
+
+	t.Run("ollama", func(t *testing.T) {
+		var captured map[string]any
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			b, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(b, &captured)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"1","object":"chat.completion","model":"qwen2.5:0.5b","choices":[{"index":0,"message":{"role":"assistant","content":"fox"},"finish_reason":"stop"}]}`))
+		}))
+		defer srv.Close()
+
+		adp := ollama.NewAdapter(srv.Client())
+		adp.SetSSRFPolicy(pol)
+		_, err := adp.ChatCompletion(ctx, &domain.Deployment{
+			Credential: &domain.ProviderCredential{BaseURL: srv.URL},
+		}, req)
+		if err != nil {
+			t.Fatalf("ChatCompletion: %v", err)
+		}
+		msgs := captured["messages"].([]any)
+		last := msgs[len(msgs)-1].(map[string]any)
+		if last["role"] != "assistant" || last["content"] != "The quick brown " {
+			t.Fatalf("unexpected ollama trailing message: %#v", last)
 		}
 	})
 

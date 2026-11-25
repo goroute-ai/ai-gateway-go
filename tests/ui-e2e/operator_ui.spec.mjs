@@ -422,6 +422,24 @@ async function run() {
     await groupCard.locator('button[title="Delete Model Group"]').click();
     await groupCard.waitFor({ state: 'hidden' });
 
+    // Check 5a-ollama: Verify Ollama appears in ModelsView filter and supports keyless CredentialsView modal
+    await page.locator('button', { hasText: /^Curated Catalogue/ }).click();
+    const providerFilterSelect = page.locator('select').filter({ has: page.locator('option[value="ollama"]') }).first();
+    await providerFilterSelect.waitFor({ state: 'visible' });
+    await providerFilterSelect.selectOption('ollama');
+    await page.locator('tbody tr', { hasText: 'qwen2.5:0.5b' }).first().waitFor({ state: 'visible' });
+
+    await page.locator('aside button', { hasText: 'Credentials Vault' }).click();
+    await page.getByRole('button', { name: 'Add Provider Credential' }).click();
+    const addCredModal = modalByTitle(page, 'Add Upstream Provider Credential');
+    await addCredModal.waitFor({ state: 'visible' });
+    await fieldControl(addCredModal, 'Provider *').selectOption('ollama');
+    const ollamaKeyInput = fieldControl(addCredModal, 'API Key (Optional for local Ollama)');
+    assert.equal(await ollamaKeyInput.getAttribute('required'), null, 'expected Ollama API Key input not to have required attribute');
+    const preflightBtn = addCredModal.getByRole('button', { name: /Test Upstream Before Saving/i });
+    assert.equal(await preflightBtn.isDisabled(), false, 'expected preflight button enabled for keyless Ollama');
+    await addCredModal.getByRole('button', { name: 'Cancel' }).click();
+
     // Check 5a-bis: Named Guardrail Registry sensitive_route_target persistence
     await page.locator('aside button', { hasText: 'Guardrails' }).click();
     await page.getByRole('button', { name: 'Named Guardrails & Registry' }).click();

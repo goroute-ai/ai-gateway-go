@@ -248,6 +248,22 @@ func (r *MemoryRepository) seedDefaultGlobalCatalogue() {
 			InputCostMicrosPer1M: 150000, OutputCostMicrosPer1M: 600000,
 			LifecycleStatus: domain.ModelStatusActive, DiscoveredAt: now, UpdatedAt: now,
 		},
+		{
+			ID: "ollama/qwen2.5:0.5b", Provider: domain.ProviderOllama, ModelName: "qwen2.5:0.5b", DisplayName: "Ollama Qwen 2.5 0.5B",
+			MaxInputTokens: 32768, MaxOutputTokens: 8192, SupportsStreaming: true, SupportsTools: true,
+			Capabilities:         domain.ModelCapabilities{Streaming: domain.CapabilitySupported, Tools: domain.CapabilitySupported, StructuredOutputs: domain.CapabilitySupported},
+			SupportedOperations:  []domain.OperationType{domain.OperationChat, domain.OperationCompletion},
+			InputCostMicrosPer1M: 0, OutputCostMicrosPer1M: 0,
+			LifecycleStatus: domain.ModelStatusActive, DiscoveredAt: now, UpdatedAt: now,
+		},
+		{
+			ID: "ollama/all-minilm:latest", Provider: domain.ProviderOllama, ModelName: "all-minilm:latest", DisplayName: "Ollama All-MiniLM Embeddings",
+			MaxInputTokens: 512, MaxOutputTokens: 384, SupportsEmbeddings: true,
+			Capabilities:         domain.ModelCapabilities{Embeddings: domain.CapabilitySupported},
+			SupportedOperations:  []domain.OperationType{domain.OperationEmbedding},
+			InputCostMicrosPer1M: 0, OutputCostMicrosPer1M: 0,
+			LifecycleStatus: domain.ModelStatusActive, DiscoveredAt: now, UpdatedAt: now,
+		},
 	}
 
 	for _, m := range defaults {

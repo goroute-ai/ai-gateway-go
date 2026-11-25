@@ -77,6 +77,13 @@ model_list:
       model: "openrouter/anthropic/claude-sonnet-4-5"
       api_key: "os.environ/OPENROUTER_API_KEY"
       weight: 100
+
+  # Local Ollama (requires security.network.outbound_ssrf.allow_loopback_http: true; api_key is optional)
+  - model_name: "local-qwen"
+    model_params:
+      model: "ollama/qwen2.5:0.5b"
+      api_base: "http://127.0.0.1:11434"
+      weight: 100
 ```
 
 ### Option C: Embedded Go SDK (`pkg/gateway`)
@@ -140,7 +147,7 @@ GoRoute AI Gateway embeds an operator web application directly into the binary. 
 ### Operator Console Features
 - **Streaming Chat Playground**: Test prompts against any configured alias (`fast`, `reasoning`) or model with real-time SSE token streaming, temperature/token dials, latency, micro-dollar cost, and guardrail action telemetry.
 - **Organizations, Teams & Policies**: Create and manage organizations, teams, users, micro-dollar budgets, provider subscriptions, and org-level model policies.
-- **Model Catalogue & Routing Explorer**: Search and filter models across `openai`, `anthropic`, `groq`, and `openrouter`, inspect micro-dollar pricing, context window boundaries, supported capabilities, and attach deployments to model groups.
+- **Model Catalogue & Routing Explorer**: Search and filter models across `openai`, `anthropic`, `groq`, `openrouter`, and `ollama`, inspect micro-dollar pricing, context window boundaries, supported capabilities, and attach deployments to model groups.
 - **Virtual Key Provisioning**: Create and revoke virtual API keys (`sk-gw-...`) with scoped team/user ownership, expiry, allowed MCP servers / A2A agents, monthly micro-dollar budget limits, and RPM/TPM rate limits.
 - **Live FinOps Analytics**: View real-time spend dashboards with breakdown by team, virtual key, model, and provider.
 - **Guardrails Console & Usage Metrics**: Configure Layer 0 baseline rules (prompt injection, PII, secrets, 5 toxicity categories), register & bind any of the 15 built-in guardrail drivers (external moderation/PII services, Starlark `custom_code`, webhooks, LLM judges, tool/MCP governance), manage cross-turn tool trust policies, simulate via `/v1/guardrails/apply`, and track micro-dollar guardrail cost attribution.
@@ -193,7 +200,7 @@ Custom Go hooks can also be injected at initialization with `WithRouterConfig`, 
 ### HTTP Request Routing Hints & Response Telemetry Headers
 Every `/v1/chat/completions` call accepts optional inbound routing hint headers (`X-Gateway-Allowed-Region`, `X-Gateway-Session-Id`, `X-Gateway-Preferred-Deployment-Id`, `X-Gateway-Priority`, `X-Gateway-Hedge-After-Ms`, `X-Gateway-Tags`, `X-Gateway-Tag-<Name>`) and returns real-time telemetry headers:
 - `X-Gateway-Request-Id`: Unique request correlation ID (`req_...`)
-- `X-Gateway-Provider`: Winning upstream provider (`openai`, `anthropic`, `groq`, `openrouter`)
+- `X-Gateway-Provider`: Winning upstream provider (`openai`, `anthropic`, `groq`, `openrouter`, `ollama`)
 - `X-Gateway-Model`: Resolved upstream model (`gpt-4o-mini`, `claude-sonnet-4-20250514`, etc.)
 - `X-Gateway-Cost-Micros`: Exact request cost in micro-USD ($10^{-6}\text{ USD}$)
 - `X-Gateway-Latency-Ms`: End-to-end request latency in milliseconds
@@ -211,7 +218,7 @@ Every `/v1/chat/completions` call accepts optional inbound routing hint headers 
 ### What It Does
 Enforces a strict **4-Layer Multi-Tenant Model Hierarchy** while supporting zero-friction **Dynamic `provider/model` Wildcard Routing** and **Automated Upstream Model Discovery**:
 1. **Layer 1 (Global Model Catalogue)**: Capabilities (`supports_tools`, `supports_reasoning`, `max_input_tokens`) and versioned pricing (`input_cost_micros_per_1m`, `output_cost_micros_per_1m`) for all models.
-2. **Layer 2 (Organization Provider Subscriptions)**: Controls which upstream vendors (`openai`, `anthropic`, `groq`, `openrouter`) a tenant organization is entitled to use.
+2. **Layer 2 (Organization Provider Subscriptions)**: Controls which upstream vendors (`openai`, `anthropic`, `groq`, `openrouter`, `ollama`) a tenant organization is entitled to use.
 3. **Layer 3 (Organization Model Policies)**: Explicit tenant compliance approval per `global_model_id`.
 4. **Layer 4 (Model Groups & Physical Deployments)**: Maps logical aliases (`"fast"`, `"reasoning"`) to physical provider endpoints and encrypted Vault credentials.
 
@@ -224,7 +231,7 @@ discovery:
 ```
 
 ### Go SDK & Dynamic Wildcard Usage
-You can pass any `"provider/model"` string (e.g., `"groq/llama-3.1-8b-instant"`, `"anthropic/claude-sonnet-4-20250514"`, `"openai/gpt-4.1-mini"`, `"openrouter/openai/gpt-4o-mini"`) directly to `gw.Chat(...)` without pre-creating an alias:
+You can pass any `"provider/model"` string (e.g., `"groq/llama-3.1-8b-instant"`, `"anthropic/claude-sonnet-4-20250514"`, `"openai/gpt-4.1-mini"`, `"openrouter/openai/gpt-4o-mini"`, `"ollama/qwen2.5:0.5b"`) directly to `gw.Chat(...)` without pre-creating an alias:
 
 ```go
 models, _ := gw.ListModels(ctx) // Returns tenant-filtered model IDs from GET /v1/models
@@ -820,7 +827,10 @@ Validates parameters (`temperature` in `[0, 2]`, `top_p` in `[0, 1]`), model cap
 | `audit.siem_webhook.*` | `GATEWAY_AUDIT_SIEM_*` | disabled | Async HMAC-SHA256 signed SIEM audit webhook sink (`ENABLED`, `URL`, `SECRET`, `AUTH_HEADER`, `BATCH_SIZE`, `FLUSH_INTERVAL`, `TIMEOUT`, `MAX_QUEUE_SIZE`). |
 
 ### Provider Options
-- All supported upstream providers (`openai`, `anthropic`, `groq`, `openrouter`) are OpenAPI-backed with explicit per-adapter capabilities and operation sets.
+- All supported upstream providers (`openai`, `anthropic`, `groq`, `openrouter`, `ollama`) are OpenAPI-backed with explicit per-adapter capabilities and operation sets.
+- **Ollama Local & Production Guidance**:
+  - For local development (`http://127.0.0.1:11434`), set `security.network.outbound_ssrf.allow_loopback_http: true` (`api_key` is optional for `ollama`; opt-in env vars `OLLAMA_HOST`/`OLLAMA_BASE_URL`, `OLLAMA_API_KEY`, and `OLLAMA_DEFAULT_MODEL` are supported).
+  - In production (`GATEWAY_ENV=production`), keep `allow_loopback_http: false`, front network-exposed Ollama servers with TLS 1.3 + Bearer/mTLS auth, enforce RPM/TPM/`max_parallel_requests` quotas to protect GPU/VRAM capacity on `$0` self-hosted models, and promote dynamically discovered Ollama models via `/admin/v1/catalogue/{id}/pricing` before serving strictly budgeted virtual keys.
 - Imported catalog pricing defaults to `PricingStatusUnknown` (non-zero rates) or `PricingStatusUnrecorded` (zero rates); budgeted traffic requires `PricingStatusVerified` or `PricingStatusCustom` plus a deterministic pre-dispatch bound.
 
 ### Federated identity, key delivery, and upstream IAM

@@ -125,7 +125,7 @@ if [[ -s "$OTEL_DIR/traces.jsonl" || -s "$OTEL_DIR/metrics.jsonl" || -s "$OTEL_D
 fi
 echo "  PASS: Zero OTLP traces/metrics/logs emitted when otel.enabled=false."
 
-echo "==> Step 6 (Suites O1–O5): Enabling 3-signal OTLP/HTTP export across both replicas..."
+echo "==> Step 6 (Suites O1–O6): Enabling 3-signal OTLP/HTTP export across both replicas..."
 GATEWAY_OTEL_ENABLED=true docker compose -f "$COMPOSE_FILE" up -d --force-recreate --no-deps ai-gateway-1 ai-gateway-2
 wait_replicas_ready
 
@@ -155,5 +155,5 @@ if ! echo "$ALL_LOGS" | grep -q '"trace_id"' || ! echo "$ALL_LOGS" | grep -q '"o
 fi
 echo "  PASS: Zero secrets/PII leaked across container stdout logs and trace_id/org_id correlation verified."
 echo "==========================================================================="
-echo "  ALL PRODUCTION DOCKER OTLP OBSERVABILITY SUITES (O0–O5) PASSED!          "
+echo "  ALL PRODUCTION DOCKER OTLP OBSERVABILITY SUITES (O0–O6) PASSED!          "
 echo "==========================================================================="

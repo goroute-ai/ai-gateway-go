@@ -16,7 +16,7 @@ Inspect existing migrations before creating a new one:
 ls -1 migrations/ | tail -n 10
 ```
 
-Never edit or renumber existing applied migrations (`0001`–`0041`).
+Never edit or renumber existing applied migrations (`0001`–`0042`).
 
 ## Step 2: Author Paired Forward & Rollback SQL Files
 

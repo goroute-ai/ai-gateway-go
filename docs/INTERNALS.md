@@ -64,7 +64,7 @@ flowchart TB
             Stage1["7. Stage 0-1: PreRouter & Intelligent Router\n(Heuristic / Semantic / Quality / Bandit + Affinity)"]
             Stage2["8. Stage 2-4: FilterChain, Tiers & Load Balancer\n(Plugins, Region/Tags, Budgets, 7 LB Strategies)"]
             RelMgr["9. Stage 5: PriorityScheduler & Reliability Manager\n(RetryPolicy, Adaptive CB, Specialized Fallbacks, SSE Continuation)"]
-            Adapters["10. Provider Adapters & SSE Normalizer\n(OpenAI · Anthropic · Groq · OpenRouter)"]
+            Adapters["10. Provider Adapters & SSE Normalizer\n(OpenAI · Anthropic · Groq · OpenRouter · Ollama)"]
         end
 
         subgraph ControlPlane["Control Plane (/admin/v1/* & Background Daemons)"]
@@ -86,6 +86,7 @@ flowchart TB
         Anthropic["Anthropic Claude"]
         Groq["Groq"]
         OpenRouter["OpenRouter"]
+        Ollama["Ollama (Local / Self-Hosted)"]
     end
 
     App1 & App2 -->|"POST /v1/chat/completions\nBearer sk-gw-..."| LB
@@ -104,7 +105,7 @@ flowchart TB
     AdminAPI -.->|"PUBLISH gw:events:invalidation"| Redis
     PubSub <-->|"SUBSCRIBE"| Redis
 
-    Adapters --> OpenAI & Anthropic & Groq & OpenRouter
+    Adapters --> OpenAI & Anthropic & Groq & OpenRouter & Ollama
 ```
 
 ---
@@ -368,6 +369,8 @@ GoRoute implements OpenAPI-first provider adapters and pure-Go protocol helpers 
    - Spec-driven adapter targeting Groq OpenAI-compatible inference and audio endpoints (`groq_types.gen.go`), preserving reasoning content fields (`reasoning_content`, `reasoning`) across streaming and non-streaming responses.
 4. **OpenRouter Adapter (`internal/adapter/openrouter/`)**:
    - Spec-driven adapter targeting OpenRouter chat/completions and model routing (`openrouter_types.gen.go`), propagating OpenRouter attribution headers and reasoning deltas.
+5. **Ollama Adapter (`internal/adapter/ollama/`)**:
+   - Spec-driven adapter targeting Ollama OpenAI-compatible inference (`/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`) and native `/api/tags` discovery (with `/v1/models` fallback) using `ollama_types.gen.go`, optional Bearer auth, root or `/v1` base URL normalization, and `keep_alive` extra-parameter stripping.
 
 ### 6.5 Embedded Model Catalogue Engine (`internal/modelcatalog/`)
 - Curates 5,493 model/provider records derived from the upstream model catalog snapshot, compressed into a 216 KB embedded binary (`catalog.json.gz`).
@@ -492,14 +495,14 @@ Validates request structures before consuming upstream quota:
 - **Unified 3-Signal OTLP/HTTP Runtime (`otel.go`, `instruments.go`, `genai_spans.go`)**: GoRoute `v0.1` LTS supports **pure OpenTelemetry OTLP/HTTP only** for telemetry export, emitting **Traces** (`otlptracehttp`), **Metrics** (`otlpmetrichttp`), and opt-in post-scrub **Logs** (`otelslog` + `otlploghttp`) strictly over GoRoute's SSRF-governed outbound transport (`internal/security/network`). Non-OTLP scrape endpoints (such as Prometheus `/metrics`) and vendor-specific exporters are intentionally excluded; external observability stacks integrate on top of OTLP/HTTP directly or via an OpenTelemetry Collector.
 - **GenAI Semantic Conventions & Dot-Separated Metrics**: Emits `gen_ai.client.operation.duration`, `gen_ai.client.token.usage`, `gen_ai.server.time_to_first_token`, plus pure dot-separated `gateway.*` counters, histograms, and observable gauges (`gateway.requests`, `gateway.cache.*`, `gateway.guardrail.*`, `gateway.mcp.requests`, `gateway.a2a.requests`, `gateway.finops.outbox.*`, `gateway.audit.siem.*`, `gateway.redis.circuit_breaker.state`, `gateway.deployment.healthy`, `gateway.routing.signal_degraded`, upstream HTTP connection-pool telemetry, and non-STW `runtime/metrics` Go runtime memory/GC gauges).
 - **JSON Telemetry Snapshot (`GET /admin/v1/observability/metrics`)**: Admin-authenticated snapshot strictly powering the embedded Operator Web UI (`OverviewView`), using a bounded 1,024-sample sliding latency window (`slidingWindow`) alongside live OTLP 3-signal status, FinOps outbox depth, SIEM delivery counters, and Redis circuit-breaker state.
-- **W3C Distributed Tracing & Child Spans**: Generates or propagates standard `traceparent` / `tracestate` headers (using real `spanContext.TraceFlags()`) across all 4 upstream provider adapters (`openai`, `anthropic`, `groq`, `openrouter`), correlates `trace_id`/`span_id`/`org_id`/`virtual_key_id` across structured logs and spend records, and emits low-cardinality route spans plus GenAI (`chat`, `embeddings`, `execute_tool`, `invoke_agent`), `cache.lookup`, and scrubbed `guardrail.evaluate` child spans (`capture_content: false` default).
+- **W3C Distributed Tracing & Child Spans**: Generates or propagates standard `traceparent` / `tracestate` headers (using real `spanContext.TraceFlags()`) across all 5 upstream provider adapters (`openai`, `anthropic`, `groq`, `openrouter`, `ollama`), correlates `trace_id`/`span_id`/`org_id`/`virtual_key_id` across structured logs and spend records, and emits low-cardinality route spans plus GenAI (`chat`, `embeddings`, `execute_tool`, `invoke_agent`), `cache.lookup`, and scrubbed `guardrail.evaluate` child spans (`capture_content: false` default).
 
 ---
 
 ## 11. Storage Architecture: PostgreSQL Schema & Redis Keyspace Matrix
 
 ### 11.1 PostgreSQL Relational Hierarchy & Production Durability
-All entity operations across migrations `0001` through `0041` (`organizations`, `teams`, `team_memberships`, `projects`, `users`, `operator_sessions` — with legacy `user_credentials` dropped in `0039`, `0040` OIDC session metadata, and `0041` authorization parity — `virtual_keys`, `virtual_key_deprecated_hashes`, `jwt_key_mappings`, `access_group_rules`, `quota_policies`, `budget_window_limits`, `end_users`, `tags`, `model_access_groups`, `model_access_group_members`, `deployment_ptu_shares`, `priority_classes`, `spend_summaries`, `spend_logs`, `spend_event_outbox`, `budget_resets`, `guardrail_definitions`, `guardrail_bindings`, `tool_policies`, `daily_guardrail_metrics`, `daily_guardrail_usage_units`, `spend_log_guardrails`, and `audit_logs`) execute parameterized SQL queries against PostgreSQL using connection pooling via `jackc/pgx/v5`. Rollback of `0034` (`0034_auth_quota_reconciliation.down.sql`) acquires `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE` and blocks downgrades if duplicate nonempty `(org_id, oidc_subject)` bindings exist. High-throughput spend flushes execute via `pgx.Batch`, with comprehensive error checking per queued statement to guarantee that constraint violations and connection failures are captured and surfaced rather than silently dropped.
+All entity operations across migrations `0001` through `0042` (`organizations`, `teams`, `team_memberships`, `projects`, `users`, `operator_sessions` — with legacy `user_credentials` dropped in `0039`, `0040` OIDC session metadata, `0041` authorization parity, and `0042` Ollama catalogue seeding — `virtual_keys`, `virtual_key_deprecated_hashes`, `jwt_key_mappings`, `access_group_rules`, `quota_policies`, `budget_window_limits`, `end_users`, `tags`, `model_access_groups`, `model_access_group_members`, `deployment_ptu_shares`, `priority_classes`, `spend_summaries`, `spend_logs`, `spend_event_outbox`, `budget_resets`, `guardrail_definitions`, `guardrail_bindings`, `tool_policies`, `daily_guardrail_metrics`, `daily_guardrail_usage_units`, `spend_log_guardrails`, and `audit_logs`) execute parameterized SQL queries against PostgreSQL using connection pooling via `jackc/pgx/v5`. Rollback of `0034` (`0034_auth_quota_reconciliation.down.sql`) acquires `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE` and blocks downgrades if duplicate nonempty `(org_id, oidc_subject)` bindings exist. High-throughput spend flushes execute via `pgx.Batch`, with comprehensive error checking per queued statement to guarantee that constraint violations and connection failures are captured and surfaced rather than silently dropped.
 
 ```
 [organizations] (+ soft_budget/throttle/reset/windows, 0022-0034)

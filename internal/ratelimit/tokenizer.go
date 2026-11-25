@@ -25,7 +25,7 @@ func ResolveTokenizerProfile(model string) TokenizerProfile {
 	switch {
 	case strings.Contains(m, "claude") || strings.HasPrefix(m, "anthropic/"):
 		return ProfileClaudeBPE
-	case strings.Contains(m, "llama") || strings.Contains(m, "qwen") || strings.HasPrefix(m, "groq/"):
+	case strings.Contains(m, "llama") || strings.Contains(m, "qwen") || strings.Contains(m, "mistral") || strings.Contains(m, "gemma") || strings.Contains(m, "deepseek") || strings.HasPrefix(m, "groq/") || strings.HasPrefix(m, "ollama/"):
 		return ProfileLlamaBPE
 	case strings.Contains(m, "gpt-3.5") || strings.Contains(m, "embedding"):
 		return ProfileCL100K

@@ -1,6 +1,6 @@
 # GoRoute AI Gateway — Upgrade & Rollback Guide
 
-This guide covers safe zero-downtime upgrades, schema migration lifecycle (`0001`–`0041`), and rollback precautions for GoRoute AI Gateway **`v0.1.0`**.
+This guide covers safe zero-downtime upgrades, schema migration lifecycle (`0001`–`0042`), and rollback precautions for GoRoute AI Gateway **`v0.1.0`**.
 
 > [!IMPORTANT]
 > Always back up your PostgreSQL database before running schema migrations, and upgrade gateway replicas in lockstep with schema migrations.
@@ -43,7 +43,7 @@ This guide covers safe zero-downtime upgrades, schema migration lifecycle (`0001
 
 ---
 
-## 2. Database Migrations (`0022`–`0041`)
+## 2. Database Migrations (`0022`–`0042`)
 
 Run migrations with the `-migrate-only` flag before rolling gateway pods:
 
@@ -73,6 +73,7 @@ ai-gateway -config /etc/goroute/config.yaml -migrate-only
 | `0039_drop_user_credentials` | Drops legacy local password `user_credentials` table cleanly as part of the vendor-neutral OIDC-only migration. |
 | `0040_operator_sessions_oidc_metadata` | Adds `provider_id`, `encrypted_id_token`, and `encrypted_id_token_dek` to `operator_sessions` for multi-provider logout routing and Vault-encrypted `id_token_hint` RP-Initiated Logout. |
 | `0041_authorization_parity` | Adds `allowed_deployments`, `allowed_mcp_tools`, `allowed_mcp_toolsets` (`virtual_keys`, `teams`, `projects`), Project `allowed_routing_tags`/`allowed_mcp_servers`/`allowed_a2a_agents`, Unified Access Group MCP/A2A grants (`access_group_rules`, `model_access_groups`), and composite `audit_logs` indexes for server-side filtering and cursor pagination. |
+| `0042_seed_ollama_models` | Idempotently seeds baseline self-hosted Ollama models (`ollama/qwen2.5:0.5b`, `ollama/all-minilm:latest`) at `0 µ$` default cost (`pricing_status = 'verified'`). Rollback safely deletes seeded rows only when unreferenced by `model_deployments` and `org_model_policies`. |
 
 All columns added in `0036_production_routing_hardening` are nullable or defaulted idempotently (`ADD COLUMN IF NOT EXISTS`) with safe zero/false defaults:
 - `allow_strategy_override: false` and `debug_routing_headers: false` ensure untrusted request strategy overrides and diagnostic fallback error headers remain off unless explicitly opted in.

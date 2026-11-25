@@ -67,7 +67,7 @@ func EnrichDiscoveredModel(dm domain.DiscoveredModel, autoApprove bool) *domain.
 	lower := strings.ToLower(dm.ModelName)
 
 	// Capability heuristics
-	if strings.Contains(lower, "embed") {
+	if strings.Contains(lower, "embed") || strings.Contains(lower, "minilm") || strings.Contains(lower, "bge-") || strings.Contains(lower, "mxbai") {
 		gm.SupportsEmbeddings = true
 		gm.SupportsStreaming = false
 		gm.SupportsTools = false
@@ -123,6 +123,10 @@ func EnrichDiscoveredModel(dm domain.DiscoveredModel, autoApprove bool) *domain.
 			gm.InputCostMicrosPer1M = 0
 			gm.OutputCostMicrosPer1M = 0
 		}
+	case domain.ProviderOllama:
+		gm.InputCostMicrosPer1M = 0
+		gm.OutputCostMicrosPer1M = 0
+		gm.CachedInputCostMicrosPer1M = 0
 	}
 
 	return gm

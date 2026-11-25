@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### First-Class OpenAPI-First Ollama Provider, Security Hardening & Production Verification
+
+#### Added
+- **Native OpenAPI-First Ollama Provider (`docs/openapi/ollama.openapi.yaml`, `internal/openapi/providers/ollama_types.gen.go`, `internal/adapter/ollama/`)**:
+  - Added pinned OpenAPI 3.0.3 contract (`5` paths: `POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/embeddings`, `GET /api/tags`, `GET /v1/models`) and generated `Ollama*` wire DTOs via `make specgen` (`oapi-codegen@v2.8.0`).
+  - Implemented `internal/adapter/ollama/` supporting sync & SSE streaming chat completions (`stream_options.include_usage`, tool calling, `json_schema` structured outputs, `reasoning_effort`, assistant prefill, prompt cache token metrics), sync & SSE streaming legacy text completions, batch vector embeddings, and primary `/api/tags` model discovery with automatic `/v1/models` fallback.
+  - Added keyless local Ollama support (optional `api_key` strictly scoped to `provider == "ollama"` across adapter, `bootstrap.go`, `POST /admin/v1/credentials/validate`, and Operator Web UI `CredentialsView`), root & `/v1` base URL normalization, W3C `traceparent` propagation, and `OLLAMA_HOST`/`OLLAMA_BASE_URL`/`OLLAMA_API_KEY`/`OLLAMA_DEFAULT_MODEL` opt-in environment resolution.
+  - Added paired idempotent PostgreSQL migration `0042_seed_ollama_models.{up,down}.sql` seeding `ollama/qwen2.5:0.5b` and `ollama/all-minilm:latest` at `0 µ$` default local cost (with matching memory repository seeds and `ProfileLlamaBPE` tokenization).
+  - Wired Ollama across the Operator Web UI (`CredentialsView`, `ModelsView`, `Badge`, `types/index.ts`), embedded Go SDK demo mode (`pkg/gateway`), dual-node cluster E2E (`tests/e2e/ollama_provider_test.go`), Playwright UI E2E, and Tier 3c `make test-obs-prod-docker` (upgraded to 5-adapter W3C `traceparent` verification plus opt-in `SuiteO6_LiveRealOllamaOverTLS`).
+  - Added reusable coding-agent runbook `.agents/skills/goroute-add-provider/` documenting GoRoute's OpenAPI-first provider onboarding architecture.
+
+#### Security
+- **Loopback Custom BaseURL RBAC Hardening (`internal/server/handlers_admin.go`)**: Extended `authorizeCustomBaseURL` to enforce `platform_admin` role whenever `security.network.outbound_ssrf.allow_loopback_http` is enabled (matching `allow_private_networks` and `allowed_private_cidrs`), preventing tenant `org_admin` actors from probing arbitrary loopback ports in multi-tenant deployments.
+- **Ollama VRAM Eviction Protection (`internal/adapter/ollama/adapter.go`)**: Stripped caller-supplied `keep_alive` from `ExtraParams` in `marshalOllamaChatPayload` so untrusted callers cannot pass `keep_alive: 0` to force-evict shared models from GPU VRAM.
+
 ### OpenTelemetry (OTLP/HTTP) 3-Signal Observability Standardization (`v0.1` LTS)
 
 #### Added

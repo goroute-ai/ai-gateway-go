@@ -18,6 +18,7 @@ This directory follows the open **`.agents/` + `AGENTS.md` + Agent Skills (`agen
     ├── goroute-go-quality/            # Go 1.26 code quality, safety, concurrency, testing & lint
     ├── goroute-go-docs/               # Go godoc, package docs, Example tests & docs alignment
     ├── goroute-openapi-contract/      # OpenAPI 3.1 + MCP/A2A contract generation runbook
+    ├── goroute-add-provider/          # OpenAPI-first upstream provider integration runbook & checklist
     ├── goroute-db-migration/          # PostgreSQL migrations, repo parity & Redis cluster slots
     ├── goroute-operator-ui/           # React SPA build, CSP, bundle budget & Playwright E2E
     └── goroute-verification-gate/     # 4-tier test & CI gate + scripts/verify_tier0.sh

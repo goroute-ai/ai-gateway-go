@@ -2,7 +2,7 @@
 
 > **Document Status**: Production Reference Architecture (`v0.1.0`)  
 > **Target Runtime**: Go version declared in `go.mod` (`net/http` + `go-chi/chi/v5`), PostgreSQL 16+, Redis 8+  
-> **Provider Integrations**: OpenAPI-first adapters under `internal/adapter/` (`openai`, `anthropic`, `groq`, `openrouter`); consult those packages for exact wire translation.  
+> **Provider Integrations**: OpenAPI-first adapters under `internal/adapter/` (`openai`, `anthropic`, `groq`, `openrouter`, `ollama`); consult those packages for exact wire translation.  
 > **Contract Architecture**: Gateway and provider OpenAPI contracts are maintained under `docs/openapi/`. `make specgen` regenerates gateway/provider DTOs and multi-release MCP types (`cmd/mcpgen`), validates all contracts, and checks `/v1`, `/admin/v1`, `/auth`, and provider alias route parity (`127` OpenAPI paths). A2A protobuf generation is documented in `docs/specs/a2a/v1.0/generate.go`.
 
 ---
@@ -98,7 +98,7 @@ The gateway is partitioned into nine foundational subsystems:
 | **2. AI Governance & Security** | Dual-boundary authentication, Virtual API Keys (`sk-gw-...` + grace-period rotation + `KeySecretSink`), Multi-tenant RBAC (Org $\rightarrow$ Team $\rightarrow$ Project $\rightarrow$ User $\rightarrow$ Key with `team_member_permissions` and self-service enforcement), `(org_id, oidc_issuer, oidc_subject)` federated OIDC/SSO/CLI login with PKCE `S256`, SCIM v2 provisioning, impersonation/delegation, `CustomAuthenticator`, 4-layer model access control, AES-256-GCM credential vault & transactional Master KEK rotation. | `internal/auth`, `internal/modelmgmt`, `pkg/gateway` |
 | **3. AI FinOps & Quotas** | Integer micro-dollar precision token cost calculation ($1 = 1,000,000\ \mu\$$), multi-dimensional & per-model quota descriptors, simultaneous multi-window budgets (`hourly`, `daily`, `weekly`, `monthly`, `rolling_24h`, `never`) with atomic PostgreSQL cold recovery, soft budget alerts/throttling, temporary key budget boosts, PTU team shares, and priority classes. | `internal/finops`, `internal/ratelimit`, `internal/router` |
 | **4. AI Model Lifecycle Automation** | Scheduled background discovery of new/deprecated models from provider APIs, capability & pricing registry enrichment, tenant subscription filtering. | `internal/modelmgmt` |
-| **5. AI Observability & Audit** | OpenTelemetry (OTLP/HTTP) 3-signal export (GenAI traces, dot-separated `gen_ai.*`/`gateway.*` metrics, opt-in post-scrub logs), W3C `traceparent` across all 4 adapters, structured JSON logs, immutable spend & governance audit ledgers, and HMAC-signed SIEM webhook sink. | `internal/observability`, `internal/logger`, `internal/finops`, `internal/server` |
+| **5. AI Observability & Audit** | OpenTelemetry (OTLP/HTTP) 3-signal export (GenAI traces, dot-separated `gen_ai.*`/`gateway.*` metrics, opt-in post-scrub logs), W3C `traceparent` across all 5 adapters, structured JSON logs, immutable spend & governance audit ledgers, and HMAC-signed SIEM webhook sink. | `internal/observability`, `internal/logger`, `internal/finops`, `internal/server` |
 | **6. MCP Hub & Tool Registry** | Spec-generated 5-release MCP hub (`2024-11-05`–`2026-07-28`, UI-switchable via `PUT /admin/v1/mcp/spec`), Plain REST Bridge (`/mcp-rest/*`), Progressive Tool Discovery (`/v1/goroute/mcp/registry` & 256-bit handles), Governed OpenAPI adapter, Stdio process sandboxing, tool pinning. | `cmd/mcpgen`, `internal/mcp/spec`, `internal/mcp` |
 | **7. A2A Protocol Engine** | Linux Foundation A2A v1.0, Native gRPC Service (`lf.a2a.v1.A2AService`), OpenAI Chat Completions bridge (`model: "a2a/{slug}"`), JCS/JWS cryptographic cards, Subscribe-First SSE task streaming, transactional outbox with DLQ. | `internal/a2a` |
 | **8. Autonomous Orchestrator & Enterprise Auth** | Server-side recursive tool loop orchestrator with zero double-billing FinOps ledger accounting, `DistributedTokenCache` & opt-in AWS RDS IAM, AWS SigV4 signing, CIMD with S256 PKCE, RFC 9207 & 8707 validation, RFC 8693 token exchange. | `internal/orchestrator`, `internal/auth/upstream`, `internal/storage` |
@@ -276,6 +276,7 @@ All official upstream and public gateway OpenAPI 3.0 / 3.1 YAML specifications a
 | `docs/openapi/anthropic.openapi.yaml` | `3.0.0` | **Anthropic Claude** | `POST /v1/messages` (`MessageRequestBody`, `MessageResponse`), `POST /v1/messages/count_tokens`, `GET /v1/models` |
 | `docs/openapi/groq.openapi.yaml` | `3.0.3` | **Groq** | `POST /openai/v1/chat/completions`, `POST /openai/v1/completions`, `POST /openai/v1/audio/*`, `GET /openai/v1/models` |
 | `docs/openapi/openrouter.openapi.yaml` | `3.0.3` | **OpenRouter** | `POST /api/v1/chat/completions`, `GET /api/v1/models` |
+| `docs/openapi/ollama.openapi.yaml` | `3.0.3` | **Ollama** | `POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/embeddings`, `GET /api/tags`, `GET /v1/models` |
 
 #### 3.1.2 Build-Time Code Generation (`cmd/specgen`, `cmd/mcpgen` + `go generate`)
 Executing `make specgen` generates the gateway types/interfaces from `docs/openapi/gateway.openapi.yaml`, provider DTOs from `docs/openapi/*.openapi.yaml`, and all 5 MCP release packages from `docs/specs/mcp/*/schema.yaml`, then runs `cmd/specgen` to validate all OpenAPI contracts, MCP YAML schemas, and A2A protobuf descriptors. The generated gateway output is:
@@ -286,6 +287,7 @@ Checked-in provider wire DTO packages:
 - `internal/openapi/providers/anthropic_types.gen.go`
 - `internal/openapi/providers/groq_types.gen.go`
 - `internal/openapi/providers/openrouter_types.gen.go`
+- `internal/openapi/providers/ollama_types.gen.go`
 
 Generated DTOs/interfaces do not make the runtime spec-driven by themselves. Runtime route registration, gateway request decoding, and response writing remain handwritten in `internal/server/`; the generated server interface is not yet wired to those handlers. The gateway contract also does not yet cover every registered admin, alias, MCP, or A2A route.
 
@@ -312,9 +314,10 @@ Generated DTOs/interfaces do not make the runtime spec-driven by themselves. Run
      - `content_block_delta` (`input_json_delta`) $\rightarrow$ emits `delta.tool_calls[{index, function: {arguments: partial_json}}]`.
      - `message_delta` $\rightarrow$ captures `usage.output_tokens`, maps `stop_reason` (`end_turn` $\rightarrow$ `stop`, `max_tokens` $\rightarrow$ `length`, `tool_use` $\rightarrow$ `tool_calls`), and emits final chunk + `data: [DONE]\n\n`.
 
-##### B. Groq & OpenRouter (`groq.openapi.yaml` & `openrouter.openapi.yaml` $\leftrightarrow$ Canonical OpenAI Schema)
+##### B. Groq, OpenRouter & Ollama (`groq.openapi.yaml`, `openrouter.openapi.yaml`, & `ollama.openapi.yaml` $\leftrightarrow$ Canonical OpenAI Schema)
 - **Groq (`internal/adapter/groq`)**: Dispatches OpenAI-compatible chat, legacy completion, audio transcription/translation, and `/openai/v1/models` discovery using `groq_types.gen.go` DTOs and high-speed Bearer auth.
 - **OpenRouter (`internal/adapter/openrouter`)**: Dispatches unified multi-model requests via `/api/v1/chat/completions` and `/api/v1/models` using `openrouter_types.gen.go` DTOs, translating `reasoning_effort` hints (`openrouter_reasoning`) and extracting credit/usage metadata.
+- **Ollama (`internal/adapter/ollama`)**: Dispatches local or TLS-fronted cloud inference via `/v1/chat/completions`, `/v1/completions`, and `/v1/embeddings` alongside native `/api/tags` discovery (with `/v1/models` fallback) using `ollama_types.gen.go` DTOs, optional Bearer auth, root or `/v1` base URL normalization, and fail-closed SSRF enforcement.
 
 ##### C. OpenAI Reasoning Models (`o1`, `o3`, `o3-mini`)
 1. **Developer Role Mapping**:
@@ -330,10 +333,10 @@ Generated DTOs/interfaces do not make the runtime spec-driven by themselves. Run
 To serve multi-tenant enterprises cleanly, model governance is architected across **4 orthogonal layers**:
 
 1. **Layer 1 — Global Model Catalogue (`global_models`)**:
-   - The master inventory of known models across `openai`, `anthropic`, `groq`, and `openrouter`.
+   - The master inventory of known models across `openai`, `anthropic`, `groq`, `openrouter`, and `ollama`.
    - Tracks `provider`, `model_name`, `display_name`, `max_input_tokens`, `max_output_tokens`, capabilities (`supports_streaming`, `supports_tools`, `supports_vision`, `supports_reasoning`, `supports_embeddings`), default pricing (`input_cost_micros_per_1m`, `output_cost_micros_per_1m`, `cached_input_cost_micros_per_1m`), and `lifecycle_status` (`discovered`, `active`, `preview`, `deprecated`, `retired`).
 2. **Layer 2 — Organization Provider Subscriptions (`org_provider_subscriptions`)**:
-   - Defines which LLM vendors an organization is subscribed to (e.g., Org A is subscribed to `openai` and `anthropic`; Org B enables `groq` and `openrouter`).
+   - Defines which LLM vendors an organization is subscribed to (e.g., Org A is subscribed to `openai` and `anthropic`; Org B enables `groq`, `openrouter`, and `ollama`).
 3. **Layer 3 — Organization Model Availability Policies (`org_model_policies`)**:
    - Even if an organization subscribes to OpenAI and the Global Catalogue discovers a brand-new preview model, that model is **not** exposed to the organization's developers until enabled in `org_model_policies` (or matched by an org auto-approval policy).
    - `GET /v1/models` returns **strictly** the intersection of `Layer 1 (Active) ∩ Layer 2 (Org Subscribed Providers) ∩ Layer 3 (Org Enabled Models) ∩ VirtualKey/Team Allowed Models`.
@@ -518,7 +521,7 @@ erDiagram
 
 ### 4.2 PostgreSQL Table Definitions
 
-The persistent relational schema is managed through ordered SQL migrations (`migrations/0001` through `0041`). Rollback of `0034` (`0034_auth_quota_reconciliation.down.sql`) runs inside a transaction with `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE` and aborts if duplicate nonempty `(org_id, oidc_subject)` bindings exist so operator identity resolution is never corrupted; `0035` (`0035_production_governance_hardening`) adds `teams.team_member_permissions`, `audit_logs.before_value`/`after_value`, and virtual key lifecycle columns; `0036` (`0036_production_routing_hardening`) adds deployment slot/capacity fields (`max_parallel_requests`, `itpm_capacity`, `otpm_capacity`), group saturation/cooldown/param flags, `rpd_limit`, team/key routing affinity bounds, and `sensitive_route_target`; `0037` (`0037_prune_unsupported_providers`) prunes removed legacy provider/rerank/cloud-guardrail rows and drops legacy Azure/rerank columns while seeding default Groq/OpenRouter models; `0038` (`0038_mcp_runtime_spec`) adds the `mcp_runtime_settings` table for UI-selectable MCP specification releases; `0039` (`0039_drop_user_credentials`) drops the legacy local `user_credentials` table in favor of OIDC-only authentication; `0040` (`0040_operator_sessions_oidc_metadata`) adds `provider_id`, `encrypted_id_token`, and `encrypted_id_token_dek` to `operator_sessions` for seamless RP-Initiated Logout (`id_token_hint`); and `0041` (`0041_authorization_parity`) adds group-to-role mappings, authorization parity columns, and audit enhancements.
+The persistent relational schema is managed through ordered SQL migrations (`migrations/0001` through `0042`). Rollback of `0034` (`0034_auth_quota_reconciliation.down.sql`) runs inside a transaction with `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE` and aborts if duplicate nonempty `(org_id, oidc_subject)` bindings exist so operator identity resolution is never corrupted; `0035` (`0035_production_governance_hardening`) adds `teams.team_member_permissions`, `audit_logs.before_value`/`after_value`, and virtual key lifecycle columns; `0036` (`0036_production_routing_hardening`) adds deployment slot/capacity fields (`max_parallel_requests`, `itpm_capacity`, `otpm_capacity`), group saturation/cooldown/param flags, `rpd_limit`, team/key routing affinity bounds, and `sensitive_route_target`; `0037` (`0037_prune_unsupported_providers`) prunes removed legacy provider/rerank/cloud-guardrail rows and drops legacy Azure/rerank columns while seeding default Groq/OpenRouter models; `0038` (`0038_mcp_runtime_spec`) adds the `mcp_runtime_settings` table for UI-selectable MCP specification releases; `0039` (`0039_drop_user_credentials`) drops the legacy local `user_credentials` table in favor of OIDC-only authentication; `0040` (`0040_operator_sessions_oidc_metadata`) adds `provider_id`, `encrypted_id_token`, and `encrypted_id_token_dek` to `operator_sessions` for seamless RP-Initiated Logout (`id_token_hint`); `0041` (`0041_authorization_parity`) adds group-to-role mappings, authorization parity columns, and audit enhancements; and `0042` (`0042_seed_ollama_models`) seeds default zero-cost Ollama catalogue entries (`ollama/qwen2.5:0.5b`, `ollama/all-minilm:latest`).
 
 #### 1. Multi-Tenant Identity, Federation, SSO & RBAC
 - **`organizations` & `teams`** (`0001`, `0015`, `0022`, `0023`, `0030`, `0031`): Root tenant and departmental boundaries with integer micro-dollar budgets (`max_budget_micros`, `spent_micros`, `soft_budget_micros`, `budget_duration_seconds`, `budget_reset_at`), RPM/TPM/TPD/concurrency limits, and default fallback models.
@@ -697,7 +700,7 @@ ai-gateway-go/
 │   ├── openapi/                      # Official OpenAPI 3.0/3.1 YAML contracts (Gateway 127 paths + MCP + A2A + 4 Providers)
 │   └── specs/                        # Pinned vendor specifications (MCP 2024-11-05..2026-07-28 & A2A v1.0 protobuf)
 ├── migrations/
-│   └── 0001..0041_*.{up,down}.sql    # Ordered PostgreSQL 16 schema migrations (through 0041_authorization_parity)
+│   └── 0001..0042_*.{up,down}.sql    # Ordered PostgreSQL 16 schema migrations (through 0042_seed_ollama_models)
 ├── tests/
 │   ├── e2e/                          # End-to-end live PostgreSQL + Redis, federation, SCIM, quota & cluster suites
 │   ├── guardrails/                   # Isolated guardrail unit/integration suite

@@ -502,3 +502,10 @@ model_list:
         HTTP-Referer: "https://goroute.example.com"
         X-Title: "GoRoute AI Gateway"
       weight: 100
+
+  # Local Ollama (requires security.network.outbound_ssrf.allow_loopback_http: true; api_key is optional for local servers)
+  # - model_name: local-qwen
+  #   model_params:
+  #     model: ollama/qwen2.5:0.5b
+  #     api_base: http://127.0.0.1:11434
+  #     weight: 100

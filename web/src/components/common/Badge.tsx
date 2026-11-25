@@ -23,6 +23,7 @@ export const Badge: React.FC<BadgeProps> = ({
     else if (prov.includes('anthropic')) colorStyle = 'status-warning';
     else if (prov.includes('openrouter')) colorStyle = 'status-info';
     else if (prov.includes('groq')) colorStyle = 'status-danger';
+    else if (prov.includes('ollama')) colorStyle = 'bg-accent-soft text-accent-primary border-accent-primary/30';
 
     return (
       <span className={`inline-flex items-center rounded-md border font-mono ${sizeClasses} ${colorStyle}`}>

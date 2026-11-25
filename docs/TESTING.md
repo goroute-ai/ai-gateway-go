@@ -54,7 +54,7 @@ go test -race -count=1 ./internal/... ./pkg/... ./cmd/... ./tests/guardrails/...
 # 1. Start isolated Postgres 16 (localhost:15432) and Redis 8 (localhost:16379)
 make test-live-up
 
-# 2. Verify forward/reverse migrations 0001..0041, preflight checks, and Pg repositories
+# 2. Verify forward/reverse migrations 0001..0042, preflight checks, and Pg repositories
 make test-postgres
 
 # 3. Run full dual-node cluster E2E suite under -race:
@@ -135,10 +135,10 @@ Runs an isolated 2-replica production Docker stack (`deployments/obs-prod-test/d
 - 2× read-only non-root distroless GoRoute replicas (`GATEWAY_ENV=production`, `enable_hsts: true`, strict `https`-only outbound SSRF, all 3 OTLP/HTTP signals enabled)
 - Real `otel/opentelemetry-collector-contrib` instance writing OTLP JSONL for traces, metrics, and logs (`file` exporter)
 - Caddy TLS 1.3 edge terminating `gateway.prod.test`, `otel.prod.test`, and `fixtures.prod.test`
-- PostgreSQL 16 (TLS), Redis 8 (`--requirepass`), and deterministic HTTPS mock upstreams for all 4 adapters (`openai`, `anthropic`, `groq`, `openrouter`), MCP Streamable HTTP, A2A, and an HMAC-SHA256 SIEM audit webhook
+- PostgreSQL 16 (TLS), Redis 8 (`--requirepass`), and deterministic HTTPS mock upstreams for all 5 adapters (`openai`, `anthropic`, `groq`, `openrouter`, `ollama`), MCP Streamable HTTP, A2A, and an HMAC-SHA256 SIEM audit webhook
 
 ```bash
 make test-obs-prod-docker
 ```
 
-Executes Suites `O0`–`O5`: fail-closed startup rejection on unresolved `os.environ/` in `otel.headers` & invalid sampler, `otel.enabled=false` zero-traffic verification, `404` on removed `/metrics`, GenAI semantic convention OTLP traces (`chat`, `embeddings`, `cache.lookup`, `guardrail.evaluate`, `execute_tool`, `invoke_agent`, `gen_ai.first_token`, zero prompt leakage), pure dot-separated `gen_ai.*` & `gateway.*` OTLP metrics, live Redis outage chaos proving `gateway.redis.circuit_breaker.state` transitions `0` → `2` in OTLP `metrics.jsonl` and `/admin/v1/observability/metrics`, post-scrub OTLP logs + JSON stdout correlation (`trace_id`, `span_id`, `org_id`, `virtual_key_id`), 4-adapter outbound W3C `traceparent` propagation, and HMAC-SHA256 SIEM webhook delivery + `/admin/v1/config` secret redaction.
+Executes Suites `O0`–`O6`: fail-closed startup rejection on unresolved `os.environ/` in `otel.headers` & invalid sampler, `otel.enabled=false` zero-traffic verification, `404` on removed `/metrics`, GenAI semantic convention OTLP traces (`chat`, `embeddings`, `cache.lookup`, `guardrail.evaluate`, `execute_tool`, `invoke_agent`, `gen_ai.first_token`, zero prompt leakage), pure dot-separated `gen_ai.*` & `gateway.*` OTLP metrics, live Redis outage chaos proving `gateway.redis.circuit_breaker.state` transitions `0` → `2` in OTLP `metrics.jsonl` and `/admin/v1/observability/metrics`, post-scrub OTLP logs + JSON stdout correlation (`trace_id`, `span_id`, `org_id`, `virtual_key_id`), 5-adapter outbound W3C `traceparent` propagation (`openai`, `anthropic`, `groq`, `openrouter`, `ollama`), HMAC-SHA256 SIEM webhook delivery + `/admin/v1/config` secret redaction, and opt-in Suite `O6` (`OBS_LIVE_OLLAMA_BASE_URL`) live real-Ollama verification over TLS 1.3.

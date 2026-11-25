@@ -7,12 +7,12 @@ description: "OpenAPI 3.1 contract parity, 5-release MCP YAML codegen, SQL migra
 # Contracts, Migrations & Storage Rules
 
 - **OpenAPI & Protocol Contract Parity**:
-  - Treat `docs/openapi/gateway.openapi.yaml` (`127` paths: `27` `/v1`, `88` `/admin/v1`, `8` `/auth`, `4` provider aliases), provider specs (`openai`, `anthropic`, `groq`, `openrouter`), and `docs/specs/mcp/*/schema.yaml` (`2024-11-05`..`2026-07-28`) as authoritative contracts.
+  - Treat `docs/openapi/gateway.openapi.yaml` (`127` paths: `27` `/v1`, `88` `/admin/v1`, `8` `/auth`, `4` provider aliases), provider specs (`docs/openapi/*.openapi.yaml`), and `docs/specs/mcp/*/schema.yaml` (`2024-11-05`..`2026-07-28`) as authoritative contracts.
   - Always run `make specgen` after contract or route changes and verify `git diff --exit-code -- internal/openapi/ internal/mcp/spec/` once regenerated artifacts are committed.
   - Keep `/v1` routes inline inside `r.Route("/v1", ...)` in `internal/server/server.go` so `cmd/specgen/routes.go` AST parity checks continue to resolve them.
-- **PostgreSQL Migrations (`migrations/0001`–`0041+`)**:
+- **PostgreSQL Migrations (`migrations/0001`–`0042+`)**:
   - Every new schema change requires paired forward (`NNNN_name.up.sql`) and rollback (`NNNN_name.down.sql`) files using idempotent DDL (`IF NOT EXISTS` / `IF EXISTS`) where safe.
-  - Never modify or renumber existing applied migrations (`0001`–`0041`).
+  - Never modify or renumber existing applied migrations (`0001`–`0042`).
   - Preserve migration `0034` transaction-locked duplicate `(org_id, oidc_subject)` rollback preflight safety.
   - Keep `internal/storage/memory_*.go` and `internal/storage/postgres_*.go` behavior aligned across every `Repository` method change, using parameterized queries exclusively.
 - **Redis Cluster Hash Slots & Rolling Budgets**:

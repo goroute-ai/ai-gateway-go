@@ -270,7 +270,7 @@ func New(opts ...Option) (*Client, error) {
 	}
 
 	var mockServers []*httptest.Server
-	var mockGroqURL, mockClaudeURL, mockOpenAIURL, mockOpenRouterURL string
+	var mockGroqURL, mockClaudeURL, mockOpenAIURL, mockOpenRouterURL, mockOllamaURL string
 	if cc.demoMocksFallback || cc.allowPrivateNetworks {
 		cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks = true
 		cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP = true
@@ -305,11 +305,13 @@ func New(opts ...Option) (*Client, error) {
 		mockOpenAI := openAICompatDemo("openai", "gpt-4.1-mini", "OpenAI GPT-4.1-mini handled this request through the unified canonical gateway contract.")
 		mockGroq := openAICompatDemo("groq", "llama-3.1-8b-instant", "Groq Llama 3.1 handled this request through the unified canonical gateway contract.")
 		mockOpenRouter := openAICompatDemo("openrouter", "openai/gpt-4o-mini", "OpenRouter handled this request through the unified canonical gateway contract.")
-		mockServers = append(mockServers, mockGroq, mockClaude, mockOpenAI, mockOpenRouter)
+		mockOllama := openAICompatDemo("ollama", "qwen2.5:0.5b", "Ollama handled this request through the unified canonical gateway contract.")
+		mockServers = append(mockServers, mockGroq, mockClaude, mockOpenAI, mockOpenRouter, mockOllama)
 		mockGroqURL = mockGroq.URL
 		mockClaudeURL = mockClaude.URL
 		mockOpenAIURL = mockOpenAI.URL
 		mockOpenRouterURL = mockOpenRouter.URL
+		mockOllamaURL = mockOllama.URL
 	}
 
 	for _, e := range cc.modelList {
@@ -347,6 +349,8 @@ func New(opts ...Option) (*Client, error) {
 					apiBase = mockClaudeURL
 				case domain.ProviderOpenRouter:
 					apiBase = mockOpenRouterURL
+				case domain.ProviderOllama:
+					apiBase = mockOllamaURL
 				default:
 					apiBase = mockOpenAIURL
 				}
