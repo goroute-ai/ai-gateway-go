@@ -216,6 +216,31 @@ async function runFullSuite2(browser) {
       await page.keyboard.press('Escape');
     });
 
+    // 4b. Streamlined GuardrailsView E2E over TLS 1.3 (Built-In Policy + External Webhook + Dry-Run Simulator)
+    await page.locator('aside button', { hasText: 'Guardrails' }).click();
+    await page.getByRole('heading', { name: 'Guardrails & Security Policy' }).waitFor({ state: 'visible', timeout: 10000 });
+    await page.getByRole('button', { name: 'New Guardrail' }).click();
+    const grModal = modalByTitle(page, 'Create External Guardrail');
+    await grModal.waitFor({ state: 'visible' });
+    const uiGuardName = `prod-ui-guard-${suffix}`;
+    await grModal.locator('input[placeholder="e.g. corp-dlp-webhook"]').fill(uiGuardName);
+    await grModal.locator('input[placeholder="https://guardrails.internal.corp/v1/evaluate"]').fill('https://fixtures.prod.test:18443/guardrail/evaluate');
+    await grModal.locator('input[placeholder="Optional Bearer token or provider API key"]').fill('prod-ui-vault-secret-do-not-render');
+    await grModal.getByRole('button', { name: 'Create Guardrail' }).click();
+    await grModal.waitFor({ state: 'hidden' });
+    const grRow = page.locator('tbody tr', { hasText: uiGuardName }).first();
+    await grRow.waitFor({ state: 'visible' });
+    await grRow.getByText('Vault Encrypted', { exact: true }).waitFor({ state: 'visible' });
+    const grPageText = await page.locator('body').innerText();
+    assert.equal(grPageText.includes('prod-ui-vault-secret-do-not-render'), false, 'Vault secret must never appear in DOM');
+    await grRow.locator('button[title="Delete Guardrail"]').click();
+    await grRow.waitFor({ state: 'hidden' });
+
+    // Run Dry-Run Policy Simulator with sample PII text
+    await page.getByRole('button', { name: 'Sample: PII' }).click();
+    await page.getByRole('button', { name: 'Run Simulation' }).click();
+    await page.getByText(/Decision:/i).waitFor({ state: 'visible', timeout: 10000 });
+
     // 5. /ui/cli device approval flow while authenticated via live Keycloak session
     const cliStartRes = await page.evaluate(async () => {
       const r = await fetch('/auth/cli/start', {

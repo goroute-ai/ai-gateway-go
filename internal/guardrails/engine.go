@@ -2,13 +2,12 @@ package guardrails
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
-	"time"
+	"sync"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/logger"
@@ -19,6 +18,8 @@ var (
 	reEmail  = regexp.MustCompile(`[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}`)
 	reSSN    = regexp.MustCompile(`\b\d{3}-\d{2}-\d{4}\b`)
 	reCard   = regexp.MustCompile(`\b(?:(?:\d{4}[-\s]?){3}\d{4}|3[47]\d{2}[-\s]?\d{6}[-\s]?\d{5})\b`)
+	rePhone  = regexp.MustCompile(`(?:\+\d{1,3}[-.\s])?(?:\(\d{3}\)\s*|\b\d{3}[-.\s])\d{3}[-.\s]\d{4}\b`)
+	reIPv4   = regexp.MustCompile(`\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\b`)
 	reSecret = regexp.MustCompile(`\b(?:sk-[a-zA-Z0-9_\-]{12,}|AQ\.[a-zA-Z0-9_\-]{16,}|AKIA[0-9A-Z]{16}|ghp_[a-zA-Z0-9]{20,}|xoxb-[a-zA-Z0-9\-]{10,}|AIza[0-9A-Za-z\-_]{20,})\b|-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----`)
 
 	promptInjectionSignatures = []string{
@@ -31,53 +32,60 @@ var (
 		"<|im_start|>system",
 		"you are now dan",
 	}
+
+	compiledPatternCache sync.Map // string -> *regexp.Regexp
 )
 
-// CheckOutcome reports whether guardrails modified (redacted), re-routed, or audited the request.
+// ValidateBlockedPatterns verifies that every configured regex pattern compiles cleanly.
+func ValidateBlockedPatterns(patterns []string) error {
+	for _, raw := range patterns {
+		pat := strings.TrimSpace(raw)
+		if pat == "" {
+			continue
+		}
+		if len(pat) > 512 {
+			return fmt.Errorf("blocked pattern exceeds maximum length of 512 characters")
+		}
+		if _, err := compileCachedPattern(pat); err != nil {
+			return fmt.Errorf("invalid blocked pattern %q: %w", pat, err)
+		}
+	}
+	return nil
+}
+
+func compileCachedPattern(pat string) (*regexp.Regexp, error) {
+	if cached, ok := compiledPatternCache.Load(pat); ok {
+		return cached.(*regexp.Regexp), nil
+	}
+	re, err := regexp.Compile(pat)
+	if err != nil {
+		return nil, err
+	}
+	compiledPatternCache.Store(pat, re)
+	return re, nil
+}
+
+// CheckOutcome reports whether guardrails modified (redacted) or audited the request.
 type CheckOutcome struct {
 	Redacted      bool
 	Violations    []string
 	AppliedAction domain.GuardrailAction
-	RouteTarget   string
 	RiskScore     float64
 }
 
 // Engine evaluates input prompts and output completions against an Organization's GuardrailPolicy.
 type Engine struct {
-	repo              storage.Repository
-	scanners          []Scanner
-	scannerTimeout    time.Duration
-	scannerFailClosed bool
+	repo storage.Repository
 }
 
-// NewEngine creates a guardrail Engine with fail-closed scanner defaults.
+// NewEngine creates a guardrail Engine backed by repo.
 func NewEngine(repo storage.Repository) *Engine {
-	return &Engine{repo: repo, scannerTimeout: 2 * time.Second, scannerFailClosed: true}
+	return &Engine{repo: repo}
 }
 
-// ConfigureScanners injects optional provider-neutral scanners. Configure the engine
-// before serving traffic; passing no scanners preserves local-only behavior and
-// performs no network calls.
-func (e *Engine) ConfigureScanners(timeout time.Duration, failClosed bool, scanners ...Scanner) {
-	if e == nil {
-		return
-	}
-	if timeout <= 0 {
-		timeout = 2 * time.Second
-	}
-	e.scannerTimeout = timeout
-	e.scannerFailClosed = failClosed
-	e.scanners = append([]Scanner(nil), scanners...)
-}
-
-// NewStreamRedactor returns a StreamRedactor configured with the engine's
-// external scanners, timeout, and fail-closed settings alongside pol.
+// NewStreamRedactor returns a StreamRedactor configured for pol.
 func (e *Engine) NewStreamRedactor(pol *domain.GuardrailPolicy) *StreamRedactor {
-	if e == nil {
-		return NewStreamRedactor(pol)
-	}
-	scanners := append([]Scanner(nil), e.scanners...)
-	return NewStreamRedactorWithScanners(pol, e.scannerTimeout, e.scannerFailClosed, scanners...)
+	return NewStreamRedactor(pol)
 }
 
 // Policy loads the active GuardrailPolicy for orgID, returning a fail-closed error on storage failure.
@@ -101,7 +109,7 @@ func policyUnavailableError() error {
 	}
 }
 
-// EvaluateInput inspects and optionally mutates (redacts) or blocks a CanonicalChatRequest before upstream execution.
+// EvaluateInput inspects and optionally redacts or blocks a CanonicalChatRequest before upstream execution.
 func (e *Engine) EvaluateInput(ctx context.Context, orgID string, req *domain.CanonicalChatRequest) (*CheckOutcome, error) {
 	if req == nil {
 		return &CheckOutcome{}, nil
@@ -113,11 +121,8 @@ func (e *Engine) EvaluateInput(ctx context.Context, orgID string, req *domain.Ca
 	if err != nil {
 		return nil, err
 	}
-	if pol == nil && len(e.scanners) == 0 {
-		return &CheckOutcome{}, nil
-	}
 	if pol == nil {
-		pol = &domain.GuardrailPolicy{OrgID: orgID}
+		return &CheckOutcome{}, nil
 	}
 	return e.EvaluateInputWithPolicy(ctx, pol, req)
 }
@@ -140,16 +145,6 @@ func messageTextFields(msg *domain.CanonicalMessage) []*string {
 		}
 	}
 	return fields
-}
-
-func collectMessageText(msg *domain.CanonicalMessage) string {
-	var parts []string
-	for _, f := range messageTextFields(msg) {
-		if *f != "" {
-			parts = append(parts, *f)
-		}
-	}
-	return strings.Join(parts, "\n")
 }
 
 func checkPromptInjection(pol *domain.GuardrailPolicy, loggingOnly bool, text string, outcome *CheckOutcome) error {
@@ -182,6 +177,62 @@ func checkPromptInjection(pol *domain.GuardrailPolicy, loggingOnly bool, text st
 	return nil
 }
 
+func checkBlockedPatterns(pol *domain.GuardrailPolicy, loggingOnly bool, text string, isOutput bool, outcome *CheckOutcome) error {
+	for _, raw := range pol.BlockedPatterns {
+		pat := strings.TrimSpace(raw)
+		if pat == "" {
+			continue
+		}
+		re, err := compileCachedPattern(pat)
+		if err != nil {
+			continue
+		}
+		if re.MatchString(text) {
+			outcome.Violations = append(outcome.Violations, "blocked_pattern:"+pat)
+			if loggingOnly {
+				outcome.AppliedAction = domain.GuardrailActionAudit
+				continue
+			}
+			outcome.AppliedAction = domain.GuardrailActionBlock
+			if isOutput {
+				return &domain.GatewayError{
+					StatusCode: http.StatusBadGateway,
+					Type:       domain.ErrorTypeServer,
+					Code:       "guardrail_output_blocked",
+					Message:    "Response blocked by organization guardrail policy (restricted pattern matched)",
+				}
+			}
+			return &domain.GatewayError{
+				StatusCode: http.StatusBadRequest,
+				Type:       domain.ErrorTypeInvalidRequest,
+				Code:       "guardrail_blocked_pattern",
+				Message:    "Request blocked by organization guardrail policy (restricted pattern matched)",
+			}
+		}
+	}
+	return nil
+}
+
+func containsPII(text string) bool {
+	return reEmail.MatchString(text) ||
+		reSSN.MatchString(text) ||
+		containsValidCard(text) ||
+		rePhone.MatchString(text) ||
+		reIPv4.MatchString(text)
+}
+
+func redactPII(text string) (string, bool) {
+	orig := text
+	text = reEmail.ReplaceAllString(text, "[REDACTED_EMAIL]")
+	text = reSSN.ReplaceAllString(text, "[REDACTED_SSN]")
+	if next, changed := redactValidCards(text); changed {
+		text = next
+	}
+	text = rePhone.ReplaceAllString(text, "[REDACTED_PHONE]")
+	text = reIPv4.ReplaceAllString(text, "[REDACTED_IP]")
+	return text, text != orig
+}
+
 func evaluateLocalInputField(pol *domain.GuardrailPolicy, loggingOnly bool, field *string, outcome *CheckOutcome) error {
 	if *field == "" {
 		return nil
@@ -212,12 +263,17 @@ func evaluateLocalInputField(pol *domain.GuardrailPolicy, loggingOnly bool, fiel
 		}
 	}
 
-	// 3. Built-in Toxicity & Content Filtering
+	// 3. Custom Blocked Regex Patterns
+	if err := checkBlockedPatterns(pol, loggingOnly, *field, false, outcome); err != nil {
+		return err
+	}
+
+	// 4. Built-in Toxicity & Content Filtering
 	if err := evaluateToxicity(pol, loggingOnly, field, false, outcome); err != nil {
 		return err
 	}
 
-	// 4. Secret / API Key Leak Check
+	// 5. Secret / API Key Leak Check
 	if pol.EnableSecretDetection && reSecret.MatchString(*field) {
 		outcome.Violations = append(outcome.Violations, "secret_detected")
 		action := pol.SecretAction
@@ -240,61 +296,32 @@ func evaluateLocalInputField(pol *domain.GuardrailPolicy, loggingOnly bool, fiel
 				*field = reSecret.ReplaceAllString(*field, "[REDACTED_SECRET]")
 				outcome.Redacted = true
 			}
-			if action == domain.GuardrailActionRoute {
-				target := strings.TrimSpace(pol.SensitiveRouteTarget)
-				if target == "" {
-					return &domain.GatewayError{
-						StatusCode: http.StatusBadRequest,
-						Type:       domain.ErrorTypeInvalidRequest,
-						Code:       "guardrail_route_target_missing",
-						Message:    "Security guardrail configured for sensitive routing has no sensitive_route_target configured",
-					}
-				}
-				outcome.RouteTarget = target
-			}
 		}
 	}
 
-	// 5. PII Detection (Emails, SSNs, Luhn-valid Credit Cards)
-	if pol.EnablePIIDetection {
-		hasPII := reEmail.MatchString(*field) || reSSN.MatchString(*field) || containsValidCard(*field)
-		if hasPII {
-			outcome.Violations = append(outcome.Violations, "pii_detected")
-			action := pol.PIIAction
-			if action == "" {
-				action = domain.GuardrailActionRedact
+	// 6. PII Detection (Emails, SSNs, Luhn-valid Credit Cards, Phone Numbers, IPv4)
+	if pol.EnablePIIDetection && containsPII(*field) {
+		outcome.Violations = append(outcome.Violations, "pii_detected")
+		action := pol.PIIAction
+		if action == "" {
+			action = domain.GuardrailActionRedact
+		}
+		if loggingOnly {
+			outcome.AppliedAction = domain.GuardrailActionAudit
+		} else {
+			outcome.AppliedAction = action
+			if action == domain.GuardrailActionBlock {
+				return &domain.GatewayError{
+					StatusCode: http.StatusBadRequest,
+					Type:       domain.ErrorTypeInvalidRequest,
+					Code:       "guardrail_pii_detected",
+					Message:    "Request blocked by security guardrail: PII (email, SSN, payment card, phone, or IP address) detected in prompt",
+				}
 			}
-			if loggingOnly {
-				outcome.AppliedAction = domain.GuardrailActionAudit
-			} else {
-				outcome.AppliedAction = action
-				if action == domain.GuardrailActionBlock {
-					return &domain.GatewayError{
-						StatusCode: http.StatusBadRequest,
-						Type:       domain.ErrorTypeInvalidRequest,
-						Code:       "guardrail_pii_detected",
-						Message:    "Request blocked by security guardrail: PII (email, SSN, or payment card) detected in prompt",
-					}
-				}
-				if action == domain.GuardrailActionRedact {
-					*field = reEmail.ReplaceAllString(*field, "[REDACTED_EMAIL]")
-					*field = reSSN.ReplaceAllString(*field, "[REDACTED_SSN]")
-					if next, changed := redactValidCards(*field); changed {
-						*field = next
-					}
+			if action == domain.GuardrailActionRedact {
+				if next, changed := redactPII(*field); changed {
+					*field = next
 					outcome.Redacted = true
-				}
-				if action == domain.GuardrailActionRoute {
-					target := strings.TrimSpace(pol.SensitiveRouteTarget)
-					if target == "" {
-						return &domain.GatewayError{
-							StatusCode: http.StatusBadRequest,
-							Type:       domain.ErrorTypeInvalidRequest,
-							Code:       "guardrail_route_target_missing",
-							Message:    "Security guardrail configured for sensitive routing has no sensitive_route_target configured",
-						}
-					}
-					outcome.RouteTarget = target
 				}
 			}
 		}
@@ -311,7 +338,6 @@ func (e *Engine) EvaluateInputWithPolicy(ctx context.Context, pol *domain.Guardr
 	}
 	loggingOnly := pol.EffectiveMode() == domain.GuardrailModeLoggingOnly
 
-	// 1. Local field scanning (images and binary payloads remain untouched).
 	for mi := range req.Messages {
 		msg := &req.Messages[mi]
 		scanAll := shouldScanRole(pol, msg.Role)
@@ -331,48 +357,6 @@ func (e *Engine) EvaluateInputWithPolicy(ctx context.Context, pol *domain.Guardr
 			}
 			if err := evaluateLocalInputField(pol, loggingOnly, field, outcome); err != nil {
 				return outcome, err
-			}
-		}
-	}
-
-	// 2. External scanner loop: invoked once per eligible message rather than per part/tool-call.
-	if len(e.scanners) > 0 {
-		for idx := range req.Messages {
-			msg := &req.Messages[idx]
-			if !shouldScanRole(pol, msg.Role) {
-				continue
-			}
-			content := collectMessageText(msg)
-			for _, scanner := range e.scanners {
-				scanCtx, cancel := context.WithTimeout(ctx, e.scannerTimeout)
-				result, err := scanner.Scan(scanCtx, ScanRequest{OrgID: pol.OrgID, Direction: ScanInput, Content: content})
-				cancel()
-				if err != nil {
-					logger.WarnContext(ctx, "Optional guardrail scanner failed", slog.String("component", "guardrails"), slog.String("org_id", pol.OrgID), slog.String("error_kind", scannerErrorKind(err)), slog.Bool("fail_closed", e.scannerFailClosed))
-					if e.scannerFailClosed {
-						return outcome, &domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeServer, Code: "guardrail_scanner_unavailable", Message: "request could not be scanned by the configured security scanner"}
-					}
-					continue
-				}
-				if result.Decision == ScannerDecisionBlock {
-					outcome.Violations = append(outcome.Violations, result.Violations...)
-					if len(result.Violations) == 0 {
-						outcome.Violations = append(outcome.Violations, "external_scanner_blocked")
-					}
-					if loggingOnly {
-						outcome.AppliedAction = domain.GuardrailActionAudit
-						continue
-					}
-					outcome.AppliedAction = domain.GuardrailActionBlock
-					return outcome, &domain.GatewayError{StatusCode: http.StatusBadRequest, Type: domain.ErrorTypeInvalidRequest, Code: "guardrail_scanner_blocked", Message: "request blocked by configured security scanner"}
-				}
-				if result.Decision != ScannerDecisionAllow {
-					logger.WarnContext(ctx, "Optional guardrail scanner returned invalid decision", slog.String("component", "guardrails"), slog.String("org_id", pol.OrgID), slog.String("error_kind", "invalid_decision"), slog.Bool("fail_closed", e.scannerFailClosed))
-					if e.scannerFailClosed {
-						return outcome, &domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeServer, Code: "guardrail_scanner_unavailable", Message: "request could not be scanned by the configured security scanner"}
-					}
-				}
-				outcome.Violations = append(outcome.Violations, result.Violations...)
 			}
 		}
 	}
@@ -416,12 +400,17 @@ func evaluateLocalOutputField(pol *domain.GuardrailPolicy, loggingOnly bool, fie
 		}
 	}
 
-	// 2. Built-in Toxicity & Content Filtering
+	// 2. Custom Blocked Regex Patterns
+	if err := checkBlockedPatterns(pol, loggingOnly, *field, true, outcome); err != nil {
+		return err
+	}
+
+	// 3. Built-in Toxicity & Content Filtering
 	if err := evaluateToxicity(pol, loggingOnly, field, true, outcome); err != nil {
 		return err
 	}
 
-	// 3. Secret / API Key Leak Check
+	// 4. Secret / API Key Leak Check
 	if (pol.EnableSecretDetection || pol.RedactOutputPII) && reSecret.MatchString(*field) {
 		outcome.Violations = append(outcome.Violations, "secret_detected")
 		action := domain.GuardrailActionRedact
@@ -450,36 +439,31 @@ func evaluateLocalOutputField(pol *domain.GuardrailPolicy, loggingOnly bool, fie
 		}
 	}
 
-	// 4. PII Detection (Emails, SSNs, Luhn-valid Credit Cards)
-	if pol.EnablePIIDetection || pol.RedactOutputPII {
-		hasPII := reEmail.MatchString(*field) || reSSN.MatchString(*field) || containsValidCard(*field)
-		if hasPII {
-			outcome.Violations = append(outcome.Violations, "pii_detected")
-			action := domain.GuardrailActionRedact
-			if pol.EnablePIIDetection && pol.PIIAction != "" {
-				action = pol.PIIAction
-			}
-			if pol.RedactOutputPII && action == domain.GuardrailActionAudit {
-				action = domain.GuardrailActionRedact
-			}
-			if loggingOnly {
-				outcome.AppliedAction = domain.GuardrailActionAudit
-			} else {
-				outcome.AppliedAction = action
-				if action == domain.GuardrailActionBlock {
-					return &domain.GatewayError{
-						StatusCode: http.StatusBadGateway,
-						Type:       domain.ErrorTypeServer,
-						Code:       "guardrail_output_pii_detected",
-						Message:    "Response blocked by security guardrail: PII (email, SSN, or payment card) detected in output",
-					}
+	// 5. PII Detection (Emails, SSNs, Luhn-valid Credit Cards, Phone Numbers, IPv4)
+	if (pol.EnablePIIDetection || pol.RedactOutputPII) && containsPII(*field) {
+		outcome.Violations = append(outcome.Violations, "pii_detected")
+		action := domain.GuardrailActionRedact
+		if pol.EnablePIIDetection && pol.PIIAction != "" {
+			action = pol.PIIAction
+		}
+		if pol.RedactOutputPII && action == domain.GuardrailActionAudit {
+			action = domain.GuardrailActionRedact
+		}
+		if loggingOnly {
+			outcome.AppliedAction = domain.GuardrailActionAudit
+		} else {
+			outcome.AppliedAction = action
+			if action == domain.GuardrailActionBlock {
+				return &domain.GatewayError{
+					StatusCode: http.StatusBadGateway,
+					Type:       domain.ErrorTypeServer,
+					Code:       "guardrail_output_pii_detected",
+					Message:    "Response blocked by security guardrail: PII (email, SSN, payment card, phone, or IP address) detected in output",
 				}
-				if action == domain.GuardrailActionRedact {
-					*field = reEmail.ReplaceAllString(*field, "[REDACTED_EMAIL]")
-					*field = reSSN.ReplaceAllString(*field, "[REDACTED_SSN]")
-					if next, changed := redactValidCards(*field); changed {
-						*field = next
-					}
+			}
+			if action == domain.GuardrailActionRedact {
+				if next, changed := redactPII(*field); changed {
+					*field = next
 					outcome.Redacted = true
 				}
 			}
@@ -505,14 +489,6 @@ func (e *Engine) EvaluateOutputWithPolicy(ctx context.Context, pol *domain.Guard
 				return outcome, err
 			}
 		}
-
-		// Invoke external scanners once per choice message rather than per part/tool-call.
-		if len(e.scanners) > 0 {
-			content := collectMessageText(msg)
-			if err := e.scanOutputField(ctx, pol, loggingOnly, content, outcome); err != nil {
-				return outcome, err
-			}
-		}
 	}
 
 	if len(outcome.Violations) > 0 {
@@ -531,42 +507,6 @@ func (e *Engine) EvaluateOutputWithPolicy(ctx context.Context, pol *domain.Guard
 	return outcome, nil
 }
 
-func (e *Engine) scanOutputField(ctx context.Context, pol *domain.GuardrailPolicy, loggingOnly bool, content string, outcome *CheckOutcome) error {
-	for _, scanner := range e.scanners {
-		scanCtx, cancel := context.WithTimeout(ctx, e.scannerTimeout)
-		result, err := scanner.Scan(scanCtx, ScanRequest{OrgID: pol.OrgID, Direction: ScanOutput, Content: content})
-		cancel()
-		if err != nil {
-			logger.WarnContext(ctx, "Optional guardrail scanner failed", slog.String("component", "guardrails"), slog.String("org_id", pol.OrgID), slog.String("error_kind", scannerErrorKind(err)), slog.Bool("fail_closed", e.scannerFailClosed))
-			if e.scannerFailClosed {
-				return &domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeServer, Code: "guardrail_scanner_unavailable", Message: "content could not be scanned by the configured security scanner"}
-			}
-			continue
-		}
-		if result.Decision == ScannerDecisionBlock {
-			if len(result.Violations) > 0 {
-				outcome.Violations = append(outcome.Violations, result.Violations...)
-			} else {
-				outcome.Violations = append(outcome.Violations, "external_scanner_blocked")
-			}
-			if loggingOnly {
-				outcome.AppliedAction = domain.GuardrailActionAudit
-				continue
-			}
-			outcome.AppliedAction = domain.GuardrailActionBlock
-			return &domain.GatewayError{StatusCode: http.StatusBadGateway, Type: domain.ErrorTypeServer, Code: "guardrail_scanner_blocked", Message: "response withheld by configured security scanner"}
-		}
-		if result.Decision != ScannerDecisionAllow {
-			logger.WarnContext(ctx, "Optional guardrail scanner returned invalid decision", slog.String("component", "guardrails"), slog.String("org_id", pol.OrgID), slog.String("error_kind", "invalid_decision"), slog.Bool("fail_closed", e.scannerFailClosed))
-			if e.scannerFailClosed {
-				return &domain.GatewayError{StatusCode: http.StatusServiceUnavailable, Type: domain.ErrorTypeServer, Code: "guardrail_scanner_unavailable", Message: "content could not be scanned by the configured security scanner"}
-			}
-		}
-		outcome.Violations = append(outcome.Violations, result.Violations...)
-	}
-	return nil
-}
-
 // SanitizeOutput redacts sensitive data and scans every textual output field.
 // Callers must withhold output when this method returns an error.
 func (e *Engine) SanitizeOutput(ctx context.Context, orgID string, resp *domain.CanonicalChatResponse) (bool, error) {
@@ -577,11 +517,8 @@ func (e *Engine) SanitizeOutput(ctx context.Context, orgID string, resp *domain.
 	if err != nil {
 		return false, err
 	}
-	if pol == nil && len(e.scanners) == 0 {
-		return false, nil
-	}
 	if pol == nil {
-		pol = &domain.GuardrailPolicy{OrgID: orgID}
+		return false, nil
 	}
 	outcome, err := e.EvaluateOutputWithPolicy(ctx, pol, resp)
 	if outcome == nil {
@@ -601,11 +538,8 @@ func (e *Engine) SanitizeTextOutput(ctx context.Context, orgID, text string) (st
 	if err != nil {
 		return "", false, err
 	}
-	if pol == nil && len(e.scanners) == 0 {
-		return text, false, nil
-	}
 	if pol == nil {
-		pol = &domain.GuardrailPolicy{OrgID: orgID}
+		return text, false, nil
 	}
 	probe := &domain.CanonicalChatResponse{
 		Choices: []domain.CanonicalChoice{
@@ -676,15 +610,4 @@ func redactValidCards(text string) (string, bool) {
 		return match
 	})
 	return updated, changed
-}
-
-func scannerErrorKind(err error) string {
-	switch {
-	case errors.Is(err, context.DeadlineExceeded):
-		return "timeout"
-	case errors.Is(err, context.Canceled):
-		return "canceled"
-	default:
-		return "scanner_error"
-	}
 }

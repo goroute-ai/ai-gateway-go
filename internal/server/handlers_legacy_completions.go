@@ -312,7 +312,7 @@ func (s *GatewayServer) handleLegacyCompletionsStream(
 		Model:  req.Model,
 		Stream: true,
 	})
-	streamSession, policyErr := s.newStreamGuardrailSession(r.Context(), prc, nil)
+	streamSession, policyErr := s.newStreamGuardrailSession(r.Context(), prc)
 	if policyErr != nil {
 		releaseQuota(-1)
 		domain.WriteHTTPError(w, policyErr)

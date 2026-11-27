@@ -281,71 +281,24 @@ type ProvidersConfig struct {
 	MaxIdleConnsPerHost   int           `yaml:"max_idle_conns_per_host" json:"max_idle_conns_per_host"`
 }
 
-// GuardrailsConfig configures guardrail scanners, declarative definitions, and tool trust policies.
+// GuardrailsConfig configures declarative external guardrail definitions seeded on startup.
 type GuardrailsConfig struct {
-	Scanners     []GuardrailScannerConfig    `yaml:"scanners" json:"scanners"`
-	Definitions  []GuardrailDefinitionConfig `yaml:"definitions,omitempty" json:"definitions,omitempty"`
-	ToolPolicies []ToolPolicyConfig          `yaml:"tool_policies,omitempty" json:"tool_policies,omitempty"`
+	Definitions []GuardrailDefinitionConfig `yaml:"definitions,omitempty" json:"definitions,omitempty"`
 }
 
-// GuardrailScannerConfig defines an external HTTP/webhook guardrail scanner.
-type GuardrailScannerConfig struct {
-	Name      string            `yaml:"name" json:"name"`
-	URL       string            `yaml:"url" json:"url"`
-	TimeoutMs int               `yaml:"timeout_ms" json:"timeout_ms"`
-	FailOpen  bool              `yaml:"fail_open" json:"fail_open"`
-	Headers   map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
-}
-
-// GuardrailModeRuleConfig defines dynamic hook selection by request tag for a seeded guardrail.
-type GuardrailModeRuleConfig struct {
-	Tags    map[string][]string `yaml:"tags,omitempty" json:"tags,omitempty"`
-	Default []string            `yaml:"default,omitempty" json:"default,omitempty"`
-}
-
-// GuardrailBindingConfig declares an org/team/key/model_group/tag binding seeded alongside a guardrail definition.
-type GuardrailBindingConfig struct {
-	ID             string         `yaml:"id,omitempty" json:"id,omitempty"`
-	TeamID         string         `yaml:"team_id,omitempty" json:"team_id,omitempty"`
-	VirtualKeyID   string         `yaml:"virtual_key_id,omitempty" json:"virtual_key_id,omitempty"`
-	EndUserID      string         `yaml:"end_user_id,omitempty" json:"end_user_id,omitempty"`
-	ModelGroupID   string         `yaml:"model_group_id,omitempty" json:"model_group_id,omitempty"`
-	Tag            string         `yaml:"tag,omitempty" json:"tag,omitempty"`
-	ParamOverrides map[string]any `yaml:"param_overrides,omitempty" json:"param_overrides,omitempty"`
-	IsLocked       bool           `yaml:"is_locked,omitempty" json:"is_locked,omitempty"`
-}
-
-// GuardrailDefinitionConfig defines a declarative guardrail seeded into the registry on startup.
+// GuardrailDefinitionConfig defines a declarative external guardrail seeded into the registry on startup.
 type GuardrailDefinitionConfig struct {
-	ID            string                   `yaml:"id,omitempty" json:"id,omitempty"`
-	OrgID         string                   `yaml:"org_id,omitempty" json:"org_id,omitempty"`
-	Name          string                   `yaml:"name" json:"name"`
-	Provider      string                   `yaml:"provider" json:"provider"`
-	EventHooks    []string                 `yaml:"event_hooks,omitempty" json:"event_hooks,omitempty"`
-	StreamScope   string                   `yaml:"stream_scope,omitempty" json:"stream_scope,omitempty"`
-	DefaultOn     bool                     `yaml:"default_on,omitempty" json:"default_on,omitempty"`
-	EnabledRoles  []string                 `yaml:"enabled_roles,omitempty" json:"enabled_roles,omitempty"`
-	TimeoutMs     int                      `yaml:"timeout_ms,omitempty" json:"timeout_ms,omitempty"`
-	FailOpen      bool                     `yaml:"fail_open,omitempty" json:"fail_open,omitempty"`
-	Precedence    int                      `yaml:"precedence,omitempty" json:"precedence,omitempty"`
-	Weight        int                      `yaml:"weight,omitempty" json:"weight,omitempty"`
-	Status        string                   `yaml:"status,omitempty" json:"status,omitempty"`
-	ModeRule      *GuardrailModeRuleConfig `yaml:"mode_rule,omitempty" json:"mode_rule,omitempty"`
-	Config        map[string]any           `yaml:"config,omitempty" json:"config,omitempty"`
-	Secrets       map[string]any           `yaml:"secrets,omitempty" json:"secrets,omitempty"`
-	GuardrailInfo map[string]any           `yaml:"guardrail_info,omitempty" json:"guardrail_info,omitempty"`
-	Bindings      []GuardrailBindingConfig `yaml:"bindings,omitempty" json:"bindings,omitempty"`
-}
-
-// ToolPolicyConfig defines a declarative tool input/output trust policy seeded on startup.
-type ToolPolicyConfig struct {
-	ID           string `yaml:"id,omitempty" json:"id,omitempty"`
-	OrgID        string `yaml:"org_id,omitempty" json:"org_id,omitempty"`
-	TeamID       string `yaml:"team_id,omitempty" json:"team_id,omitempty"`
-	VirtualKeyID string `yaml:"virtual_key_id,omitempty" json:"virtual_key_id,omitempty"`
-	ToolName     string `yaml:"tool_name" json:"tool_name"`
-	InputPolicy  string `yaml:"input_policy,omitempty" json:"input_policy,omitempty"`
-	OutputPolicy string `yaml:"output_policy,omitempty" json:"output_policy,omitempty"`
+	ID         string         `yaml:"id,omitempty" json:"id,omitempty"`
+	OrgID      string         `yaml:"org_id,omitempty" json:"org_id,omitempty"`
+	Name       string         `yaml:"name" json:"name"`
+	Provider   string         `yaml:"provider" json:"provider"`
+	EventHooks []string       `yaml:"event_hooks,omitempty" json:"event_hooks,omitempty"`
+	Enabled    *bool          `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	TimeoutMs  int            `yaml:"timeout_ms,omitempty" json:"timeout_ms,omitempty"`
+	FailOpen   bool           `yaml:"fail_open,omitempty" json:"fail_open,omitempty"`
+	Precedence int            `yaml:"precedence,omitempty" json:"precedence,omitempty"`
+	Config     map[string]any `yaml:"config,omitempty" json:"config,omitempty"`
+	Secrets    map[string]any `yaml:"secrets,omitempty" json:"secrets,omitempty"`
 }
 
 // ServerConfig configures HTTP/gRPC listeners, timeouts, CORS, HSTS, and per-organization file upload limits.
@@ -2020,29 +1973,6 @@ func (c *Config) validateMCPAndA2A() error {
 }
 
 func (c *Config) validateGuardrails() error {
-	seenScanners := make(map[string]struct{}, len(c.Guardrails.Scanners))
-	for i, sc := range c.Guardrails.Scanners {
-		name := strings.TrimSpace(sc.Name)
-		if name == "" {
-			return fmt.Errorf("guardrails.scanners[%d]: name cannot be empty", i)
-		}
-		if _, dup := seenScanners[name]; dup {
-			return fmt.Errorf("guardrails.scanners[%d]: duplicate scanner name %q", i, name)
-		}
-		seenScanners[name] = struct{}{}
-
-		rawURL := strings.TrimSpace(sc.URL)
-		if rawURL == "" {
-			return fmt.Errorf("guardrails.scanners %q: url cannot be empty", name)
-		}
-		u, err := url.Parse(rawURL)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			return fmt.Errorf("guardrails.scanners %q: url must be a valid http or https URL", name)
-		}
-		if sc.TimeoutMs < 0 {
-			return fmt.Errorf("guardrails.scanners %q: timeout_ms cannot be negative", name)
-		}
-	}
 	for idx, def := range c.Guardrails.Definitions {
 		name := strings.TrimSpace(def.Name)
 		if name == "" {
@@ -2053,29 +1983,6 @@ func (c *Config) validateGuardrails() error {
 		}
 		if def.TimeoutMs < 0 {
 			return fmt.Errorf("guardrails.definitions[%d] (%q): timeout_ms cannot be negative", idx, name)
-		}
-		if def.Status != "" {
-			switch strings.ToLower(strings.TrimSpace(def.Status)) {
-			case "active", "pending_review", "rejected":
-			default:
-				return fmt.Errorf("guardrails.definitions[%d] (%q): invalid status %q", idx, name, def.Status)
-			}
-		}
-	}
-	for idx, tp := range c.Guardrails.ToolPolicies {
-		toolName := strings.TrimSpace(tp.ToolName)
-		if toolName == "" {
-			return fmt.Errorf("guardrails.tool_policies[%d]: tool_name cannot be empty", idx)
-		}
-		switch strings.ToLower(strings.TrimSpace(tp.InputPolicy)) {
-		case "", "untrusted", "trusted", "blocked":
-		default:
-			return fmt.Errorf("guardrails.tool_policies[%d] (%q): invalid input_policy %q", idx, toolName, tp.InputPolicy)
-		}
-		switch strings.ToLower(strings.TrimSpace(tp.OutputPolicy)) {
-		case "", "untrusted", "trusted":
-		default:
-			return fmt.Errorf("guardrails.tool_policies[%d] (%q): invalid output_policy %q", idx, toolName, tp.OutputPolicy)
 		}
 	}
 	return nil

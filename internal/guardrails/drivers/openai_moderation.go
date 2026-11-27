@@ -211,7 +211,6 @@ func (d *OpenAIModerationDriver) Evaluate(ctx context.Context, input *domain.Gua
 		return &domain.GuardrailEvalResult{
 			Decision:          domain.GuardrailDecisionAllow,
 			AppliedGuardrails: []string{d.name},
-			UsageUnits:        1,
 		}, nil
 	}
 
@@ -228,7 +227,6 @@ func (d *OpenAIModerationDriver) Evaluate(ctx context.Context, input *domain.Gua
 		Decision:          decision,
 		Violations:        violations,
 		AppliedGuardrails: []string{d.name},
-		UsageUnits:        1,
 		ErrorMessage:      violations[0].Message,
 	}, nil
 }

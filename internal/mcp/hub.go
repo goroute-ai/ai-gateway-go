@@ -24,13 +24,6 @@ import (
 // HubOption configures optional capabilities on an MCP Hub instance.
 type HubOption func(*Hub)
 
-// WithGuardrailPipeline attaches a unified v2 guardrail Pipeline to the MCP Hub.
-func WithGuardrailPipeline(p *guardrails.Pipeline) HubOption {
-	return func(h *Hub) {
-		h.SetGuardrailPipeline(p)
-	}
-}
-
 // WithLimiter attaches a rate/quota Limiter to the MCP Hub for per-server, per-key, and per-team MCP RPM enforcement.
 func WithLimiter(l *ratelimit.Limiter) HubOption {
 	return func(h *Hub) {
@@ -49,11 +42,9 @@ type Hub struct {
 	mrtr             *MRTRManager
 	subs             *SubscriptionManager
 	guardrails       *guardrails.Engine
-	pipeline         *guardrails.Pipeline
 	limiter          *ratelimit.Limiter
 	spendRecorder    SpendRecorder
 	progressive      *ProgressiveDiscoveryManager
-	toolPolicyStore  storage.ToolPolicyRepository
 	customAuthorizer auth.Authorizer
 	instruments      *observability.Instruments
 	runtimeSettings  atomic.Pointer[domain.MCPRuntimeSettings]
@@ -71,19 +62,11 @@ func (h *Hub) SetMRTR(m *MRTRManager) { h.mrtr = m }
 // SetSubscriptions attaches the MCP resource subscription manager to the Hub.
 func (h *Hub) SetSubscriptions(s *SubscriptionManager) { h.subs = s }
 
-// SetGuardrails attaches the legacy guardrail Engine to the MCP Hub.
+// SetGuardrails attaches the built-in guardrail Engine to the MCP Hub.
 func (h *Hub) SetGuardrails(g *guardrails.Engine) { h.guardrails = g }
 
 // SetLimiter attaches the rate and budget Limiter to the MCP Hub.
 func (h *Hub) SetLimiter(l *ratelimit.Limiter) { h.limiter = l }
-
-// SetGuardrailPipeline attaches the unified guardrail Pipeline and infers its Engine if unset.
-func (h *Hub) SetGuardrailPipeline(p *guardrails.Pipeline) {
-	h.pipeline = p
-	if h.guardrails == nil && p != nil && p.Engine() != nil {
-		h.guardrails = p.Engine()
-	}
-}
 
 // ApplyOptions applies functional HubOption values to an existing Hub.
 func (h *Hub) ApplyOptions(opts ...HubOption) {
@@ -114,11 +97,8 @@ func (h *Hub) MRTR() *MRTRManager { return h.mrtr }
 // Subscriptions returns the MCP resource subscription manager.
 func (h *Hub) Subscriptions() *SubscriptionManager { return h.subs }
 
-// Guardrails returns the attached legacy guardrail Engine, if any.
+// Guardrails returns the attached guardrail Engine, if any.
 func (h *Hub) Guardrails() *guardrails.Engine { return h.guardrails }
-
-// GuardrailPipeline returns the attached unified guardrail Pipeline, if any.
-func (h *Hub) GuardrailPipeline() *guardrails.Pipeline { return h.pipeline }
 
 // Limiter returns the attached rate and budget Limiter, if any.
 func (h *Hub) Limiter() *ratelimit.Limiter { return h.limiter }
@@ -142,19 +122,13 @@ func NewHub(
 ) *Hub {
 	pdm := NewProgressiveDiscoveryManager(repo, nil, HandleTTL)
 	pdm.SetRBAC(rbac)
-	var tpStore storage.ToolPolicyRepository
-	if r, ok := repo.(storage.ToolPolicyRepository); ok {
-		tpStore = r
-		pdm.SetToolPolicyStore(tpStore)
-	}
 	h := &Hub{
-		repo:            repo,
-		vault:           vault,
-		rbac:            rbac,
-		dispatcher:      dispatcher,
-		authResolver:    authResolver,
-		progressive:     pdm,
-		toolPolicyStore: tpStore,
+		repo:         repo,
+		vault:        vault,
+		rbac:         rbac,
+		dispatcher:   dispatcher,
+		authResolver: authResolver,
+		progressive:  pdm,
 	}
 	h.SetRuntimeSettings(domain.MCPRuntimeSettings{
 		ActiveProtocolVersion: spec.DefaultVersion,
@@ -209,7 +183,6 @@ func (h *Hub) ListTools(ctx context.Context, idCtx *domain.IdentityContext, serv
 		orgID = idCtx.OrgID
 	}
 
-	policies := h.loadToolPolicies(ctx, idCtx)
 	serverSlug = strings.TrimSpace(serverSlug)
 	if serverSlug != "" {
 		server, err := h.repo.GetMCPServerBySlug(ctx, orgID, serverSlug)
@@ -232,7 +205,7 @@ func (h *Hub) ListTools(ctx context.Context, idCtx *domain.IdentityContext, serv
 		var activeTools []domain.MCPTool
 		for _, t := range tools {
 			if t != nil && t.IsActive {
-				if h.authorizeToolCall(ctx, idCtx, server.Slug, t.Name, policies, false) != nil {
+				if h.authorizeToolCall(ctx, idCtx, server.Slug, t.Name, false) != nil {
 					continue
 				}
 				activeTools = append(activeTools, *t)
@@ -261,7 +234,7 @@ func (h *Hub) ListTools(ctx context.Context, idCtx *domain.IdentityContext, serv
 		}
 		for _, t := range tools {
 			if t != nil && t.IsActive {
-				if h.authorizeToolCall(ctx, idCtx, s.Slug, t.Name, policies, false) != nil {
+				if h.authorizeToolCall(ctx, idCtx, s.Slug, t.Name, false) != nil {
 					continue
 				}
 				aggregatedTools = append(aggregatedTools, *t)
@@ -294,7 +267,7 @@ func (h *Hub) CallTool(ctx context.Context, idCtx *domain.IdentityContext, input
 	}
 	input.ToolName = resolvedToolName
 
-	if err := h.authorizeToolCall(ctx, idCtx, targetServer.Slug, input.ToolName, h.loadToolPolicies(ctx, idCtx), true); err != nil {
+	if err := h.authorizeToolCall(ctx, idCtx, targetServer.Slug, input.ToolName, true); err != nil {
 		return nil, err
 	}
 	if h.customAuthorizer != nil {
@@ -325,8 +298,7 @@ func (h *Hub) CallTool(ctx context.Context, idCtx *domain.IdentityContext, input
 	}
 	defer releaseMCPQuota(0, 0, 0)
 
-	mcpPRC, mcpCallCtx := h.buildToolGuardrailContext(ctx, idCtx, targetServer, targetTool, reqID, input, meta.CallerMetadata)
-	if err := h.evaluatePreMCPGuardrails(ctx, orgID, input.ToolName, input.Arguments, mcpPRC, mcpCallCtx); err != nil {
+	if err := h.evaluatePreMCPGuardrails(ctx, orgID, input.ToolName, input.Arguments); err != nil {
 		return nil, fmt.Errorf("guardrail blocked tool call: %w", err)
 	}
 
@@ -352,8 +324,9 @@ func (h *Hub) CallTool(ctx context.Context, idCtx *domain.IdentityContext, input
 		ServerAddress: targetServer.EndpointURL,
 		OrgID:         orgID,
 	})
-	resp, _, err := h.dispatchWithDuringGuardrails(spanCtx, targetServer, authStrategy, authCtx, reqBodyBytes, reqHeaders, true, mcpPRC, mcpCallCtx)
+	resp, _, err := h.dispatcher.Dispatch(spanCtx, targetServer, authStrategy, authCtx, reqBodyBytes, reqHeaders)
 	if err != nil {
+		err = fmt.Errorf("upstream dispatch error: %w", err)
 		observability.FinishGenAISpan(toolSpan, observability.GenAISpanEnd{Err: err, ErrorType: "mcp_dispatch_error"})
 		if h.instruments != nil {
 			h.instruments.RecordMCPRequest(spanCtx, "tools/call", "error")
@@ -381,7 +354,7 @@ func (h *Hub) CallTool(ctx context.Context, idCtx *domain.IdentityContext, input
 		h.instruments.RecordMCPRequest(spanCtx, "tools/call", "ok")
 	}
 
-	if err := h.evaluatePostMCPGuardrails(ctx, orgID, mcpPRC, mcpCallCtx, resp); err != nil {
+	if err := h.evaluatePostMCPGuardrails(ctx, orgID, resp); err != nil {
 		return nil, fmt.Errorf("guardrail result inspection failed: %w", err)
 	}
 
@@ -558,7 +531,7 @@ func (h *Hub) resolveToolTarget(
 }
 
 func (h *Hub) verifyToolPinning(server *domain.MCPServer, tool *domain.MCPTool, toolName string) error {
-	if server.PinnedToolHash == "" || (h.guardrails == nil && h.pipeline == nil) {
+	if server.PinnedToolHash == "" || h.guardrails == nil {
 		return nil
 	}
 	if tool == nil {
@@ -568,61 +541,17 @@ func (h *Hub) verifyToolPinning(server *domain.MCPServer, tool *domain.MCPTool, 
 	if pinnedHash == "" {
 		pinnedHash = server.PinnedToolHash
 	}
-	pinEng := h.guardrails
-	if pinEng == nil && h.pipeline != nil {
-		pinEng = h.pipeline.Engine()
-	}
-	if err := pinEng.VerifyToolPinning(tool, pinnedHash); err != nil {
+	if err := h.guardrails.VerifyToolPinning(tool, pinnedHash); err != nil {
 		return fmt.Errorf("tool pinning violation: %w", err)
 	}
 	return nil
-}
-
-func (h *Hub) buildToolGuardrailContext(
-	ctx context.Context,
-	idCtx *domain.IdentityContext,
-	server *domain.MCPServer,
-	tool *domain.MCPTool,
-	reqID string,
-	input ToolCallInput,
-	callerMeta map[string]string,
-) (guardrails.PipelineRequestContext, *guardrails.MCPCallContext) {
-	if h.pipeline == nil {
-		return guardrails.PipelineRequestContext{}, nil
-	}
-	prc := buildMCPPipelineRequestContext(ctx, idCtx, reqID, callerMeta, nil)
-	callCtx := &guardrails.MCPCallContext{
-		ServerID:   server.ID,
-		ServerSlug: server.Slug,
-		ServerURL:  server.EndpointURL,
-		ToolName:   input.ToolName,
-		Arguments:  input.Arguments,
-	}
-	if tool != nil {
-		callCtx.ToolID = tool.ID
-		callCtx.ToolDefHash = tool.ToolDefHash
-	}
-	return prc, callCtx
 }
 
 func (h *Hub) evaluatePreMCPGuardrails(
 	ctx context.Context,
 	orgID, methodOrTool string,
 	args map[string]any,
-	prc guardrails.PipelineRequestContext,
-	callCtx *guardrails.MCPCallContext,
 ) error {
-	if h.pipeline != nil {
-		if _, err := h.pipeline.EvaluatePreMCPCall(ctx, prc, callCtx); err != nil {
-			return err
-		}
-		if h.pipeline.Engine() == nil && h.guardrails != nil {
-			if _, err := h.guardrails.EvaluateMCPToolCall(ctx, orgID, methodOrTool, args); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
 	if h.guardrails != nil {
 		if _, err := h.guardrails.EvaluateMCPToolCall(ctx, orgID, methodOrTool, args); err != nil {
 			return err
@@ -634,26 +563,9 @@ func (h *Hub) evaluatePreMCPGuardrails(
 func (h *Hub) evaluatePostMCPGuardrails(
 	ctx context.Context,
 	orgID string,
-	prc guardrails.PipelineRequestContext,
-	callCtx *guardrails.MCPCallContext,
 	resp *JSONRPCResponse,
 ) error {
 	if resp == nil || resp.Result == nil {
-		return nil
-	}
-	if h.pipeline != nil && callCtx != nil {
-		_, redactedResult, err := h.pipeline.EvaluatePostMCPCall(ctx, prc, callCtx, resp.Result)
-		if err != nil {
-			return err
-		}
-		resp.Result = redactedResult
-		if h.pipeline.Engine() == nil && h.guardrails != nil && resp.Result != nil {
-			_, redactedLegacy, err := h.guardrails.EvaluateMCPToolResult(ctx, orgID, resp.Result)
-			if err != nil {
-				return err
-			}
-			resp.Result = redactedLegacy
-		}
 		return nil
 	}
 	if h.guardrails != nil {
@@ -706,45 +618,6 @@ func (h *Hub) resolveUpstreamAuth(
 	strat, extraHeaders := h.authResolver.ResolveStrategy(ctx, server, userCred, reqHeaders)
 	authCtx.ExtraHeaders = extraHeaders
 	return reqHeaders, authCtx, strat
-}
-
-func (h *Hub) dispatchWithDuringGuardrails(
-	ctx context.Context,
-	server *domain.MCPServer,
-	strat upstream.Strategy,
-	authCtx *upstream.UpstreamAuthContext,
-	reqBody []byte,
-	reqHeaders http.Header,
-	useGuardrails bool,
-	prc guardrails.PipelineRequestContext,
-	callCtx *guardrails.MCPCallContext,
-) (*JSONRPCResponse, http.Header, error) {
-	dispatchCtx := ctx
-	var duringHandle *guardrails.DuringCallHandle
-	if useGuardrails && h.pipeline != nil && callCtx != nil {
-		var duringErr error
-		dispatchCtx, duringHandle, duringErr = h.pipeline.StartDuringMCPCall(ctx, prc, callCtx)
-		if duringErr != nil {
-			return nil, nil, fmt.Errorf("guardrail blocked tool call: %w", duringErr)
-		}
-		if duringHandle != nil {
-			defer duringHandle.Close()
-		}
-	}
-
-	resp, respHeaders, err := h.dispatcher.Dispatch(dispatchCtx, server, strat, authCtx, reqBody, reqHeaders)
-	if duringHandle != nil {
-		if bErr := duringHandle.Blocked(); bErr != nil {
-			return nil, respHeaders, fmt.Errorf("guardrail blocked tool call: %w", bErr)
-		}
-		if _, wErr := duringHandle.Wait(ctx); wErr != nil {
-			return nil, respHeaders, fmt.Errorf("guardrail blocked tool call: %w", wErr)
-		}
-	}
-	if err != nil {
-		return nil, respHeaders, fmt.Errorf("upstream dispatch error: %w", err)
-	}
-	return resp, respHeaders, nil
 }
 
 func (h *Hub) recordMCPToolSpend(
@@ -1088,30 +961,18 @@ func (h *Hub) dispatchScopedRequest(
 	}
 
 	isGuardedMethod := jsonReq.Method == "resources/read" || jsonReq.Method == "prompts/get"
-	var scopedPRC guardrails.PipelineRequestContext
-	var scopedCallCtx *guardrails.MCPCallContext
-	if isGuardedMethod && (h.pipeline != nil || h.guardrails != nil) {
+	if isGuardedMethod && h.guardrails != nil {
 		var paramsMap map[string]any
 		if len(jsonReq.Params) > 0 {
 			_ = json.Unmarshal(jsonReq.Params, &paramsMap)
 		}
-		if h.pipeline != nil {
-			scopedPRC = buildMCPPipelineRequestContext(ctx, idCtx, fmt.Sprint(jsonReq.ID), nil, reqHeaders)
-			scopedCallCtx = &guardrails.MCPCallContext{
-				ServerID:   server.ID,
-				ServerSlug: server.Slug,
-				ServerURL:  server.EndpointURL,
-				ToolName:   jsonReq.Method,
-				Arguments:  paramsMap,
-			}
-		}
-		if err := h.evaluatePreMCPGuardrails(ctx, orgID, jsonReq.Method, paramsMap, scopedPRC, scopedCallCtx); err != nil {
+		if err := h.evaluatePreMCPGuardrails(ctx, orgID, jsonReq.Method, paramsMap); err != nil {
 			return scopedJSONRPCError(jsonReq.ID, fmt.Sprintf("guardrail blocked %s: %v", jsonReq.Method, err)), nil, nil
 		}
 	}
 
 	_, authCtx, strat := h.resolveUpstreamAuth(ctx, idCtx, orgID, server, nil, reqHeaders)
-	resp, respHeaders, err := h.dispatchWithDuringGuardrails(ctx, server, strat, authCtx, reqBody, reqHeaders, isGuardedMethod, scopedPRC, scopedCallCtx)
+	resp, respHeaders, err := h.dispatcher.Dispatch(ctx, server, strat, authCtx, reqBody, reqHeaders)
 	if h.instruments != nil {
 		status := "ok"
 		if err != nil || (resp != nil && resp.Error != nil) {
@@ -1120,17 +981,14 @@ func (h *Hub) dispatchScopedRequest(
 		h.instruments.RecordMCPRequest(ctx, jsonReq.Method, status)
 	}
 	if err != nil {
-		if respHeaders != nil || strings.HasPrefix(err.Error(), "guardrail blocked tool call:") {
-			return scopedJSONRPCError(jsonReq.ID, fmt.Sprintf("guardrail blocked %s: %s", jsonReq.Method, strings.TrimPrefix(err.Error(), "guardrail blocked tool call: "))), respHeaders, nil
-		}
-		return nil, respHeaders, err
+		return nil, respHeaders, fmt.Errorf("upstream dispatch error: %w", err)
 	}
 	if resp == nil {
 		return nil, respHeaders, nil
 	}
 
 	if isGuardedMethod && resp.Result != nil {
-		if err := h.evaluatePostMCPGuardrails(ctx, orgID, scopedPRC, scopedCallCtx, resp); err != nil {
+		if err := h.evaluatePostMCPGuardrails(ctx, orgID, resp); err != nil {
 			return scopedJSONRPCError(jsonReq.ID, fmt.Sprintf("guardrail result inspection failed: %v", err)), respHeaders, nil
 		}
 	}
@@ -1301,7 +1159,6 @@ func (h *Hub) dispatchToolsetRequest(
 			},
 		}, nil, nil
 	case "tools/list":
-		policies := h.loadToolPolicies(ctx, idCtx)
 		allowedTools := make([]map[string]any, 0, len(toolset.ToolIDs))
 		for _, toolID := range toolset.ToolIDs {
 			tool, err := h.repo.GetMCPTool(ctx, toolID)
@@ -1315,7 +1172,7 @@ func (h *Hub) dispatchToolsetRequest(
 			if h.rbac != nil && h.rbac.AuthorizeMCPServer(idCtx, server.Slug) != nil {
 				continue
 			}
-			if h.authorizeToolCall(ctx, idCtx, server.Slug, tool.Name, policies, false) != nil {
+			if h.authorizeToolCall(ctx, idCtx, server.Slug, tool.Name, false) != nil {
 				continue
 			}
 			inSchema := tool.InputSchema
@@ -1431,7 +1288,6 @@ func (h *Hub) handleVirtualToolsList(ctx context.Context, idCtx *domain.Identity
 		return nil, nil, err
 	}
 
-	policies := h.loadToolPolicies(ctx, idCtx)
 	aggregatedTools := make([]map[string]any, 0)
 	serverOutcomes := make(map[string]string)
 
@@ -1452,7 +1308,7 @@ func (h *Hub) handleVirtualToolsList(ctx context.Context, idCtx *domain.Identity
 		shownCount := 0
 		for _, t := range tools {
 			if t != nil && t.IsActive {
-				if h.authorizeToolCall(ctx, idCtx, s.Slug, t.Name, policies, false) != nil {
+				if h.authorizeToolCall(ctx, idCtx, s.Slug, t.Name, false) != nil {
 					continue
 				}
 				inSchema := t.InputSchema
@@ -1824,66 +1680,6 @@ func (h *Hub) recordAudit(ctx context.Context, idCtx *domain.IdentityContext, ac
 		ResourceID: resourceID,
 		Details:    details,
 	})
-}
-
-func buildMCPPipelineRequestContext(
-	ctx context.Context,
-	idCtx *domain.IdentityContext,
-	reqID string,
-	callerMeta map[string]string,
-	reqHeaders http.Header,
-) guardrails.PipelineRequestContext {
-	prc := guardrails.PipelineRequestContext{
-		RequestID: reqID,
-	}
-	if idCtx != nil {
-		prc.OrgID = idCtx.OrgID
-		prc.TeamID = idCtx.TeamID
-		prc.VirtualKeyID = idCtx.VirtualKeyID
-		prc.EndUserID = idCtx.UserID
-		if role := strings.TrimSpace(string(idCtx.Role)); role != "" {
-			prc.CallerRoles = []string{role}
-		}
-	}
-
-	prc.TraceID = observability.TraceFromContext(ctx).TraceID
-
-	sanitizedHeaders := make(map[string]string)
-	addHeader := func(k, v string) {
-		lk := strings.ToLower(strings.TrimSpace(k))
-		switch lk {
-		case "", "authorization", "x-api-key", "cookie", "proxy-authorization", "x-goroute-end-user-token", "x-end-user-token":
-			return
-		}
-		if (lk == "x-goroute-trace-id" || lk == "x-trace-id") && prc.TraceID == "" {
-			prc.TraceID = strings.TrimSpace(v)
-		}
-		if lk == "x-goroute-tags" && len(prc.Tags) == 0 {
-			for _, part := range strings.Split(v, ",") {
-				if trimmed := strings.TrimSpace(part); trimmed != "" {
-					prc.Tags = append(prc.Tags, trimmed)
-				}
-			}
-		}
-		sanitizedHeaders[k] = v
-	}
-
-	for k, v := range callerMeta {
-		addHeader(k, v)
-	}
-	for k, vals := range reqHeaders {
-		if len(vals) > 0 {
-			addHeader(k, vals[0])
-		}
-	}
-	if len(sanitizedHeaders) > 0 {
-		prc.RequestHeaders = sanitizedHeaders
-	}
-
-	if claims := guardrails.OIDCClaimsFromContext(ctx); len(claims) > 0 {
-		prc.Metadata = map[string]any{"oidc_claims": claims}
-	}
-	return prc
 }
 
 func extractDelegatedBearerFromHeaders(h http.Header) string {

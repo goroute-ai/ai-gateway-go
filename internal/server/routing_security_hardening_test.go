@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -305,150 +304,6 @@ func TestRoutingHardening_FallbackBudgetGateRejectsCostlierFallbackHop(t *testin
 	assert.Equal(t, int32(0), fallbackHits.Load(), "costlier fallback upstream must never be invoked")
 }
 
-func TestRoutingHardening_GuardrailActionRoute_PinningRBACResponsesAndThrottledAudit(t *testing.T) {
-	now := time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
-	h := newRoutingHarness(t, nil)
-	h.gw.SetNowFunc(func() time.Time { return now })
-
-	var publicHits atomic.Int32
-	publicSrv := mockOpenAIChatServer(t, "public-cloud", &publicHits)
-	defer publicSrv.Close()
-
-	var privateHits atomic.Int32
-	var lastPrivateBody string
-	privateSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		privateHits.Add(1)
-		b, _ := io.ReadAll(r.Body)
-		lastPrivateBody = string(b)
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"id":"chatcmpl-priv","object":"chat.completion","created":1700000000,"model":"private-local","choices":[{"index":0,"message":{"role":"assistant","content":"safe local reply"},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":4,"total_tokens":12}}`)
-	}))
-	defer privateSrv.Close()
-
-	credPublic := h.createOpenAICredential("pub-cred", publicSrv.URL)
-	credPrivate := h.createOpenAICredential("priv-cred", privateSrv.URL)
-	gmPub := &domain.GlobalModel{ID: "openai/public-cloud", Provider: domain.ProviderOpenAI, ModelName: "public-cloud", LifecycleStatus: domain.ModelStatusActive, SupportsInference: true, MaxInputTokens: 128000, MaxOutputTokens: 4096}
-	gmPriv := &domain.GlobalModel{ID: "openai/private-local", Provider: domain.ProviderOpenAI, ModelName: "private-local", LifecycleStatus: domain.ModelStatusActive, SupportsInference: true, MaxInputTokens: 128000, MaxOutputTokens: 4096}
-	h.registerModelAndDep(&domain.ModelGroup{Alias: "public-cloud", RoutingStrategy: domain.StrategyWeightedShuffle}, gmPub, credPublic, &domain.Deployment{DeploymentName: "dep-pub", Weight: 100})
-	h.registerModelAndDep(&domain.ModelGroup{Alias: "private-local", RoutingStrategy: domain.StrategyWeightedShuffle}, gmPriv, credPrivate, &domain.Deployment{DeploymentName: "dep-priv", Weight: 100})
-
-	// Configure guardrail policy via admin API: PII -> route to "private-local".
-	polBody, _ := json.Marshal(map[string]any{
-		"enable_pii_detection":   true,
-		"pii_action":             "route",
-		"sensitive_route_target": "private-local",
-	})
-	polReq := httptest.NewRequest(http.MethodPost, "/admin/v1/organizations/"+h.org.ID+"/guardrails", bytes.NewReader(polBody))
-	polReq.Header.Set("Authorization", "Bearer "+h.cfg.Auth.MasterAdminKey)
-	polReq.Header.Set("Content-Type", "application/json")
-	polRec := httptest.NewRecorder()
-	h.gw.Handler().ServeHTTP(polRec, polReq)
-	require.Equal(t, http.StatusOK, polRec.Code, polRec.Body.String())
-
-	// Turn 1: Contains PII + session header -> re-routed to private-local without redacting PII!
-	rec1 := h.doRequest(http.MethodPost, "/v1/chat/completions", map[string]string{
-		"X-Gateway-Session-Id": "sess-pii-1",
-	}, map[string]any{
-		"model":    "public-cloud",
-		"messages": []map[string]any{{"role": "user", "content": "Customer email is alice@example.com"}},
-	})
-	require.Equal(t, http.StatusOK, rec1.Code, rec1.Body.String())
-	assert.Equal(t, "route", rec1.Header().Get("X-Gateway-Guardrail-Action"))
-	assert.Equal(t, "private-local", rec1.Header().Get("X-Gateway-Sensitive-Route"))
-	assert.Equal(t, int32(0), publicHits.Load())
-	assert.Equal(t, int32(1), privateHits.Load())
-	assert.Contains(t, lastPrivateBody, "alice@example.com")
-
-	// Turn 2: Same session without PII stays pinned to private-local!
-	rec2 := h.doRequest(http.MethodPost, "/v1/chat/completions", map[string]string{
-		"X-Gateway-Session-Id": "sess-pii-1",
-	}, map[string]any{
-		"model":    "public-cloud",
-		"messages": []map[string]any{{"role": "user", "content": "Summarize that customer note."}},
-	})
-	require.Equal(t, http.StatusOK, rec2.Code, rec2.Body.String())
-	assert.Equal(t, "private-local", rec2.Header().Get("X-Gateway-Sensitive-Route"))
-	assert.Equal(t, int32(2), privateHits.Load())
-	assert.Equal(t, int32(0), publicHits.Load())
-
-	// Also verify /v1/responses applies guardrail routing & charges routed model.
-	respRec := h.doRequest(http.MethodPost, "/v1/responses", nil, map[string]any{
-		"model": "public-cloud",
-		"input": "Send receipt to bob@example.com",
-	})
-	require.Equal(t, http.StatusOK, respRec.Code, respRec.Body.String())
-	assert.Equal(t, "private-local", respRec.Header().Get("X-Gateway-Sensitive-Route"))
-	assert.Equal(t, int32(3), privateHits.Load())
-
-	// Throttled audit log verification: bursts inside 60s suppress repeated rows; next event after 60s reports suppressed_count!
-	for i := 0; i < 3; i++ {
-		r := h.doRequest(http.MethodPost, "/v1/chat/completions", nil, map[string]any{
-			"model":    "public-cloud",
-			"messages": []map[string]any{{"role": "user", "content": "Email carol@example.com"}},
-		})
-		require.Equal(t, http.StatusOK, r.Code)
-	}
-	logs1, err := h.repo.ListAuditLogs(h.ctx, h.org.ID, 50)
-	require.NoError(t, err)
-	routedCount := 0
-	for _, l := range logs1 {
-		if l.Action == "guardrail.routed" {
-			routedCount++
-		}
-	}
-	assert.Equal(t, 1, routedCount, "expected only 1 guardrail.routed audit log within 60s window")
-
-	// Advance clock by 65s and send one more PII request -> new audit log emits suppressed_count=5.
-	now = now.Add(65 * time.Second)
-	rAfter := h.doRequest(http.MethodPost, "/v1/chat/completions", nil, map[string]any{
-		"model":    "public-cloud",
-		"messages": []map[string]any{{"role": "user", "content": "Email dave@example.com"}},
-	})
-	require.Equal(t, http.StatusOK, rAfter.Code)
-	logs2, err := h.repo.ListAuditLogs(h.ctx, h.org.ID, 50)
-	require.NoError(t, err)
-	var latestSuppressed int
-	routedCount = 0
-	for _, l := range logs2 {
-		if l.Action == "guardrail.routed" {
-			routedCount++
-			if v, ok := l.Details["suppressed_count"].(int); ok && v > latestSuppressed {
-				latestSuppressed = v
-			}
-		}
-	}
-	assert.Equal(t, 2, routedCount)
-	assert.Equal(t, 5, latestSuppressed)
-
-	// RBAC check: key not permitted to access "private-local" gets 403 and privateSrv receives no call.
-	rbacKeyBody, _ := json.Marshal(map[string]any{
-		"org_id":         h.org.ID,
-		"name":           "public-only-key",
-		"allowed_models": []string{"public-cloud"},
-	})
-	rkReq := httptest.NewRequest(http.MethodPost, "/admin/v1/keys", bytes.NewReader(rbacKeyBody))
-	rkReq.Header.Set("Authorization", "Bearer "+h.cfg.Auth.MasterAdminKey)
-	rkReq.Header.Set("Content-Type", "application/json")
-	rkRec := httptest.NewRecorder()
-	h.gw.Handler().ServeHTTP(rkRec, rkReq)
-	require.Equal(t, http.StatusCreated, rkRec.Code)
-	var pubOnlyKey domain.VirtualKey
-	require.NoError(t, json.Unmarshal(rkRec.Body.Bytes(), &pubOnlyKey))
-
-	privCallsBefore := privateHits.Load()
-	blockedReqBody, _ := json.Marshal(map[string]any{
-		"model":    "public-cloud",
-		"messages": []map[string]any{{"role": "user", "content": "Contact eve@example.com"}},
-	})
-	blockedReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(blockedReqBody))
-	blockedReq.Header.Set("Authorization", "Bearer "+pubOnlyKey.RawKey)
-	blockedReq.Header.Set("Content-Type", "application/json")
-	blockedRec := httptest.NewRecorder()
-	h.gw.Handler().ServeHTTP(blockedRec, blockedReq)
-	assert.Equal(t, http.StatusForbidden, blockedRec.Code, blockedRec.Body.String())
-	assert.Equal(t, privCallsBefore, privateHits.Load())
-}
-
 func TestRoutingHardening_AdminValidationAndUpdateEndpoints(t *testing.T) {
 	h := newRoutingHarness(t, nil)
 
@@ -462,38 +317,45 @@ func TestRoutingHardening_AdminValidationAndUpdateEndpoints(t *testing.T) {
 		return rec
 	}
 
-	// Guardrail policy rejects route action without sensitive_route_target and unknown actions.
+	// Guardrail policy rejects unknown actions and invalid regex blocked_patterns.
 	rec := adminJSON(http.MethodPost, "/admin/v1/organizations/"+h.org.ID+"/guardrails", map[string]any{
 		"enable_pii_detection": true,
 		"pii_action":           "route",
 	})
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 
-	recBadAction := adminJSON(http.MethodPost, "/admin/v1/organizations/"+h.org.ID+"/guardrails", map[string]any{
-		"enable_prompt_injection": true,
-		"prompt_injection_action": "route",
+	recBadRegex := adminJSON(http.MethodPost, "/admin/v1/organizations/"+h.org.ID+"/guardrails", map[string]any{
+		"blocked_patterns": []string{"[unclosed-regex"},
 	})
-	assert.Equal(t, http.StatusBadRequest, recBadAction.Code)
+	assert.Equal(t, http.StatusBadRequest, recBadRegex.Code)
 
-	// Guardrail definition create/update/patch preserves sensitive_route_target.
+	// Guardrail definition create and update validates provider and persists enabled/timeout_ms.
 	defCreate := adminJSON(http.MethodPost, "/admin/v1/organizations/"+h.org.ID+"/guardrail-definitions", map[string]any{
-		"name":                   "pii-router",
-		"provider":               "local",
-		"sensitive_route_target": "private-local",
+		"name":       "webhook-guard",
+		"provider":   "generic_http",
+		"enabled":    true,
+		"timeout_ms": 2000,
+		"config":     map[string]any{"url": "https://guard.example.com/eval"},
 	})
 	require.Equal(t, http.StatusCreated, defCreate.Code, defCreate.Body.String())
 	var createdDef struct {
-		ID                   string `json:"id"`
-		SensitiveRouteTarget string `json:"sensitive_route_target"`
+		ID        string `json:"id"`
+		Enabled   bool   `json:"enabled"`
+		TimeoutMs int    `json:"timeout_ms"`
 	}
 	require.NoError(t, json.Unmarshal(defCreate.Body.Bytes(), &createdDef))
-	assert.Equal(t, "private-local", createdDef.SensitiveRouteTarget)
+	assert.True(t, createdDef.Enabled)
+	assert.Equal(t, 2000, createdDef.TimeoutMs)
 
-	defPatch := adminJSON(http.MethodPatch, "/admin/v1/guardrail-definitions/"+createdDef.ID, map[string]any{
-		"sensitive_route_target": "sovereign-vllm",
+	defUpdate := adminJSON(http.MethodPut, "/admin/v1/guardrail-definitions/"+createdDef.ID, map[string]any{
+		"name":       "webhook-guard",
+		"provider":   "generic_http",
+		"enabled":    false,
+		"timeout_ms": 3500,
+		"config":     map[string]any{"url": "https://guard.example.com/eval"},
 	})
-	require.Equal(t, http.StatusOK, defPatch.Code, defPatch.Body.String())
-	assert.Contains(t, defPatch.Body.String(), "sovereign-vllm")
+	require.Equal(t, http.StatusOK, defUpdate.Code, defUpdate.Body.String())
+	assert.Contains(t, defUpdate.Body.String(), `"timeout_ms":3500`)
 
 	// Team & key create/update reject negative min_priority_rank and persist positive values.
 	badTeam := adminJSON(http.MethodPost, "/admin/v1/teams", map[string]any{
@@ -534,60 +396,41 @@ func TestRoutingHardening_AdminValidationAndUpdateEndpoints(t *testing.T) {
 	assert.Contains(t, updKey.Body.String(), `"fast-*"`)
 }
 
-func TestRoutingHardening_NonChatGuardrailActionRouteAndCredentialAutoResolve(t *testing.T) {
+func TestRoutingHardening_NonChatGuardrailPIIRedactionAndCredentialAutoResolve(t *testing.T) {
 	h := newRoutingHarness(t, nil)
 
-	var privateHits, publicHits atomic.Int32
-	privateSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		privateHits.Add(1)
-		w.Header().Set("Content-Type", "application/json")
-		if strings.Contains(r.URL.Path, "embeddings") {
-			_, _ = w.Write([]byte(`{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2]}],"model":"private-local","usage":{"prompt_tokens":3,"total_tokens":3}}`))
-			return
-		}
-		_, _ = w.Write([]byte(`{"id":"c1","object":"text_completion","model":"private-local","choices":[{"text":"safe-ok","index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`))
-	}))
-	defer privateSrv.Close()
-
+	var publicHits atomic.Int32
 	publicSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		publicHits.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.9]}],"model":"public-cloud","usage":{"prompt_tokens":3,"total_tokens":3}}`))
+		if strings.Contains(r.URL.Path, "embeddings") {
+			_, _ = w.Write([]byte(`{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.9]}],"model":"public-cloud","usage":{"prompt_tokens":3,"total_tokens":3}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"c1","object":"text_completion","model":"public-cloud","choices":[{"text":"safe-ok","index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`))
 	}))
 	defer publicSrv.Close()
 
-	privCred := h.createOpenAICredential("priv", privateSrv.URL)
 	pubCred := h.createOpenAICredential("pub", publicSrv.URL)
+	_ = h.createOpenAICredential("pub-extra", publicSrv.URL)
 
-	privMG := &domain.ModelGroup{ID: "mg-priv-nc", OrgID: h.org.ID, Alias: "private-local", RoutingStrategy: domain.StrategyWeightedShuffle, IsActive: true}
 	pubMG := &domain.ModelGroup{ID: "mg-pub-nc", OrgID: h.org.ID, Alias: "public-cloud", RoutingStrategy: domain.StrategyWeightedShuffle, IsActive: true}
-	require.NoError(t, h.repo.CreateModelGroup(h.ctx, privMG))
 	require.NoError(t, h.repo.CreateModelGroup(h.ctx, pubMG))
 
-	mPriv := &domain.GlobalModel{
-		ID: "openai/private-local", Provider: domain.ProviderOpenAI, ModelName: "private-local",
-		SupportsInference: true, Capabilities: domain.ModelCapabilities{Embeddings: domain.CapabilitySupported, Streaming: domain.CapabilitySupported},
-	}
 	mPub := &domain.GlobalModel{
 		ID: "openai/public-cloud", Provider: domain.ProviderOpenAI, ModelName: "public-cloud",
 		SupportsInference: true, Capabilities: domain.ModelCapabilities{Embeddings: domain.CapabilitySupported, Streaming: domain.CapabilitySupported},
 	}
-	require.NoError(t, h.repo.UpsertGlobalModel(h.ctx, mPriv))
 	require.NoError(t, h.repo.UpsertGlobalModel(h.ctx, mPub))
 
-	require.NoError(t, h.repo.CreateDeployment(h.ctx, &domain.Deployment{
-		ID: "dep-priv-nc", ModelGroupID: privMG.ID, GlobalModelID: mPriv.ID, CredentialID: privCred.ID,
-		Weight: 100, Priority: 1, Status: domain.DeploymentStatusActive, GlobalModel: mPriv,
-	}))
 	require.NoError(t, h.repo.CreateDeployment(h.ctx, &domain.Deployment{
 		ID: "dep-pub-nc", ModelGroupID: pubMG.ID, GlobalModelID: mPub.ID, CredentialID: pubCred.ID,
 		Weight: 100, Priority: 1, Status: domain.DeploymentStatusActive, GlobalModel: mPub,
 	}))
 
 	polBody, _ := json.Marshal(map[string]any{
-		"enable_pii_detection":   true,
-		"pii_action":             "route",
-		"sensitive_route_target": "private-local",
+		"enable_pii_detection": true,
+		"pii_action":           "redact",
 	})
 	polReq := httptest.NewRequest(http.MethodPost, "/admin/v1/organizations/"+h.org.ID+"/guardrails", bytes.NewReader(polBody))
 	polReq.Header.Set("Authorization", "Bearer "+h.cfg.Auth.MasterAdminKey)
@@ -596,34 +439,28 @@ func TestRoutingHardening_NonChatGuardrailActionRouteAndCredentialAutoResolve(t 
 	h.gw.Handler().ServeHTTP(polRec, polReq)
 	require.Equal(t, http.StatusOK, polRec.Code)
 
-	// 1. /v1/embeddings with PII routes to private-local and emits routing headers.
+	// 1. /v1/embeddings with PII redacts input and succeeds.
 	embReq := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(`{"model":"public-cloud","input":"Contact alice@example.com for details"}`))
 	embReq.Header.Set("Authorization", "Bearer "+h.rawKey)
 	embReq.Header.Set("Content-Type", "application/json")
 	embRec := httptest.NewRecorder()
 	h.gw.Handler().ServeHTTP(embRec, embReq)
 	require.Equal(t, http.StatusOK, embRec.Code, embRec.Body.String())
-	assert.Equal(t, "route", embRec.Header().Get("X-Gateway-Guardrail-Action"))
-	assert.Equal(t, "private-local", embRec.Header().Get("X-Gateway-Sensitive-Route"))
-	assert.Equal(t, int32(1), privateHits.Load())
-	assert.Equal(t, int32(0), publicHits.Load())
+	assert.Equal(t, int32(1), publicHits.Load())
 
-	// 2. /v1/completions with PII also routes to private-local and sets route headers.
+	// 2. /v1/completions with PII redacts input and succeeds.
 	cmpReq := httptest.NewRequest(http.MethodPost, "/v1/completions", strings.NewReader(`{"model":"public-cloud","prompt":"Contact bob@example.com"}`))
 	cmpReq.Header.Set("Authorization", "Bearer "+h.rawKey)
 	cmpReq.Header.Set("Content-Type", "application/json")
 	cmpRec := httptest.NewRecorder()
 	h.gw.Handler().ServeHTTP(cmpRec, cmpReq)
 	require.Equal(t, http.StatusOK, cmpRec.Code, cmpRec.Body.String())
-	assert.Equal(t, "route", cmpRec.Header().Get("X-Gateway-Guardrail-Action"))
-	assert.Equal(t, "private-local", cmpRec.Header().Get("X-Gateway-Sensitive-Route"))
-	assert.Equal(t, int32(2), privateHits.Load())
-	assert.Equal(t, int32(0), publicHits.Load())
+	assert.Equal(t, int32(2), publicHits.Load())
 
 	// 3. Deployment creation: multiple OpenAI credentials -> 400 ambiguous_provider_credential when credential_id omitted.
 	ambBody, _ := json.Marshal(map[string]any{
-		"model_group_id":  privMG.ID,
-		"global_model_id": mPriv.ID,
+		"model_group_id":  pubMG.ID,
+		"global_model_id": mPub.ID,
 		"deployment_name": "ambiguous-dep",
 	})
 	ambReq := httptest.NewRequest(http.MethodPost, "/admin/v1/deployments", bytes.NewReader(ambBody))
@@ -654,7 +491,7 @@ func TestRoutingHardening_NonChatGuardrailActionRouteAndCredentialAutoResolve(t 
 	require.NoError(t, h.repo.UpsertGlobalModel(h.ctx, mAnt))
 
 	autoDepBody, _ := json.Marshal(map[string]any{
-		"model_group_id":  privMG.ID,
+		"model_group_id":  pubMG.ID,
 		"global_model_id": mAnt.ID,
 		"deployment_name": "auto-resolved-ant",
 	})
@@ -736,17 +573,10 @@ func issuedIDFromOrg(t *testing.T, h *routingTestHarness) string {
 	return keys[0].ID
 }
 
-func TestBatchAndRealtime_GuardrailActionRouteAndRoutingHints(t *testing.T) {
+func TestBatchAndRealtime_GuardrailPIIRedactionAndRoutingHints(t *testing.T) {
 	h := newRoutingHarness(t, nil)
 
-	var privateHits, publicHits atomic.Int32
-	privateSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		privateHits.Add(1)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"chat-priv","object":"chat.completion","model":"private-local","choices":[{"index":0,"message":{"role":"assistant","content":"private-ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}`))
-	}))
-	defer privateSrv.Close()
-
+	var publicHits atomic.Int32
 	publicSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		publicHits.Add(1)
 		w.Header().Set("Content-Type", "application/json")
@@ -754,47 +584,34 @@ func TestBatchAndRealtime_GuardrailActionRouteAndRoutingHints(t *testing.T) {
 	}))
 	defer publicSrv.Close()
 
-	privCred := h.createOpenAICredential("priv-br", privateSrv.URL)
 	pubCred := h.createOpenAICredential("pub-br", publicSrv.URL)
 
-	privMG := &domain.ModelGroup{ID: "mg-priv-br", OrgID: h.org.ID, Alias: "private-local", RoutingStrategy: domain.StrategyWeightedShuffle, IsActive: true}
 	pubMG := &domain.ModelGroup{ID: "mg-pub-br", OrgID: h.org.ID, Alias: "public-cloud", RoutingStrategy: domain.StrategyWeightedShuffle, IsActive: true}
-	require.NoError(t, h.repo.CreateModelGroup(h.ctx, privMG))
 	require.NoError(t, h.repo.CreateModelGroup(h.ctx, pubMG))
-	mPriv := &domain.GlobalModel{
-		ID: "openai/priv-br", Provider: domain.ProviderOpenAI, ModelName: "gpt-4o-mini",
-		SupportsInference: true, Capabilities: domain.ModelCapabilities{Streaming: domain.CapabilitySupported},
-	}
 	mPub := &domain.GlobalModel{
 		ID: "openai/pub-br", Provider: domain.ProviderOpenAI, ModelName: "gpt-4o-mini",
 		SupportsInference: true, Capabilities: domain.ModelCapabilities{Streaming: domain.CapabilitySupported},
 	}
-	require.NoError(t, h.repo.UpsertGlobalModel(h.ctx, mPriv))
 	require.NoError(t, h.repo.UpsertGlobalModel(h.ctx, mPub))
-	require.NoError(t, h.repo.CreateDeployment(h.ctx, &domain.Deployment{
-		ID: "dep-priv-br", ModelGroupID: privMG.ID, GlobalModelID: mPriv.ID, CredentialID: privCred.ID,
-		Weight: 100, Priority: 1, Status: domain.DeploymentStatusActive, GlobalModel: mPriv,
-		Tags: []string{"tier:public"},
-	}))
 	require.NoError(t, h.repo.CreateDeployment(h.ctx, &domain.Deployment{
 		ID: "dep-pub-br", ModelGroupID: pubMG.ID, GlobalModelID: mPub.ID, CredentialID: pubCred.ID,
 		Weight: 100, Priority: 1, Status: domain.DeploymentStatusActive, GlobalModel: mPub,
 		Tags: []string{"tier:public"},
 	}))
 
-	polReq := httptest.NewRequest(http.MethodPost, "/admin/v1/organizations/"+h.org.ID+"/guardrails", strings.NewReader(`{"enable_pii_detection":true,"pii_action":"route","sensitive_route_target":"private-local"}`))
+	polReq := httptest.NewRequest(http.MethodPost, "/admin/v1/organizations/"+h.org.ID+"/guardrails", strings.NewReader(`{"enable_pii_detection":true,"pii_action":"redact"}`))
 	polReq.Header.Set("Authorization", "Bearer "+h.cfg.Auth.MasterAdminKey)
 	polReq.Header.Set("Content-Type", "application/json")
 	polRec := httptest.NewRecorder()
 	h.gw.Handler().ServeHTTP(polRec, polReq)
 	require.Equal(t, http.StatusOK, polRec.Code, polRec.Body.String())
 
-	// Issue a restricted key allowed to use tier:public and both models.
+	// Issue a restricted key allowed to use tier:public and public-cloud.
 	keyBody, _ := json.Marshal(map[string]any{
 		"org_id":               h.org.ID,
 		"name":                 "batch-rt-key",
 		"allowed_routing_tags": []string{"tier:public"},
-		"allowed_models":       []string{"public-cloud", "private-local"},
+		"allowed_models":       []string{"public-cloud"},
 	})
 	kReq := httptest.NewRequest(http.MethodPost, "/admin/v1/keys", bytes.NewReader(keyBody))
 	kReq.Header.Set("Authorization", "Bearer "+h.cfg.Auth.MasterAdminKey)
@@ -807,7 +624,7 @@ func TestBatchAndRealtime_GuardrailActionRouteAndRoutingHints(t *testing.T) {
 
 	// 1. Batch upload + execution:
 	// - b1: clean public-cloud -> publicSrv
-	// - b2: PII -> GuardrailActionRoute -> privateSrv
+	// - b2: PII redacted -> publicSrv
 	// - b3: disallowed routing tag -> failed with routing_tag_not_allowed
 	jsonl := strings.Join([]string{
 		`{"custom_id":"b1","method":"POST","url":"/v1/chat/completions","body":{"model":"public-cloud","messages":[{"role":"user","content":"hello public"}]}}`,
@@ -866,13 +683,12 @@ func TestBatchAndRealtime_GuardrailActionRouteAndRoutingHints(t *testing.T) {
 	outBody := outRec.Body.String()
 	assert.Contains(t, outBody, `"custom_id":"b1"`)
 	assert.Contains(t, outBody, `"custom_id":"b2"`)
-	assert.Contains(t, outBody, `"private-ok"`)
+	assert.Contains(t, outBody, `"public-ok"`)
 	assert.Contains(t, outBody, `"custom_id":"b3"`)
 	assert.Contains(t, outBody, `"routing_tag_not_allowed"`)
-	assert.Equal(t, int32(1), publicHits.Load())
-	assert.Equal(t, int32(1), privateHits.Load())
+	assert.Equal(t, int32(2), publicHits.Load())
 
-	// 2. Realtime WebSocket: upgrade tag rejection + live PII GuardrailActionRoute turn.
+	// 2. Realtime WebSocket: upgrade tag rejection + live PII redaction turn.
 	ts := httptest.NewServer(h.gw.Handler())
 	defer ts.Close()
 	wsBase := "ws" + strings.TrimPrefix(ts.URL, "http")
@@ -905,7 +721,7 @@ func TestBatchAndRealtime_GuardrailActionRouteAndRoutingHints(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(errFrame), `"routing_tag_not_allowed"`)
 
-	// Normal response.create with PII triggers GuardrailActionRoute -> privateSrv!
+	// Normal response.create with PII redacts and succeeds against publicSrv.
 	require.NoError(t, conn.Write(h.ctx, websocket.MessageText, []byte(`{"type":"response.create"}`)))
 	var seenDone bool
 	for i := 0; i < 8; i++ {
@@ -913,81 +729,11 @@ func TestBatchAndRealtime_GuardrailActionRouteAndRoutingHints(t *testing.T) {
 		require.NoError(t, rErr)
 		require.NotContains(t, string(frame), `"type":"error"`, "unexpected realtime error frame: %s", string(frame))
 		if strings.Contains(string(frame), `"type":"response.done"`) {
-			assert.Contains(t, string(frame), "private-ok")
+			assert.Contains(t, string(frame), "public-ok")
 			seenDone = true
 			break
 		}
 	}
-	assert.True(t, seenDone, "expected realtime response.done from routed private-local upstream")
-	assert.Equal(t, int32(2), privateHits.Load())
-}
-
-func TestEmbeddings_SinglePassBatchedGuardrailAudit(t *testing.T) {
-	h := newRoutingHarness(t, nil)
-	var embedHits atomic.Int32
-	openaiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		embedHits.Add(1)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2]},{"object":"embedding","index":1,"embedding":[0.3,0.4]}],"model":"text-embedding-3-small","usage":{"prompt_tokens":6,"total_tokens":6}}`))
-	}))
-	defer openaiSrv.Close()
-
-	require.NoError(t, h.repo.SetOrgProviderSubscription(h.ctx, &domain.OrgProviderSubscription{
-		OrgID: h.org.ID, Provider: domain.ProviderOpenAI, IsEnabled: true,
-	}))
-	credB, _ := json.Marshal(map[string]any{
-		"org_id": h.org.ID, "provider": "openai", "name": "openai-emb",
-		"base_url": openaiSrv.URL, "api_key": "sk-openai-key",
-	})
-	cReq := httptest.NewRequest(http.MethodPost, "/admin/v1/credentials", bytes.NewReader(credB))
-	cReq.Header.Set("Authorization", "Bearer "+h.cfg.Auth.MasterAdminKey)
-	cReq.Header.Set("Content-Type", "application/json")
-	cRec := httptest.NewRecorder()
-	h.gw.Handler().ServeHTTP(cRec, cReq)
-	require.Equal(t, http.StatusCreated, cRec.Code, cRec.Body.String())
-	var cred domain.ProviderCredential
-	require.NoError(t, json.Unmarshal(cRec.Body.Bytes(), &cred))
-
-	privMG := &domain.ModelGroup{ID: "mg-emb-priv", OrgID: h.org.ID, Alias: "private-embed", RoutingStrategy: domain.StrategyWeightedShuffle, IsActive: true}
-	pubMG := &domain.ModelGroup{ID: "mg-emb-pub", OrgID: h.org.ID, Alias: "public-embed", RoutingStrategy: domain.StrategyWeightedShuffle, IsActive: true}
-	require.NoError(t, h.repo.CreateModelGroup(h.ctx, privMG))
-	require.NoError(t, h.repo.CreateModelGroup(h.ctx, pubMG))
-	gm := &domain.GlobalModel{
-		ID: "openai/text-embedding-3-small", Provider: domain.ProviderOpenAI, ModelName: "text-embedding-3-small",
-		SupportsInference: true, Capabilities: domain.ModelCapabilities{Embeddings: domain.CapabilitySupported},
-	}
-	require.NoError(t, h.repo.UpsertGlobalModel(h.ctx, gm))
-	require.NoError(t, h.repo.CreateDeployment(h.ctx, &domain.Deployment{
-		ID: "dep-emb-priv", ModelGroupID: privMG.ID, GlobalModelID: gm.ID, CredentialID: cred.ID, Weight: 100, Priority: 1, Status: domain.DeploymentStatusActive, GlobalModel: gm,
-	}))
-	require.NoError(t, h.repo.CreateDeployment(h.ctx, &domain.Deployment{
-		ID: "dep-emb-pub", ModelGroupID: pubMG.ID, GlobalModelID: gm.ID, CredentialID: cred.ID, Weight: 100, Priority: 1, Status: domain.DeploymentStatusActive, GlobalModel: gm,
-	}))
-
-	polReq := httptest.NewRequest(http.MethodPost, "/admin/v1/organizations/"+h.org.ID+"/guardrails", strings.NewReader(`{"enable_pii_detection":true,"pii_action":"route","sensitive_route_target":"private-embed"}`))
-	polReq.Header.Set("Authorization", "Bearer "+h.cfg.Auth.MasterAdminKey)
-	polReq.Header.Set("Content-Type", "application/json")
-	polRec := httptest.NewRecorder()
-	h.gw.Handler().ServeHTTP(polRec, polReq)
-	require.Equal(t, http.StatusOK, polRec.Code, polRec.Body.String())
-
-	reqBody := `{"model":"public-embed","input":["find alice@example.com","doc with bob@example.com and carol@example.com"]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(reqBody))
-	req.Header.Set("Authorization", "Bearer "+h.rawKey)
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	h.gw.Handler().ServeHTTP(rec, req)
-	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-	assert.Equal(t, "private-embed", rec.Header().Get("X-Gateway-Sensitive-Route"))
-	assert.Equal(t, int32(1), embedHits.Load())
-
-	logs, err := h.repo.ListAuditLogs(h.ctx, h.org.ID, 50)
-	require.NoError(t, err)
-	routeAudits := 0
-	for _, lg := range logs {
-		if lg != nil && lg.Action == "guardrail.routed" && lg.Resource == "embeddings" {
-			routeAudits++
-		}
-	}
-	assert.Equal(t, 1, routeAudits, "multi-input /v1/embeddings must emit exactly one guardrail.routed audit log")
+	assert.True(t, seenDone, "expected realtime response.done from public-cloud upstream")
+	assert.Equal(t, int32(3), publicHits.Load())
 }

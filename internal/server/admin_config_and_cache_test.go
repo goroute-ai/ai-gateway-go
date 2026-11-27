@@ -18,10 +18,8 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
-	"github.com/goroute-ai/ai-gateway-go/internal/guardrails"
 	"github.com/goroute-ai/ai-gateway-go/internal/logger"
 	"github.com/goroute-ai/ai-gateway-go/internal/observability"
-	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
 	"github.com/goroute-ai/ai-gateway-go/internal/server"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
@@ -38,12 +36,13 @@ func TestAdminGetConfigRedactsSecrets(t *testing.T) {
 	cfg.Cache.RedisPass = "super-cache-redis-password"
 	cfg.Security.Network.OutboundSSRF.EgressProxyURL = "http://proxyuser:proxy-pass-secret@proxy.internal:3128"
 	cfg.Tracing.Headers = map[string]string{"Authorization": "Bearer otlp-secret"}
-	cfg.Guardrails.Scanners = []config.GuardrailScannerConfig{
+	cfg.Guardrails.Definitions = []config.GuardrailDefinitionConfig{
 		{
-			Name:      "scanner-1",
-			URL:       "https://user:scanner-url-pass@scanner.example.com/scan",
+			Name:      "webhook-1",
+			Provider:  "generic_http",
 			TimeoutMs: 1500,
-			Headers:   map[string]string{"X-API-Key": "scanner-header-secret"},
+			Config:    map[string]any{"url": "https://user:scanner-url-pass@scanner.example.com/scan"},
+			Secrets:   map[string]any{"bearer_token": "scanner-header-secret"},
 		},
 	}
 	cfg.ModelList = []config.ModelListEntry{
@@ -407,90 +406,6 @@ func TestReadyzCacheStatusDegradedAndOK(t *testing.T) {
 	_ = json.Unmarshal(recDeg.Body.Bytes(), &bodyDeg)
 	if bodyDeg["status"] != "ready" || bodyDeg["cache_status"] != "degraded" {
 		t.Fatalf("expected status=ready cache_status=degraded, got %v", bodyDeg)
-	}
-}
-
-func TestHTTPGuardrailScanner(t *testing.T) {
-	scannerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("X-Scanner-Token") != "resolved-secret" {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		var payload struct {
-			Content string `json:"content"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&payload)
-		w.Header().Set("Content-Type", "application/json")
-		if strings.Contains(payload.Content, "forbidden") {
-			_, _ = w.Write([]byte(`{"decision":"block","violations":["external_policy_violation"]}`))
-			return
-		}
-		_, _ = w.Write([]byte(`{"decision":"allow"}`))
-	}))
-	defer scannerSrv.Close()
-
-	t.Setenv("TEST_SCANNER_TOKEN", "resolved-secret")
-
-	ssrfPolicy, err := network.NewPolicy(config.OutboundSSRFConfig{
-		AllowPrivateNetworks: true,
-		AllowInsecureHTTP:    true,
-	})
-	if err != nil {
-		t.Fatalf("network.NewPolicy: %v", err)
-	}
-
-	_, failClosed, scanners := server.NewHTTPGuardrailScanners(config.GuardrailsConfig{
-		Scanners: []config.GuardrailScannerConfig{
-			{
-				Name:      "ext-1",
-				URL:       scannerSrv.URL,
-				TimeoutMs: 1000,
-				FailOpen:  false,
-				Headers:   map[string]string{"X-Scanner-Token": "os.environ/TEST_SCANNER_TOKEN"},
-			},
-		},
-	}, ssrfPolicy)
-	if !failClosed || len(scanners) != 1 {
-		t.Fatalf("expected failClosed=true and 1 scanner, got failClosed=%v len=%d", failClosed, len(scanners))
-	}
-
-	res, err := scanners[0].Scan(context.Background(), guardrails.ScanRequest{
-		OrgID:     "org_1",
-		Direction: guardrails.ScanInput,
-		Content:   "safe prompt",
-	})
-	if err != nil || res.Decision != guardrails.ScannerDecisionAllow {
-		t.Fatalf("expected allow, got res=%+v err=%v", res, err)
-	}
-
-	res, err = scanners[0].Scan(context.Background(), guardrails.ScanRequest{
-		OrgID:     "org_1",
-		Direction: guardrails.ScanInput,
-		Content:   "this is forbidden content",
-	})
-	if err != nil || res.Decision != guardrails.ScannerDecisionBlock || len(res.Violations) != 1 {
-		t.Fatalf("expected block with violation, got res=%+v err=%v", res, err)
-	}
-
-	// FailOpen=true should allow on HTTP error; FailOpen=false should return error.
-	errSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "boom", http.StatusInternalServerError)
-	}))
-	defer errSrv.Close()
-
-	_, _, failOpenScanners := server.NewHTTPGuardrailScanners(config.GuardrailsConfig{
-		Scanners: []config.GuardrailScannerConfig{
-			{Name: "open", URL: errSrv.URL, FailOpen: true},
-			{Name: "closed", URL: errSrv.URL, FailOpen: false},
-		},
-	}, ssrfPolicy)
-
-	openRes, openErr := failOpenScanners[0].Scan(context.Background(), guardrails.ScanRequest{OrgID: "org_1", Direction: guardrails.ScanInput, Content: "x"})
-	if openErr != nil || openRes.Decision != guardrails.ScannerDecisionAllow {
-		t.Fatalf("expected fail-open scanner to allow on 500, got res=%+v err=%v", openRes, openErr)
-	}
-	if _, closedErr := failOpenScanners[1].Scan(context.Background(), guardrails.ScanRequest{OrgID: "org_1", Direction: guardrails.ScanInput, Content: "x"}); closedErr == nil {
-		t.Fatalf("expected fail-closed scanner to return error on 500")
 	}
 }
 

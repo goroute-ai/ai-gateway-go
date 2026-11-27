@@ -329,11 +329,15 @@ server:
 storage:
   mode: "memory"
 guardrails:
-  scanners:
+  definitions:
     - name: "cfg-scanner"
-      url: %q
+      provider: "generic_http"
+      event_hooks: ["pre_call"]
+      enabled: true
       timeout_ms: 1000
       fail_open: false
+      config:
+        url: %q
 `, scannerSrv.URL)
 
 	cfgPath := filepath.Join(t.TempDir(), "gateway.yaml")

@@ -204,7 +204,6 @@ func (s *GatewayServer) handleResponsesSync(
 				domain.WriteHTTPError(w, sanitizeErr)
 				return
 			}
-			s.GuardrailPipeline().EvaluateLoggingOnly(r.Context(), prc, chatReq, cachedResp)
 			quotaSettlement.actualTokensReconciled = true
 			quotaSettlement.releaseQuota(0, -2)
 			s.collector.Record(observability.RequestObservation{
@@ -235,27 +234,10 @@ func (s *GatewayServer) handleResponsesSync(
 		w.Header().Set("X-Gateway-Cache", "MISS")
 	}
 
-	upstreamCtx, duringHandle, duringInitErr := s.startDuringCallGuardrails(r.Context(), prc, chatReq)
-	if duringInitErr != nil {
-		domain.WriteHTTPError(w, duringInitErr)
-		return
-	}
-	if duringHandle != nil {
-		defer duringHandle.Close()
-	}
-
-	upstreamCtx = quotaSettlement.trackDispatch(upstreamCtx)
+	upstreamCtx := quotaSettlement.trackDispatch(r.Context())
 	resp, meta, err := s.reliability.ExecuteChat(upstreamCtx, idCtx, chatReq)
 	quotaSettlement.meta = meta
 	quotaSettlement.dispatchErr = err
-	if duringOut, duringErr := duringHandle.Wait(r.Context()); duringErr != nil {
-		if quotaSettlement.dispatchErr == nil {
-			quotaSettlement.dispatchErr = duringErr
-		}
-		s.recordDuringCallBlock(r.Context(), w, prc, duringOut, duringErr, "responses")
-		domain.WriteHTTPError(w, duringErr)
-		return
-	}
 	if err != nil {
 		s.emitRoutingTelemetryAndDebugHeaders(w, r, meta)
 		domain.WriteHTTPError(w, err)
@@ -284,7 +266,6 @@ func (s *GatewayServer) handleResponsesSync(
 		domain.WriteHTTPError(w, sanitizeErr)
 		return
 	}
-	s.GuardrailPipeline().EvaluateLoggingOnly(r.Context(), prc, chatReq, resp)
 	if cacheLookup.Eligible {
 		s.respCache.StoreChat(r.Context(), cacheLookup, idCtx.OrgID, resp)
 	}
@@ -357,16 +338,8 @@ func (s *GatewayServer) handleResponsesStream(
 		})
 		return
 	}
-	upstreamCtx, duringHandle, duringInitErr := s.startDuringCallGuardrails(r.Context(), prc, chatReq)
-	if duringInitErr != nil {
-		domain.WriteHTTPError(w, duringInitErr)
-		return
-	}
-	streamSession, sessionErr := s.newStreamGuardrailSession(r.Context(), prc, duringHandle)
+	streamSession, sessionErr := s.newStreamGuardrailSession(r.Context(), prc)
 	if sessionErr != nil {
-		if duringHandle != nil {
-			duringHandle.Close()
-		}
 		domain.WriteHTTPError(w, sessionErr)
 		return
 	}
@@ -400,9 +373,7 @@ func (s *GatewayServer) handleResponsesStream(
 		fmt.Fprintf(w, "event: response.created\ndata: %s\n\n", string(b))
 		flusher.Flush()
 	}
-	if !streamSession.HasDuringCall() {
-		startSSE()
-	}
+	startSSE()
 
 	fullText := strings.Builder{}
 	type streamToolItem struct {
@@ -472,19 +443,9 @@ func (s *GatewayServer) handleResponsesStream(
 		if chunk == nil || len(chunk.Choices) == 0 {
 			return nil
 		}
-		if checkErr := streamSession.CheckBeforeFirstEmit(r.Context()); checkErr != nil {
-			return checkErr
-		}
 		startSSE()
 		c := cloneSingleStreamChunk(*chunk)
 		delta := &c.Choices[0].Delta
-		if len(delta.ToolCalls) > 0 {
-			filteredTC, tcErr := streamSession.ProcessToolCalls(r.Context(), delta.ToolCalls)
-			if tcErr != nil {
-				return tcErr
-			}
-			delta.ToolCalls = filteredTC
-		}
 		if delta.Content != "" {
 			txt, procErr := streamSession.ProcessText(r.Context(), delta.Content)
 			if procErr != nil {
@@ -553,17 +514,9 @@ func (s *GatewayServer) handleResponsesStream(
 	}
 
 	streamStarted := time.Now()
-	upstreamCtx = attachStreamDroppedParamsObserver(upstreamCtx, w, streamSession.SSEStarted)
+	upstreamCtx := attachStreamDroppedParamsObserver(r.Context(), w, streamSession.SSEStarted)
 	upstreamCtx = quotaSettlement.trackDispatch(upstreamCtx)
 	usage, meta, err := s.reliability.ExecuteStream(upstreamCtx, idCtx, chatReq, onChunk, onSelected)
-	if !streamSession.SSEStarted() {
-		if duringOut, duringErr := streamSession.WaitDuring(r.Context()); duringErr != nil {
-			s.recordDuringCallBlock(r.Context(), w, prc, duringOut, duringErr, "responses")
-			err = duringErr
-		}
-	} else if duringErr := duringHandle.Blocked(); duringErr != nil && err == nil {
-		err = duringErr
-	}
 	flushDelta, flushErr := streamSession.Flush(r.Context(), err)
 	if err == nil && flushErr != nil {
 		err = flushErr
@@ -613,7 +566,6 @@ func (s *GatewayServer) handleResponsesStream(
 		return
 	}
 	startSSE()
-	s.GuardrailPipeline().EvaluateLoggingOnly(r.Context(), prc, chatReq, nil)
 	if flushDelta != "" {
 		emitDelta(flushDelta)
 	}

@@ -215,6 +215,10 @@ SECRETS_TO_SCAN=(
   "prod-test-pg-password-2026"
   "prod-test-authz-hmac-secret-2026"
   "prod-test-siem-hmac-secret-2026"
+  "prod-guardrail-webhook-secret-2026"
+  "prod-openai-mod-secret-2026"
+  "prod-ui-vault-secret-do-not-render"
+  "sk-mock-s12-main"
 )
 for env_name in PROD_LIVE_OPENAI_API_KEY PROD_LIVE_ANTHROPIC_API_KEY PROD_LIVE_GROQ_API_KEY PROD_LIVE_OPENROUTER_API_KEY PROD_LIVE_GEMINI_API_KEY; do
   val="${!env_name:-}"

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
@@ -13,7 +14,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
 
-func TestLivePostgresMigrationsAndGuardrailsApplyUsagePersistence(t *testing.T) {
+func TestLivePostgresMigrationsAndGuardrailsPersistence(t *testing.T) {
 	ctx := context.Background()
 	pgDSN := getEnvOrDefault("GATEWAY_POSTGRES_DSN", "postgres://gateway:gateway@localhost:5432/aigateway?sslmode=disable")
 	pool, err := storage.NewPostgresPool(ctx, pgDSN)
@@ -28,9 +29,19 @@ func TestLivePostgresMigrationsAndGuardrailsApplyUsagePersistence(t *testing.T) 
 	ts, _, pgRepo, _, cleanup := setupLiveGateway(t)
 	defer cleanup()
 
-	// 1. Verify tables from migrations 0016-0019 exist in live PostgreSQL schema.
-	for _, tbl := range []string{
-		"guardrail_definitions",
+	// 1. Verify active guardrail tables exist and deprecated tables were dropped by 0044.
+	for _, tbl := range []string{"guardrail_policies", "guardrail_definitions"} {
+		var exists bool
+		err := pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM information_schema.tables
+				WHERE table_schema = 'public' AND table_name = $1
+			)`, tbl).Scan(&exists)
+		if err != nil || !exists {
+			t.Fatalf("expected PostgreSQL table %s to exist (exists=%v, err=%v)", tbl, exists, err)
+		}
+	}
+	for _, dropped := range []string{
 		"guardrail_bindings",
 		"tool_policies",
 		"daily_guardrail_metrics",
@@ -42,12 +53,9 @@ func TestLivePostgresMigrationsAndGuardrailsApplyUsagePersistence(t *testing.T) 
 			SELECT EXISTS (
 				SELECT 1 FROM information_schema.tables
 				WHERE table_schema = 'public' AND table_name = $1
-			)`, tbl).Scan(&exists)
-		if err != nil {
-			t.Fatalf("check table %s: %v", tbl, err)
-		}
-		if !exists {
-			t.Fatalf("expected PostgreSQL table %s from migrations 0016-0019 to exist", tbl)
+			)`, dropped).Scan(&exists)
+		if err != nil || exists {
+			t.Fatalf("expected deprecated table %s dropped by 0044 (exists=%v, err=%v)", dropped, exists, err)
 		}
 	}
 
@@ -83,7 +91,7 @@ func TestLivePostgresMigrationsAndGuardrailsApplyUsagePersistence(t *testing.T) 
 		return resp.StatusCode
 	}
 
-	// 2. Create Org, Team, and Virtual Key permitting /v1/guardrails/apply
+	// 2. Create Org & Built-in Guardrail Policy with blocked_patterns
 	var org domain.Organization
 	if code := doJSON(http.MethodPost, "/admin/v1/organizations", adminHeaders, map[string]any{
 		"name": "Live Guardrails Org",
@@ -92,46 +100,34 @@ func TestLivePostgresMigrationsAndGuardrailsApplyUsagePersistence(t *testing.T) 
 		t.Fatalf("create org status=%d", code)
 	}
 
-	var team domain.Team
-	if code := doJSON(http.MethodPost, "/admin/v1/teams", adminHeaders, map[string]any{
-		"org_id": org.ID,
-		"name":   "Live Sec Team",
-	}, &team); code != http.StatusCreated {
-		t.Fatalf("create team status=%d", code)
+	var savedPol domain.GuardrailPolicy
+	if code := doJSON(http.MethodPost, "/admin/v1/organizations/"+org.ID+"/guardrails", adminHeaders, map[string]any{
+		"mode":                 "enforce",
+		"enable_pii_detection": true,
+		"pii_action":           "redact",
+		"blocked_patterns":     []string{`INTERNAL-\d{4}`},
+	}, &savedPol); code != http.StatusOK {
+		t.Fatalf("set guardrail policy status=%d", code)
+	}
+	if len(savedPol.BlockedPatterns) != 1 || savedPol.BlockedPatterns[0] != `INTERNAL-\d{4}` {
+		t.Fatalf("unexpected persisted blocked_patterns: %+v", savedPol.BlockedPatterns)
 	}
 
-	var keyResp struct {
-		ID  string `json:"id"`
-		Key string `json:"raw_key"`
-	}
-	if code := doJSON(http.MethodPost, "/admin/v1/keys", adminHeaders, map[string]any{
-		"org_id":            org.ID,
-		"team_id":           team.ID,
-		"name":              "live-apply-key",
-		"allowed_endpoints": []string{"/v1/guardrails/apply"},
-	}, &keyResp); code != http.StatusCreated {
-		t.Fatalf("create virtual key status=%d", code)
-	}
+	// 3. Create External Guardrail Definition with Vault secret & run /test
+	webhookSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"decision":"modify","modified_texts":["Email [REDACTED_EMAIL] for details"]}`))
+	}))
+	defer webhookSrv.Close()
 
-	// 3. Create Guardrail Definition with Vault secret & micro-dollar pricing + Binding + Tool Policy
 	var defOut map[string]any
 	if code := doJSON(http.MethodPost, "/admin/v1/organizations/"+org.ID+"/guardrail-definitions", adminHeaders, map[string]any{
-		"name":        "live-pii-shield",
-		"provider":    "local_content_filter",
+		"name":        "live-http-guard",
+		"provider":    "generic_http",
 		"event_hooks": []string{"pre_call"},
-		"default_on":  true,
-		"config": map[string]any{
-			"action":     "redact",
-			"categories": []string{"pii"},
-		},
-		"secrets": map[string]any{
-			"api_key": "live-secret-987",
-		},
-		"guardrail_info": map[string]any{
-			"usage_unit":           "request",
-			"cost_per_call_micros": 120,
-			"cost_per_unit_micros": 30,
-		},
+		"enabled":     true,
+		"config":      map[string]any{"url": webhookSrv.URL},
+		"secrets":     map[string]any{"bearer_token": "live-secret-987"},
 	}, &defOut); code != http.StatusCreated {
 		t.Fatalf("create guardrail definition status=%d", code)
 	}
@@ -140,68 +136,20 @@ func TestLivePostgresMigrationsAndGuardrailsApplyUsagePersistence(t *testing.T) 
 		t.Fatalf("missing guardrail definition id")
 	}
 
-	if code := doJSON(http.MethodPost, "/admin/v1/guardrail-bindings", adminHeaders, map[string]any{
-		"org_id":       org.ID,
-		"guardrail_id": defID,
-		"team_id":      team.ID,
-		"is_locked":    true,
-	}, nil); code != http.StatusCreated {
-		t.Fatalf("create binding status=%d", code)
+	// Verify definition persisted in live PostgreSQL repository
+	defs, err := pgRepo.ListGuardrailDefinitions(ctx, org.ID, true)
+	if err != nil || len(defs) != 1 || defs[0].ID != defID || !defs[0].Enabled {
+		t.Fatalf("unexpected live guardrail definitions: defs=%+v err=%v", defs, err)
 	}
 
-	if code := doJSON(http.MethodPost, "/admin/v1/organizations/"+org.ID+"/tool-policies", adminHeaders, map[string]any{
-		"team_id":       team.ID,
-		"tool_name":     "shell_exec",
-		"input_policy":  "blocked",
-		"output_policy": "untrusted",
-	}, nil); code != http.StatusOK {
-		t.Fatalf("upsert tool policy status=%d", code)
+	// 4. Dry-run simulate built-in policy
+	var simOut map[string]any
+	if code := doJSON(http.MethodPost, "/admin/v1/organizations/"+org.ID+"/guardrails/simulate", adminHeaders, map[string]any{
+		"prompt": "Email alice@example.com for details",
+	}, &simOut); code != http.StatusOK {
+		t.Fatalf("simulate guardrails status=%d", code)
 	}
-
-	// 4. Invoke POST /v1/guardrails/apply and verify PostgreSQL rollup persistence
-	dpHeaders := map[string]string{
-		"Authorization": "Bearer " + keyResp.Key,
-		"Content-Type":  "application/json",
-	}
-	var applyOut map[string]any
-	if code := doJSON(http.MethodPost, "/v1/guardrails/apply", dpHeaders, map[string]any{
-		"guardrail_name": "live-pii-shield",
-		"input_type":     "request",
-		"text":           "Email alice@example.com for details",
-	}, &applyOut); code != http.StatusOK {
-		t.Fatalf("apply guardrails status=%d", code)
-	}
-	if applyOut["decision"] != "modify" {
-		t.Fatalf("expected modify decision, got %v", applyOut["decision"])
-	}
-
-	var usage storage.GuardrailUsageSummary
-	if code := doJSON(http.MethodGet, "/admin/v1/organizations/"+org.ID+"/guardrail-usage", adminHeaders, nil, &usage); code != http.StatusOK {
-		t.Fatalf("get guardrail usage status=%d", code)
-	}
-	if usage.Totals.Evaluations != 1 || usage.Totals.Redactions != 1 || usage.TotalCostMicros != 150 {
-		t.Fatalf("unexpected live usage summary: %+v", usage)
-	}
-
-	// 5. Verify RecordSpendLogGuardrail & ListSpendLogGuardrails directly on live PostgresRepository
-	err = pgRepo.RecordSpendLogGuardrail(ctx, &storage.SpendLogGuardrail{
-		OrgID:         org.ID,
-		SpendLogID:    "spend_live_1",
-		GuardrailID:   defID,
-		GuardrailName: "live-pii-shield",
-		Hook:          "pre_call",
-		Decision:      "modify",
-		Units:         1,
-		CostMicros:    150,
-	})
-	if err != nil {
-		t.Fatalf("RecordSpendLogGuardrail failed: %v", err)
-	}
-	attributions, err := pgRepo.ListSpendLogGuardrails(ctx, org.ID, "spend_live_1")
-	if err != nil {
-		t.Fatalf("ListSpendLogGuardrails failed: %v", err)
-	}
-	if len(attributions) != 1 || attributions[0].CostMicros != 150 {
-		t.Fatalf("unexpected spend_log_guardrails rows: %+v", attributions)
+	if simOut["redacted"] != true {
+		t.Fatalf("expected redacted=true from simulate, got %+v", simOut)
 	}
 }

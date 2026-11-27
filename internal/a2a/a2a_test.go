@@ -425,9 +425,7 @@ func TestRouterServiceGuardrailsInboundAndOutbound(t *testing.T) {
 	assert.Contains(t, outText, "[REDACTED_SECRET]")
 }
 
-type a2aStubDriver struct {
-	routeTarget string
-}
+type a2aStubDriver struct{}
 
 func (d *a2aStubDriver) Name() string { return "a2a-stub-driver" }
 func (d *a2aStubDriver) SupportedHooks() []domain.GuardrailHook {
@@ -437,9 +435,6 @@ func (d *a2aStubDriver) Evaluate(_ context.Context, input *domain.GuardrailEvalI
 	joined := strings.Join(input.Texts, "\n")
 	if input.Hook == domain.GuardrailHookPreCall && strings.Contains(strings.ToLower(joined), "block-me") {
 		return &domain.GuardrailEvalResult{Decision: domain.GuardrailDecisionBlock, ErrorMessage: "blocked by named driver"}, nil
-	}
-	if input.Hook == domain.GuardrailHookPreCall && strings.Contains(strings.ToLower(joined), "route-me") {
-		return &domain.GuardrailEvalResult{Decision: domain.GuardrailDecisionModify, RouteTarget: d.routeTarget, ErrorMessage: "route unsupported in a2a"}, nil
 	}
 	if input.Hook == domain.GuardrailHookPostCall && strings.Contains(joined, "SECRET_TOKEN") {
 		modified := make([]string, len(input.Texts))
@@ -495,13 +490,12 @@ func TestRouterService_GuardrailPipeline_PreAndPostCall(t *testing.T) {
 		Name:       "a2a-named",
 		Provider:   "a2a-stub-driver",
 		EventHooks: []domain.GuardrailHook{domain.GuardrailHookPreCall, domain.GuardrailHookPostCall},
-		DefaultOn:  true,
-		Status:     domain.GuardrailStatus("active"),
+		Enabled:    true,
 	}))
 
 	pipeline := guardrails.NewPipeline(guardrails.NewEngine(repo), repo)
 	pipeline.RegisterDriver("a2a-stub-driver", func(_ context.Context, _ guardrails.DriverConfig) (guardrails.Driver, error) {
-		return &a2aStubDriver{routeTarget: "private-local"}, nil
+		return &a2aStubDriver{}, nil
 	})
 	routerSvc := NewRouterService(repo, vault, rbac, netPolicy, nil, NewGatewayCardSigner("kid1", "ES256", nil, vault), NewUpstreamCardVerifier(nil))
 	routerSvc.SetGuardrailPipeline(pipeline)
@@ -512,12 +506,6 @@ func TestRouterService_GuardrailPipeline_PreAndPostCall(t *testing.T) {
 		Message: &pb.Message{MessageId: "m1", Role: pb.Role_ROLE_USER, Parts: []*pb.Part{{Content: &pb.Part_Text{Text: "please block-me"}}}},
 	})
 	require.Error(t, err)
-
-	_, err = routerSvc.SendMessage(ctx, idCtx, "v2-agent", &pb.SendMessageRequest{
-		Message: &pb.Message{MessageId: "m2", Role: pb.Role_ROLE_USER, Parts: []*pb.Part{{Content: &pb.Part_Text{Text: "please route-me"}}}},
-	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "sensitive routing guardrail policy")
 
 	resp, err := routerSvc.SendMessage(ctx, idCtx, "v2-agent", &pb.SendMessageRequest{
 		Message: &pb.Message{MessageId: "m3", Role: pb.Role_ROLE_USER, Parts: []*pb.Part{{Content: &pb.Part_Text{Text: "hello safe agent"}}}},

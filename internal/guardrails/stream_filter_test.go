@@ -1,10 +1,8 @@
 package guardrails
 
 import (
-	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 )
@@ -119,28 +117,13 @@ func TestStreamRedactorEnabledForAllOutputPolicies(t *testing.T) {
 		{"pii_detection", &domain.GuardrailPolicy{OrgID: "org", EnablePIIDetection: true, PIIAction: domain.GuardrailActionBlock}},
 		{"secret_detection", &domain.GuardrailPolicy{OrgID: "org", EnableSecretDetection: true, SecretAction: domain.GuardrailActionBlock}},
 		{"blocked_keywords", &domain.GuardrailPolicy{OrgID: "org", BlockedKeywords: []string{"secret-phrase"}}},
+		{"blocked_patterns", &domain.GuardrailPolicy{OrgID: "org", BlockedPatterns: []string{`INTERNAL-\d{4}`}}},
 		{"toxicity_filter", &domain.GuardrailPolicy{OrgID: "org", EnableToxicityFilter: true}},
 	}
 	for _, tc := range policies {
 		if r := NewStreamRedactor(tc.pol); r == nil {
 			t.Fatalf("expected non-nil StreamRedactor for %s", tc.name)
 		}
-	}
-
-	scannerRedactor := NewStreamRedactorWithScanners(&domain.GuardrailPolicy{OrgID: "org"}, time.Second, true,
-		scannerFunc(func(_ context.Context, req ScanRequest) (ScanResult, error) {
-			if strings.Contains(req.Content, "bad-output") {
-				return ScanResult{Decision: ScannerDecisionBlock, Violations: []string{"ext:bad"}}, nil
-			}
-			return ScanResult{Decision: ScannerDecisionAllow}, nil
-		}),
-	)
-	if scannerRedactor == nil {
-		t.Fatal("expected non-nil StreamRedactor when external scanners are configured")
-	}
-	out := scannerRedactor.Process("this is bad-output here") + scannerRedactor.Flush()
-	if out != "" || !scannerRedactor.Blocked() {
-		t.Fatalf("expected external scanner to block stream, got out=%q blocked=%v", out, scannerRedactor.Blocked())
 	}
 }
 
@@ -289,289 +272,35 @@ func TestStreamRedactorBlockedKeywordsAcrossLargeStreamBoundary(t *testing.T) {
 	}
 }
 
-type stubStreamScanner struct {
-	block bool
-}
-
-func (s stubStreamScanner) Scan(_ context.Context, req ScanRequest) (ScanResult, error) {
-	if s.block && req.Direction == ScanOutput && strings.Contains(req.Content, "scanner-trigger") {
-		return ScanResult{Decision: ScannerDecisionBlock, Violations: []string{"ext_blocked"}}, nil
-	}
-	return ScanResult{Decision: ScannerDecisionAllow}, nil
-}
-
-func TestEngineNewStreamRedactorInheritsConfiguredScanners(t *testing.T) {
-	eng := NewEngine(nil)
-	eng.ConfigureScanners(500*time.Millisecond, true, stubStreamScanner{block: true})
-
-	redactor := eng.NewStreamRedactor(nil)
-	if redactor == nil {
-		t.Fatal("expected non-nil StreamRedactor when external scanners are configured")
-	}
-	_ = redactor.Process("hello scanner-trigger")
-	_ = redactor.Flush()
-	if !redactor.Blocked() {
-		t.Fatalf("expected StreamRedactor from Engine.NewStreamRedactor to block on scanner violation")
-	}
-}
-
-type stubWindowDriver struct {
-	name  string
-	hooks []domain.GuardrailHook
-	fn    func(ctx context.Context, input *domain.GuardrailEvalInput) (*domain.GuardrailEvalResult, error)
-}
-
-func (d *stubWindowDriver) Name() string                           { return d.name }
-func (d *stubWindowDriver) SupportedHooks() []domain.GuardrailHook { return d.hooks }
-func (d *stubWindowDriver) Evaluate(ctx context.Context, input *domain.GuardrailEvalInput) (*domain.GuardrailEvalResult, error) {
-	return d.fn(ctx, input)
-}
-
-func TestStreamWindowEvaluatorCrossChunkPIIMaskingAndHoldback(t *testing.T) {
-	piiDriver := &stubWindowDriver{
-		name: "pii-masker",
-		fn: func(_ context.Context, input *domain.GuardrailEvalInput) (*domain.GuardrailEvalResult, error) {
-			txt := input.Texts[0]
-			if strings.Contains(txt, "john.doe@example.com") {
-				masked := strings.ReplaceAll(txt, "john.doe@example.com", "<EMAIL_ADDRESS>")
-				return &domain.GuardrailEvalResult{
-					Decision:      domain.GuardrailDecisionModify,
-					ModifiedTexts: []string{masked},
-					Violations: []domain.GuardrailViolation{{
-						GuardrailName: "pii-masker",
-						Category:      "pii",
-						Rule:          "EMAIL_ADDRESS",
-						Message:       "email detected",
-					}},
-				}, nil
-			}
-			return &domain.GuardrailEvalResult{Decision: domain.GuardrailDecisionAllow}, nil
-		},
-	}
-
-	eval := NewStreamWindowEvaluator(StreamWindowConfig{
-		Unit:        StreamWindowBytes,
-		WindowSize:  32,
-		OverlapSize: 20,
-	}, piiDriver)
-	if eval == nil {
-		t.Fatal("expected non-nil StreamWindowEvaluator")
-	}
-
-	chunks := []string{
-		"Hello there, please ",
-		"contact john.do",
-		"e@exam",
-		"ple.com for support ",
-		"and have a great day!",
-	}
-
-	ctx := context.Background()
+func TestStreamRedactorPhoneIPv4AndBlockedPatterns(t *testing.T) {
+	redactor := NewStreamRedactorWithOverlap(32)
 	var out strings.Builder
-	for _, c := range chunks {
-		part, err := eval.Process(ctx, c)
-		if err != nil {
-			t.Fatalf("Process(%q): %v", c, err)
-		}
-		if strings.Contains(part, "john.do") {
-			t.Fatalf("unmasked email prefix leaked early: %q", part)
-		}
-		out.WriteString(part)
-	}
-	tail, err := eval.Flush(ctx)
-	if err != nil {
-		t.Fatalf("Flush: %v", err)
-	}
-	out.WriteString(tail)
-
-	got := out.String()
-	want := "Hello there, please contact <EMAIL_ADDRESS> for support and have a great day!"
-	if got != want {
-		t.Fatalf("got %q, want %q", got, want)
-	}
-	if !eval.Redacted() || eval.Blocked() {
-		t.Fatalf("expected Redacted=true Blocked=false, got redacted=%v blocked=%v", eval.Redacted(), eval.Blocked())
-	}
-	if len(eval.Violations()) == 0 {
-		t.Fatal("expected recorded violation")
-	}
-}
-
-func TestStreamWindowEvaluatorTokenWindowBlocksBeforeLeak(t *testing.T) {
-	blockDriver := &stubWindowDriver{
-		name: "phrase-blocker",
-		fn: func(_ context.Context, input *domain.GuardrailEvalInput) (*domain.GuardrailEvalResult, error) {
-			if strings.Contains(input.Texts[0], "secret launch code alpha") {
-				return &domain.GuardrailEvalResult{
-					Decision: domain.GuardrailDecisionBlock,
-					Violations: []domain.GuardrailViolation{{
-						GuardrailName: "phrase-blocker",
-						Category:      "banned",
-						Rule:          "launch_code",
-						Message:       "blocked forbidden multi-token phrase",
-					}},
-				}, nil
-			}
-			return &domain.GuardrailEvalResult{Decision: domain.GuardrailDecisionAllow}, nil
-		},
-	}
-
-	eval := NewStreamWindowEvaluator(StreamWindowConfig{
-		Unit:        StreamWindowTokens,
-		WindowSize:  8,
-		OverlapSize: 4,
-	}, blockDriver)
-
-	chunks := []string{
-		"one two three four ",
-		"five six secret ",
-		"launch code ",
-		"alpha seven eight.",
-	}
-	ctx := context.Background()
-	var emitted strings.Builder
-	var blockErr error
-	for _, c := range chunks {
-		part, err := eval.Process(ctx, c)
-		emitted.WriteString(part)
-		if err != nil {
-			blockErr = err
-			break
-		}
-	}
-	if blockErr == nil {
-		tail, err := eval.Flush(ctx)
-		emitted.WriteString(tail)
-		blockErr = err
-	}
-	if blockErr == nil {
-		t.Fatal("expected blocking error on multi-token phrase spanning chunks")
-	}
-	if !eval.Blocked() {
-		t.Fatal("expected Blocked() == true")
-	}
-	if strings.Contains(emitted.String(), "secret") || strings.Contains(emitted.String(), "launch") {
-		t.Fatalf("blocked phrase tokens leaked before detection: %q", emitted.String())
-	}
-}
-
-func TestStreamWindowEvaluatorRunesLoggingOnlyAndFailOpen(t *testing.T) {
-	// LoggingOnly passes through chunks unmodified while catching cross-chunk violations without duplicate spam.
-	flagDriver := &stubWindowDriver{
-		name: "audit-driver",
-		fn: func(_ context.Context, input *domain.GuardrailEvalInput) (*domain.GuardrailEvalResult, error) {
-			if strings.Contains(input.Texts[0], "世界secret") {
-				return &domain.GuardrailEvalResult{
-					Decision: domain.GuardrailDecisionBlock,
-					Violations: []domain.GuardrailViolation{{
-						GuardrailName: "audit-driver",
-						Category:      "audit",
-						Rule:          "unicode_secret",
-						Message:       "matched",
-					}},
-				}, nil
-			}
-			return &domain.GuardrailEvalResult{Decision: domain.GuardrailDecisionAllow}, nil
-		},
-	}
-
-	logEval := NewStreamWindowEvaluator(StreamWindowConfig{
-		Unit:        StreamWindowRunes,
-		WindowSize:  10,
-		OverlapSize: 5,
-		LoggingOnly: true,
-	}, flagDriver)
-
-	ctx := context.Background()
-	chunks := []string{"Hello 世界", "sec", "ret world!"}
-	var out strings.Builder
-	for _, c := range chunks {
-		part, err := logEval.Process(ctx, c)
-		if err != nil {
-			t.Fatalf("logging_only Process error: %v", err)
-		}
-		out.WriteString(part)
-	}
-	tail, err := logEval.Flush(ctx)
-	if err != nil {
-		t.Fatalf("logging_only Flush error: %v", err)
-	}
-	out.WriteString(tail)
-	if out.String() != strings.Join(chunks, "") {
-		t.Fatalf("logging_only mutated output: %q", out.String())
-	}
-	if logEval.Blocked() || logEval.Redacted() {
-		t.Fatalf("logging_only must not block or redact")
-	}
-	if len(logEval.Violations()) != 1 {
-		t.Fatalf("expected 1 deduplicated violation, got %v", logEval.Violations())
-	}
-
-	// FailOpen vs FailClosed on driver error.
-	errDrv := &stubWindowDriver{
-		name: "flaky",
-		fn: func(_ context.Context, _ *domain.GuardrailEvalInput) (*domain.GuardrailEvalResult, error) {
-			return nil, context.DeadlineExceeded
-		},
-	}
-	failOpenEval := NewStreamWindowEvaluator(StreamWindowConfig{
-		WindowSize: 8, OverlapSize: 4, FailOpen: true,
-	}, errDrv)
-	p, err := failOpenEval.Process(ctx, "hello world!")
-	if err != nil {
-		t.Fatalf("fail-open should not error: %v", err)
-	}
-	f, err := failOpenEval.Flush(ctx)
-	if err != nil {
-		t.Fatalf("fail-open flush should not error: %v", err)
-	}
-	if p+f != "hello world!" {
-		t.Fatalf("fail-open dropped text: %q", p+f)
-	}
-
-	failClosedEval := NewStreamWindowEvaluator(StreamWindowConfig{
-		WindowSize: 8, OverlapSize: 4, FailOpen: false,
-	}, errDrv)
-	if _, err := failClosedEval.Process(ctx, "hello world!"); err == nil || !failClosedEval.Blocked() {
-		t.Fatalf("fail-closed should block and return error, got err=%v blocked=%v", err, failClosedEval.Blocked())
-	}
-}
-
-func TestStreamRedactorWithDriversIntegration(t *testing.T) {
-	drv := &stubWindowDriver{
-		name: "mask-driver",
-		fn: func(_ context.Context, input *domain.GuardrailEvalInput) (*domain.GuardrailEvalResult, error) {
-			txt := input.Texts[0]
-			if strings.Contains(txt, "TOKEN-9999") {
-				return &domain.GuardrailEvalResult{
-					Decision:      domain.GuardrailDecisionModify,
-					ModifiedTexts: []string{strings.ReplaceAll(txt, "TOKEN-9999", "[MASKED]")},
-					Violations:    []domain.GuardrailViolation{{Category: "secret", Rule: "token"}},
-				}, nil
-			}
-			return &domain.GuardrailEvalResult{Decision: domain.GuardrailDecisionAllow}, nil
-		},
-	}
-
-	redactor := NewStreamRedactorWithDrivers(
-		&domain.GuardrailPolicy{OrgID: "org", Mode: domain.GuardrailModeEnforce},
-		StreamWindowConfig{WindowSize: 20, OverlapSize: 12},
-		drv,
-	)
-	if redactor == nil {
-		t.Fatal("expected non-nil StreamRedactorWithDrivers")
-	}
-
-	var out strings.Builder
-	for _, c := range []string{"Here is TOK", "EN-9999 inside ", "the stream."} {
+	for _, c := range []string{"Dial +1 (415) ", "555-2671 from ", "10.20.30", ".40 now."} {
 		out.WriteString(redactor.Process(c))
 	}
 	out.WriteString(redactor.Flush())
-
-	if out.String() != "Here is [MASKED] inside the stream." {
-		t.Fatalf("unexpected output: %q", out.String())
+	got := out.String()
+	if strings.Contains(got, "555-2671") || strings.Contains(got, "10.20.30.40") {
+		t.Fatalf("phone or IPv4 leaked across stream chunks: %q", got)
 	}
-	if !redactor.Redacted() || redactor.Blocked() {
-		t.Fatalf("expected redacted=true blocked=false, got redacted=%v blocked=%v", redactor.Redacted(), redactor.Blocked())
+	if !strings.Contains(got, "[REDACTED_PHONE]") || !strings.Contains(got, "[REDACTED_IP]") {
+		t.Fatalf("expected phone and IP redaction placeholders, got %q", got)
+	}
+
+	patRedactor := NewStreamRedactor(&domain.GuardrailPolicy{
+		OrgID:           "org",
+		Mode:            domain.GuardrailModeEnforce,
+		BlockedPatterns: []string{`INTERNAL-\d{4}`},
+	})
+	var patOut strings.Builder
+	for _, c := range []string{"Ref: INTER", "NAL-9001 secret."} {
+		patOut.WriteString(patRedactor.Process(c))
+	}
+	patOut.WriteString(patRedactor.Flush())
+	if !patRedactor.Blocked() {
+		t.Fatal("expected split blocked pattern to block stream")
+	}
+	if strings.Contains(patOut.String(), "INTERNAL-9001") {
+		t.Fatalf("blocked pattern leaked in stream: %q", patOut.String())
 	}
 }

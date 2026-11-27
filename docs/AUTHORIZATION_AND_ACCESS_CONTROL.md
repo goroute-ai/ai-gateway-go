@@ -21,19 +21,19 @@ flowchart TD
 
 ---
 
-## 2. Role Hierarchy & LiteLLM Concept Mapping
+## 2. Role Hierarchy & Scope Matrix
 
 GoRoute enforces a 7-role RBAC hierarchy across Control Plane and Data Plane operations:
 
-| Privilege Rank | GoRoute Role | Closest LiteLLM Equivalent | Control Plane Scope (`/admin/v1/*`) | Data Plane Scope (`/v1/*`, `/mcp*`, `/a2a/*`) |
-| :---: | :--- | :--- | :--- | :--- |
-| 70 | `platform_admin` | `proxy_admin` | Full global & cross-org read/write, `/admin/v1/config`, KEK rotation, global models | Allowed (subject to key/policy scopes) |
-| 60 | `org_admin` | `org_admin` | Full read/write strictly inside own `org_id`; **cannot** mutate/rotate `platform_admin` users or keys (`SEC-03`) | Allowed within own `org_id` |
-| 50 | `team_admin` | `team_admin` | Scoped CRUD on own `team_id` (keys, projects, members); **cannot** cross teams, grant `can_impersonate`, wildcard `/admin`/`/scim` endpoints, or privileged roles | Allowed within own `team_id` |
-| 40 | `org_viewer` | `proxy_admin_viewer` | Read-only (`GET`) strictly inside own `org_id`; all writes return `403 read_only_role` | Allowed within own `org_id` |
-| 30 | `developer` | `internal_user` | Denied (`/admin/v1/*` → `403`); may use governed self-service `/v1/self/keys` | Allowed within assigned scopes |
-| 20 | `service_account` | `internal_user` (machine) | Denied (`/admin/v1/*` → `403`) | Machine-to-machine data plane within assigned scopes |
-| 10 | `viewer` | `internal_user_viewer` | Denied by default (`/admin/v1/*` → `403`, least privilege; set `auth.allow_viewer_control_plane_read: true` only for legacy migration to `org_viewer` read-only) | Read/inference within assigned scopes |
+| Privilege Rank | GoRoute Role | Control Plane Scope (`/admin/v1/*`) | Data Plane Scope (`/v1/*`, `/mcp*`, `/a2a/*`) |
+| :---: | :--- | :--- | :--- |
+| 70 | `platform_admin` | Full global & cross-org read/write, `/admin/v1/config`, KEK rotation, global models | Allowed (subject to key/policy scopes) |
+| 60 | `org_admin` | Full read/write strictly inside own `org_id`; **cannot** mutate/rotate `platform_admin` users or keys (`SEC-03`) | Allowed within own `org_id` |
+| 50 | `team_admin` | Scoped CRUD on own `team_id` (keys, projects, members); **cannot** cross teams, grant `can_impersonate`, wildcard `/admin`/`/scim` endpoints, or privileged roles | Allowed within own `team_id` |
+| 40 | `org_viewer` | Read-only (`GET`) strictly inside own `org_id`; all writes return `403 read_only_role` | Allowed within own `org_id` |
+| 30 | `developer` | Denied (`/admin/v1/*` → `403`); may use governed self-service `/v1/self/keys` | Allowed within assigned scopes |
+| 20 | `service_account` | Denied (`/admin/v1/*` → `403`) | Machine-to-machine data plane within assigned scopes |
+| 10 | `viewer` | Denied by default (`/admin/v1/*` → `403`, least privilege; set `auth.allow_viewer_control_plane_read: true` only for legacy migration to `org_viewer` read-only) | Read/inference within assigned scopes |
 
 ---
 
@@ -81,7 +81,6 @@ For MCP servers, MCP tools, MCP toolsets, A2A agents, and client applications, G
 - **Controls**:
   - **Positive Allowlists (`allowed_mcp_tools`)**: 3-state across `Key → Project → Team` + Access Groups. Supports `*`, exact `server:tool`, exact `tool`, `server:*`, and prefix wildcards (`github:get_*`, `list_*`). Unauthorized invocations return `403 mcp_tool_restricted`.
   - **Curated Toolsets (`allowed_mcp_toolsets`)**: 3-state allowlists restricting `/mcp/toolsets/{toolsetSlug}` (`403 mcp_toolset_restricted`).
-  - **Unconditional Tenant `ToolPolicy` (`POST /admin/v1/organizations/{orgID}/tool-policies`)**: Any tool marked `input_policy: "blocked"` (at Org, Team, or Key scope) is automatically hidden from `tools/list`, progressive discovery (`GET /v1/goroute/mcp/registry`), and rejected on `tools/call` with `403 violated_tool_policy` (emitting `mcp.tool_policy.blocked`) — **no separate guardrail binding required**.
   - **Per-Key Cache Isolation**: Scoped `tools/list` results are filtered per caller identity and never mutated in place in shared caches.
 
 ### 4.5 Agent Access Control (A2A v1.0)

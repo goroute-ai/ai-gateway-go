@@ -473,12 +473,11 @@ On cache hit, the gateway emits `X-Gateway-Cache: HIT`, `X-Gateway-Cache-Type: e
 ## 10. Cross-Cutting Platform Modules
 
 ### 10.1 Security Guardrails Pipeline & Driver Engine (`internal/guardrails`)
-GoRoute evaluates requests and tool calls through a deterministic two-layer pipeline:
-- **Layer 0 Baseline Policy (`Engine`)**: Zero-external-dependency regex, signature, and lexicon checks for prompt injection (`normalizeTextForSignatureCheck`), PII (email, SSN, Luhn-verified cards -> `[REDACTED_EMAIL]`, `[REDACTED_SSN]`, `[REDACTED_CARD]`), API key leaks (`[REDACTED_SECRET]`), blocked keywords, and 5-category toxicity (`toxicity.go`), plus configured `guardrails.Scanner` / `gateway.GuardrailScanner` hooks with independent per-scanner timeouts and fail-open policies.
-- **Layer 1 Multi-Hook Pipeline (`Pipeline`, `Resolver`, `RouterLB`)**: Resolves org-scoped `GuardrailDefinition` and hierarchical `GuardrailBinding` rows across **Org -> Team -> Key -> EndUser -> ModelGroup -> Request Tag** (`ModeRule`), preventing `goroute_extensions` request overrides from disabling `default_on` or admin `is_locked` guardrails. Definitions sharing a logical `Name` are load-balanced via weighted shuffle and circuit-breaker cooldowns (`RouterLB`).
-- **Execution Lifecycle**: Runs `pre_call`, concurrent `during_call` (via `StartDuringCall`, canceling upstream LLM dispatch immediately upon violation), `post_call` (`modify`, `block`, `flag`), async `logging_only`, and MCP hooks (`pre_mcp_call`, `during_mcp_call`, `post_mcp_call`).
-- **15 Built-In Drivers (`internal/guardrails/drivers`)**: Includes `local_content_filter`, sandboxed Starlark `custom_code` (deterministic `50,000` step cap, `ctx` cancellation deadline, zero `import`/FS, SSRF-enforced `http_get`/`http_post`), SSRF-safe `generic_http`, `llm_as_a_judge` & `decision_model` (with `_internal_guardrail_origin` loop guard), 5 external/moderation engines (`openai_moderation`, `presidio`, `lakera_v2`, `guardrails_ai`, `pangea`), and tool/MCP governance (`tool_permission`, `tool_policy` multi-turn taint chain tracking in `ToolLoopOrchestrator`, `block_code_execution`, `mcp_security`, `mcp_end_user_permission`).
-- **Streaming Chunk & Tool-Call Windowing (`stream_filter.go`)**: `StreamRedactor` and `StreamWindowEvaluator` hold back bounded byte/rune/token overlap windows across SSE chunks so split PII/secrets/patterns are masked or aborted mid-stream before downstream flush, alongside incremental streamed `tool_calls` JSON delta scanning.
+GoRoute evaluates requests and responses through a streamlined, deterministic pipeline:
+- **Built-In Organization Policy (`Engine`)**: Zero-external-dependency regex, signature, and lexicon checks for prompt injection (`normalizeTextForSignatureCheck`), PII (email, SSN, Luhn-verified cards, phone numbers, IPv4 -> `[REDACTED_EMAIL]`, `[REDACTED_SSN]`, `[REDACTED_CARD]`, `[REDACTED_PHONE]`, `[REDACTED_IP]`), leaked API keys & PEM secrets (`[REDACTED_SECRET]`), blocked keywords, validated regex `blocked_patterns`, and 5-category toxicity packs (`toxicity.go`).
+- **External Guardrail Pipeline (`Pipeline`, `Resolver`)**: Resolves enabled org-scoped `GuardrailDefinition` rows in precedence order for `pre_call`, `post_call`, and `logging_only` (shadow audit) hooks, decrypting Vault secrets on demand and enforcing per-definition timeouts and fail-closed/fail-open semantics.
+- **2 Built-In External Drivers (`internal/guardrails/drivers`)**: SSRF-enforced `generic_http` (standard JSON webhook supporting `allow`/`block`/`flag`/`modify` and `NONE`/`BLOCKED`/`GUARDRAIL_INTERVENED`) and `openai_moderation` (text + image moderation), plus programmatic Go SDK hooks via `gateway.WithGuardrailScanner`.
+- **Streaming Chunk Redaction (`stream_filter.go`)**: `StreamRedactor` holds back a bounded rolling-overlap window across SSE chunks so split PII, secrets, keywords, regex patterns, and toxicity matches are masked or aborted mid-stream before downstream flush.
 
 ### 10.2 Pre-Flight Validator (`internal/validation`)
 Validates request structures before consuming upstream quota:
@@ -502,7 +501,7 @@ Validates request structures before consuming upstream quota:
 ## 11. Storage Architecture: PostgreSQL Schema & Redis Keyspace Matrix
 
 ### 11.1 PostgreSQL Relational Hierarchy & Production Durability
-All entity operations across migrations `0001` through `0043` (`organizations`, `teams`, `team_memberships`, `projects`, `users`, `operator_sessions` — with legacy `user_credentials` dropped in `0039`, `0040` OIDC session metadata, `0041` authorization parity, `0042` Ollama catalogue seeding, and `0043` Gemini catalogue seeding — `virtual_keys`, `virtual_key_deprecated_hashes`, `jwt_key_mappings`, `access_group_rules`, `quota_policies`, `budget_window_limits`, `end_users`, `tags`, `model_access_groups`, `model_access_group_members`, `deployment_ptu_shares`, `priority_classes`, `spend_summaries`, `spend_logs`, `spend_event_outbox`, `budget_resets`, `guardrail_definitions`, `guardrail_bindings`, `tool_policies`, `daily_guardrail_metrics`, `daily_guardrail_usage_units`, `spend_log_guardrails`, and `audit_logs`) execute parameterized SQL queries against PostgreSQL using connection pooling via `jackc/pgx/v5`. Rollback of `0034` (`0034_auth_quota_reconciliation.down.sql`) acquires `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE` and blocks downgrades if duplicate nonempty `(org_id, oidc_subject)` bindings exist. High-throughput spend flushes execute via `pgx.Batch`, with comprehensive error checking per queued statement to guarantee that constraint violations and connection failures are captured and surfaced rather than silently dropped.
+All entity operations across migrations `0001` through `0044` (`organizations`, `teams`, `team_memberships`, `projects`, `users`, `operator_sessions` — with legacy `user_credentials` dropped in `0039`, `0040` OIDC session metadata, `0041` authorization parity, `0042` Ollama catalogue seeding, `0043` Gemini catalogue seeding, and `0044` guardrails simplification — `virtual_keys`, `virtual_key_deprecated_hashes`, `jwt_key_mappings`, `access_group_rules`, `quota_policies`, `budget_window_limits`, `end_users`, `tags`, `model_access_groups`, `model_access_group_members`, `deployment_ptu_shares`, `priority_classes`, `spend_summaries`, `spend_logs`, `spend_event_outbox`, `budget_resets`, `guardrail_policies`, `guardrail_definitions`, and `audit_logs`) execute parameterized SQL queries against PostgreSQL using connection pooling via `jackc/pgx/v5`. Rollback of `0034` (`0034_auth_quota_reconciliation.down.sql`) acquires `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE` and blocks downgrades if duplicate nonempty `(org_id, oidc_subject)` bindings exist. High-throughput spend flushes execute via `pgx.Batch`, with comprehensive error checking per queued statement to guarantee that constraint violations and connection failures are captured and surfaced rather than silently dropped.
 
 ```
 [organizations] (+ soft_budget/throttle/reset/windows, 0022-0034)
@@ -511,15 +510,13 @@ All entity operations across migrations `0001` through `0043` (`organizations`, 
    |     |     |-- [operator_sessions] (0033, 0040; user_credentials dropped 0039)
    |     |-- [virtual_keys] ---> [virtual_key_deprecated_hashes] (0025)
    |     |                  ---> [jwt_key_mappings] (0024)
-   |     |                  ---> [spend_logs] (+ rolling index, 0034) ---> [spend_log_guardrails]
+   |     |                  ---> [spend_logs] (+ rolling index, 0034)
    |-- [access_group_rules] (0026) & [quota_policies] (0029) & [budget_window_limits] (0030, 0034)
    |-- [end_users], [tags], [model_access_groups] ---> [model_access_group_members] (0031)
    |-- [priority_classes] (0032)
    |-- [org_provider_subscriptions] & [org_model_policies]
-   |-- [guardrail_policies] (baseline + toxicity columns, 0016)
-   |-- [guardrail_definitions] ---> [guardrail_bindings] (0017)
-   |                           ---> [daily_guardrail_metrics] / [daily_guardrail_usage_units] (0019)
-   |-- [tool_policies] (0018)
+   |-- [guardrail_policies] (baseline + toxicity + blocked_patterns, 0016, 0044)
+   |-- [guardrail_definitions] (generic_http & openai_moderation, 0017, 0044)
    |-- [provider_credentials] (AES-256-GCM encrypted)
    |-- [model_groups] (+ specialized_fallbacks & retry/cooldown policies, 0020)
          |-- [model_deployments] (+ tags/budgets, 0021) ---> [deployment_ptu_shares] (0032)
@@ -753,7 +750,7 @@ The `internal/auth/upstream` package (alongside provider IAM adapters and `inter
 
 ## 18. Embedded Operator Web UI Architecture & Static Serving Mechanics
 
-The `internal/ui` package embeds the compiled Operator Web UI directly into the Go executable via standard library `embed.FS` (`//go:embed all:dist`), supporting OIDC SSO (`/auth/sso/{provider}/login`), CLI device approval (`/ui/cli`), and emergency Break-Glass Key (`GATEWAY_MASTER_ADMIN_KEY`) authentication via `LoginView`, `CLILoginView`, `OverviewView`, `PlaygroundView`, `OrganizationsView`, `ModelsView`, `KeysView` (`TempBudgetModal`), `FinOpsView` (`QuotasTab`), `GuardrailsView` (`RegistryTab`, `ToolPoliciesTab`, `SimulatorUsageTab`), `CredentialsView`, `AgenticView`, and `ConfigView`.
+The `internal/ui` package embeds the compiled Operator Web UI directly into the Go executable via standard library `embed.FS` (`//go:embed all:dist`), supporting OIDC SSO (`/auth/sso/{provider}/login`), CLI device approval (`/ui/cli`), and emergency Break-Glass Key (`GATEWAY_MASTER_ADMIN_KEY`) authentication via `LoginView`, `CLILoginView`, `OverviewView`, `PlaygroundView`, `OrganizationsView`, `ModelsView`, `KeysView` (`TempBudgetModal`), `FinOpsView` (`QuotasTab`), `GuardrailsView`, `CredentialsView`, `AgenticView`, and `ConfigView`.
 
 ### 18.1 Route Dispatch & Fallback Lifecycle
 ```
@@ -796,13 +793,10 @@ Client Request (GET /ui/playground)
 
 ---
 
-## 19. Guardrails Simulation, Standalone Apply & Preflight Credential Validation
+## 19. Guardrails Simulation & Preflight Credential Validation
 
-### 19.1 Guardrails Simulator & `/v1/guardrails/apply` (`internal/server/handlers_guardrails.go`)
-Platform engineers and callers can evaluate guardrails without invoking upstream LLMs via two complementary endpoints:
-
-1. **Admin Dry-Run Simulator (`POST /admin/v1/organizations/{orgID}/guardrails/simulate`)**: Evaluates either an ephemeral draft `policy` (`EvaluateInputWithPolicy` / `EvaluateOutputWithPolicy`) or named org guardrails (`guardrail_name`, `tags`, `direction`) across `prompt`, `texts`, structured `messages`, `tools`, and `tool_calls`—including optional split-chunk `stream_chunk_size` windowing simulation (`StreamWindowEvaluator`)—without persisting mutations.
-2. **Data Plane Guardrail Apply (`POST /v1/guardrails/apply`)**: Authorizes Virtual API Keys to invoke a specific active `guardrail_name` (or effective hierarchical tenant pipeline) on `request`/`input` (`pre_call`) or `response`/`output` (`post_call`) payloads, returning `blocked`, `decision` (`allow`/`block`/`flag`/`modify`), `modified_texts`/`modified_messages`/`modified_tool_calls`, `violations`, `usage_units`, and integer micro-dollar telemetry.
+### 19.1 Guardrails Simulator (`internal/server/handlers_guardrails.go`)
+Platform engineers can validate guardrail behavior without invoking upstream LLMs via `POST /admin/v1/organizations/{orgID}/guardrails/simulate`, which evaluates either the organization's persisted policy or an ephemeral draft `policy` (`EvaluateInputWithPolicy` / `EvaluateOutputWithPolicy`) against sample `prompt`/`text` and `direction` (`"input"` | `"output"`) without persisting mutations.
 
 ### 19.2 Preflight Credential Validation (`internal/server/handlers_admin.go`)
 To prevent configuration errors and broken deployment routes, `handleAdminPreflightValidateCredential` tests upstream provider credentials before persistence:

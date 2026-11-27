@@ -30,58 +30,32 @@ type GuardrailHook string
 
 // Supported custom SDK guardrail lifecycle hooks.
 const (
-	GuardrailHookPreCall       GuardrailHook = "pre_call"
-	GuardrailHookDuringCall    GuardrailHook = "during_call"
-	GuardrailHookPostCall      GuardrailHook = "post_call"
-	GuardrailHookLoggingOnly   GuardrailHook = "logging_only"
-	GuardrailHookPreMCPCall    GuardrailHook = "pre_mcp_call"
-	GuardrailHookDuringMCPCall GuardrailHook = "during_mcp_call"
-	GuardrailHookPostMCPCall   GuardrailHook = "post_mcp_call"
+	GuardrailHookPreCall     GuardrailHook = "pre_call"
+	GuardrailHookPostCall    GuardrailHook = "post_call"
+	GuardrailHookLoggingOnly GuardrailHook = "logging_only"
 )
-
-// GuardrailToolSpec describes a declared tool included in a GuardrailScanRequest.
-type GuardrailToolSpec struct {
-	Type        string         `json:"type"`
-	Name        string         `json:"name"`
-	Description string         `json:"description,omitempty"`
-	Parameters  map[string]any `json:"parameters,omitempty"`
-	Strict      bool           `json:"strict,omitempty"`
-}
-
-// GuardrailToolCall describes a tool invocation included in or rewritten by a guardrail evaluation.
-type GuardrailToolCall struct {
-	ID        string `json:"id"`
-	Type      string `json:"type"`
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
-}
 
 // GuardrailScanRequest carries the structured request or response envelope passed to a GuardrailScanner.
 type GuardrailScanRequest struct {
-	Direction    string              `json:"direction"`
-	Hook         GuardrailHook       `json:"hook,omitempty"`
-	RequestID    string              `json:"request_id,omitempty"`
-	TraceID      string              `json:"trace_id,omitempty"`
-	OrgID        string              `json:"org_id,omitempty"`
-	TeamID       string              `json:"team_id,omitempty"`
-	VirtualKeyID string              `json:"virtual_key_id,omitempty"`
-	EndUserID    string              `json:"end_user_id,omitempty"`
-	Model        string              `json:"model,omitempty"`
-	Texts        []string            `json:"texts,omitempty"`
-	Tools        []GuardrailToolSpec `json:"tools,omitempty"`
-	ToolCalls    []GuardrailToolCall `json:"tool_calls,omitempty"`
-	Metadata     map[string]any      `json:"metadata,omitempty"`
+	Direction    string         `json:"direction"`
+	Hook         GuardrailHook  `json:"hook,omitempty"`
+	RequestID    string         `json:"request_id,omitempty"`
+	TraceID      string         `json:"trace_id,omitempty"`
+	OrgID        string         `json:"org_id,omitempty"`
+	TeamID       string         `json:"team_id,omitempty"`
+	VirtualKeyID string         `json:"virtual_key_id,omitempty"`
+	EndUserID    string         `json:"end_user_id,omitempty"`
+	Model        string         `json:"model,omitempty"`
+	Texts        []string       `json:"texts,omitempty"`
+	Metadata     map[string]any `json:"metadata,omitempty"`
 }
 
 // GuardrailScanResult carries the decision and optional mutations returned by a GuardrailScanner.
 type GuardrailScanResult struct {
-	Decision          GuardrailDecision   `json:"decision"`
-	ModifiedTexts     []string            `json:"modified_texts,omitempty"`
-	ModifiedToolCalls []GuardrailToolCall `json:"modified_tool_calls,omitempty"`
-	Violations        []string            `json:"violations,omitempty"`
-	Reason            string              `json:"reason,omitempty"`
-	RouteTarget       string              `json:"route_target,omitempty"`
-	UsageUnits        int64               `json:"usage_units,omitempty"`
+	Decision      GuardrailDecision `json:"decision"`
+	ModifiedTexts []string          `json:"modified_texts,omitempty"`
+	Violations    []string          `json:"violations,omitempty"`
+	Reason        string            `json:"reason,omitempty"`
 }
 
 // GuardrailScanner evaluates requests or responses in-process inside an embedded GoRoute gateway.
@@ -98,12 +72,10 @@ func (f GuardrailScannerFunc) Scan(ctx context.Context, req GuardrailScanRequest
 }
 
 type sdkGuardrailConfig struct {
-	timeout              time.Duration
-	failOpen             bool
-	hooks                []GuardrailHook
-	defaultOn            bool
-	precedence           int
-	sensitiveRouteTarget string
+	timeout    time.Duration
+	failOpen   bool
+	hooks      []GuardrailHook
+	precedence int
 }
 
 // GuardrailOption customizes how an SDK-registered GuardrailScanner executes in the pipeline.
@@ -136,25 +108,10 @@ func WithGuardrailHooks(hooks ...GuardrailHook) GuardrailOption {
 	}
 }
 
-// WithGuardrailDefaultOn controls whether the scanner runs on all requests by default (true, default)
-// or requires explicit opt-in via request extensions or bindings (false).
-func WithGuardrailDefaultOn(defaultOn bool) GuardrailOption {
-	return func(c *sdkGuardrailConfig) {
-		c.defaultOn = defaultOn
-	}
-}
-
 // WithGuardrailPrecedence sets the execution order precedence (lower values run earlier).
 func WithGuardrailPrecedence(precedence int) GuardrailOption {
 	return func(c *sdkGuardrailConfig) {
 		c.precedence = precedence
-	}
-}
-
-// WithGuardrailSensitiveRouteTarget sets the fallback/sovereign model group target when a guardrail routes sensitive requests.
-func WithGuardrailSensitiveRouteTarget(target string) GuardrailOption {
-	return func(c *sdkGuardrailConfig) {
-		c.sensitiveRouteTarget = strings.TrimSpace(target)
 	}
 }
 
@@ -212,8 +169,7 @@ func registerSDKGuardrailScanner(
 	}
 
 	gcfg := sdkGuardrailConfig{
-		defaultOn: true,
-		hooks:     []GuardrailHook{GuardrailHookPreCall, GuardrailHookPostCall},
+		hooks: []GuardrailHook{GuardrailHookPreCall, GuardrailHookPostCall},
 	}
 	for _, opt := range entry.opts {
 		if opt != nil {
@@ -259,17 +215,15 @@ func registerSDKGuardrailScanner(
 	})
 
 	def := &domain.GuardrailDefinition{
-		ID:                   defID,
-		OrgID:                orgID,
-		Name:                 cleanName,
-		Provider:             provider,
-		EventHooks:           domHooks,
-		DefaultOn:            gcfg.defaultOn,
-		TimeoutMs:            timeoutMs,
-		FailOpen:             gcfg.failOpen,
-		Precedence:           gcfg.precedence,
-		SensitiveRouteTarget: gcfg.sensitiveRouteTarget,
-		Status:               domain.GuardrailStatusActive,
+		ID:         defID,
+		OrgID:      orgID,
+		Name:       cleanName,
+		Provider:   provider,
+		EventHooks: domHooks,
+		Enabled:    true,
+		TimeoutMs:  timeoutMs,
+		FailOpen:   gcfg.failOpen,
+		Precedence: gcfg.precedence,
 	}
 	if _, err := repo.GetGuardrailDefinition(ctx, defID); err == nil {
 		return repo.UpdateGuardrailDefinition(ctx, def)
@@ -292,29 +246,6 @@ func toSDKGuardrailRequest(input *domain.GuardrailEvalInput) GuardrailScanReques
 		EndUserID:    input.EndUserID,
 		Model:        input.Model,
 		Texts:        slices.Clone(input.Texts),
-	}
-	if len(input.Tools) > 0 {
-		req.Tools = make([]GuardrailToolSpec, len(input.Tools))
-		for i, t := range input.Tools {
-			req.Tools[i] = GuardrailToolSpec{
-				Type:        t.Type,
-				Name:        t.Function.Name,
-				Description: t.Function.Description,
-				Parameters:  maps.Clone(t.Function.Parameters),
-				Strict:      t.Function.Strict,
-			}
-		}
-	}
-	if len(input.ToolCalls) > 0 {
-		req.ToolCalls = make([]GuardrailToolCall, len(input.ToolCalls))
-		for i, tc := range input.ToolCalls {
-			req.ToolCalls[i] = GuardrailToolCall{
-				ID:        tc.ID,
-				Type:      tc.Type,
-				Name:      tc.Function.Name,
-				Arguments: tc.Function.Arguments,
-			}
-		}
 	}
 	if len(input.Metadata) > 0 {
 		req.Metadata = maps.Clone(input.Metadata)
@@ -341,26 +272,7 @@ func fromSDKGuardrailResult(name, defID string, res GuardrailScanResult) (*domai
 		Decision:          decision,
 		ModifiedTexts:     slices.Clone(res.ModifiedTexts),
 		AppliedGuardrails: []string{name},
-		RouteTarget:       strings.TrimSpace(res.RouteTarget),
-		UsageUnits:        res.UsageUnits,
 		ErrorMessage:      res.Reason,
-	}
-	if len(res.ModifiedToolCalls) > 0 {
-		out.ModifiedToolCalls = make([]domain.CanonicalToolCall, len(res.ModifiedToolCalls))
-		for i, tc := range res.ModifiedToolCalls {
-			typ := tc.Type
-			if typ == "" {
-				typ = "function"
-			}
-			out.ModifiedToolCalls[i] = domain.CanonicalToolCall{
-				ID:   tc.ID,
-				Type: typ,
-				Function: domain.CanonicalFunctionCall{
-					Name:      tc.Name,
-					Arguments: tc.Arguments,
-				},
-			}
-		}
 	}
 	for _, label := range res.Violations {
 		if label == "" {

@@ -560,7 +560,7 @@ func TestPostgres_MigrationLifecycle_0001_to_0042(t *testing.T) {
 		}
 	}
 
-	// Exercise reverse down migrations from latest (0043) down through 0022.
+	// Exercise reverse down migrations from latest (0044) down through 0022.
 	entries, err := os.ReadDir(migrationsDir)
 	if err != nil {
 		t.Fatalf("read migrations dir: %v", err)
@@ -573,8 +573,8 @@ func TestPostgres_MigrationLifecycle_0001_to_0042(t *testing.T) {
 		}
 	}
 	sort.Sort(sort.Reverse(sort.StringSlice(waveDowns)))
-	if len(waveDowns) != 22 {
-		t.Fatalf("expected 22 down migrations for 0022..0043, got %d: %v", len(waveDowns), waveDowns)
+	if len(waveDowns) != 23 {
+		t.Fatalf("expected 23 down migrations for 0022..0044, got %d: %v", len(waveDowns), waveDowns)
 	}
 	var ollamaSeedCount int
 	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM global_models WHERE id IN ('ollama/qwen2.5:0.5b', 'ollama/all-minilm:latest') AND input_cost_micros_per_1m = 0 AND pricing_status = 'verified'`).Scan(&ollamaSeedCount); err != nil || ollamaSeedCount != 2 {
@@ -609,9 +609,9 @@ func TestPostgres_MigrationLifecycle_0001_to_0042(t *testing.T) {
 		}
 	}
 
-	// Reapply 0022..0043 cleanly and verify idempotency.
+	// Reapply 0022..0044 cleanly and verify idempotency.
 	if err := RunMigrationsDir(ctx, pool, migrationsDir); err != nil {
-		t.Fatalf("RunMigrationsDir reapply 0022..0043 failed: %v", err)
+		t.Fatalf("RunMigrationsDir reapply 0022..0044 failed: %v", err)
 	}
 	if err := RunMigrationsDir(ctx, pool, migrationsDir); err != nil {
 		t.Fatalf("RunMigrationsDir second idempotent reapply failed: %v", err)
@@ -700,8 +700,8 @@ func TestPostgres_MigrationLifecycle_0001_to_0042(t *testing.T) {
 		{"virtual_keys", "allowed_routing_tags"},
 		{"teams", "min_priority_rank"},
 		{"teams", "allowed_routing_tags"},
-		{"guardrail_policies", "sensitive_route_target"},
-		{"guardrail_definitions", "sensitive_route_target"},
+		{"guardrail_policies", "blocked_patterns"},
+		{"guardrail_definitions", "enabled"},
 	}
 	for _, tc := range hardeningCols {
 		var exists bool
@@ -710,21 +710,39 @@ func TestPostgres_MigrationLifecycle_0001_to_0042(t *testing.T) {
 				SELECT 1 FROM information_schema.columns
 				WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2
 			)`, tc.table, tc.col).Scan(&exists); err != nil || !exists {
-			t.Fatalf("expected column %s.%s after 0036 (exists=%v, err=%v)", tc.table, tc.col, exists, err)
+			t.Fatalf("expected column %s.%s after migrations (exists=%v, err=%v)", tc.table, tc.col, exists, err)
 		}
 	}
 
-	down0036, err := os.ReadFile(filepath.Join(migrationsDir, "0036_production_routing_hardening.down.sql"))
+	// Verify 0044_simplify_guardrails dropped deprecated guardrail tables and is reversible.
+	for _, droppedTable := range []string{
+		"guardrail_bindings",
+		"tool_policies",
+		"daily_guardrail_metrics",
+		"daily_guardrail_usage_units",
+		"spend_log_guardrails",
+	} {
+		var exists bool
+		if err := pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM information_schema.tables
+				WHERE table_schema = 'public' AND table_name = $1
+			)`, droppedTable).Scan(&exists); err != nil || exists {
+			t.Fatalf("expected table %s dropped by 0044 (exists=%v, err=%v)", droppedTable, exists, err)
+		}
+	}
+
+	down0044, err := os.ReadFile(filepath.Join(migrationsDir, "0044_simplify_guardrails.down.sql"))
 	if err != nil {
-		t.Fatalf("read 0036 down migration: %v", err)
+		t.Fatalf("read 0044 down migration: %v", err)
 	}
-	if _, err := pool.Exec(ctx, string(down0036)); err != nil {
-		t.Fatalf("exec 0036 down migration: %v", err)
+	if _, err := pool.Exec(ctx, string(down0044)); err != nil {
+		t.Fatalf("exec 0044 down migration: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `DELETE FROM schema_migrations WHERE filename = $1`, "0036_production_routing_hardening.up.sql"); err != nil {
-		t.Fatalf("delete schema_migrations 0036: %v", err)
+	if _, err := pool.Exec(ctx, `DELETE FROM schema_migrations WHERE filename = $1`, "0044_simplify_guardrails.up.sql"); err != nil {
+		t.Fatalf("delete schema_migrations 0044: %v", err)
 	}
 	if err := RunMigrationsDir(ctx, pool, migrationsDir); err != nil {
-		t.Fatalf("RunMigrationsDir reapply 0036 failed: %v", err)
+		t.Fatalf("RunMigrationsDir reapply 0044 failed: %v", err)
 	}
 }

@@ -64,7 +64,6 @@ type MemoryRepository struct {
 	guardrails                     map[string]*domain.GuardrailPolicy
 	guardrailDefs                  map[string]*domain.GuardrailDefinition
 	auditObserver                  func(*domain.AuditLog)
-	guardrailBindings              map[string]*domain.GuardrailBinding
 	spendLogs                      []domain.SpendEvent
 	spendOutbox                    map[string]*spendOutboxEntry
 	spendLogIDs                    map[string]struct{}
@@ -154,7 +153,6 @@ func NewMemoryRepository() *MemoryRepository {
 		pricingHistory:                 make(map[string][]*domain.ModelPricingHistory),
 		guardrails:                     make(map[string]*domain.GuardrailPolicy),
 		guardrailDefs:                  make(map[string]*domain.GuardrailDefinition),
-		guardrailBindings:              make(map[string]*domain.GuardrailBinding),
 		spendOutbox:                    make(map[string]*spendOutboxEntry),
 		spendLogIDs:                    make(map[string]struct{}),
 		budgetResetOutbox:              make(map[string]BudgetResetEvent),

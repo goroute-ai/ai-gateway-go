@@ -46,11 +46,10 @@ type ToolHandleRecord struct {
 // ProgressiveDiscoveryManager manages progressive tool discovery, opaque handle issuance,
 // schema verification, and meta-tool execution.
 type ProgressiveDiscoveryManager struct {
-	repo            storage.Repository
-	redisFabric     *storage.RedisFabric
-	rbac            *auth.RBACEngine
-	toolPolicyStore storage.ToolPolicyRepository
-	ttl             time.Duration
+	repo        storage.Repository
+	redisFabric *storage.RedisFabric
+	rbac        *auth.RBACEngine
+	ttl         time.Duration
 
 	mu       sync.RWMutex
 	memStore map[string]*ToolHandleRecord
@@ -59,21 +58,6 @@ type ProgressiveDiscoveryManager struct {
 // SetRBAC configures the RBAC engine for server-level and tool-level authorization checks.
 func (m *ProgressiveDiscoveryManager) SetRBAC(rbac *auth.RBACEngine) {
 	m.rbac = rbac
-}
-
-// SetToolPolicyStore configures the ToolPolicyRepository for hiding/blocking forbidden tools.
-func (m *ProgressiveDiscoveryManager) SetToolPolicyStore(store storage.ToolPolicyRepository) {
-	m.toolPolicyStore = store
-}
-
-func (m *ProgressiveDiscoveryManager) loadToolPolicies(ctx context.Context, idCtx *domain.IdentityContext) map[string]*storage.ToolPolicy {
-	store := m.toolPolicyStore
-	if store == nil && m.repo != nil {
-		if tpRepo, ok := m.repo.(storage.ToolPolicyRepository); ok {
-			store = tpRepo
-		}
-	}
-	return resolveEffectiveToolPolicies(ctx, store, idCtx)
 }
 
 // NewProgressiveDiscoveryManager creates a new ProgressiveDiscoveryManager.
@@ -222,14 +206,6 @@ func (m *ProgressiveDiscoveryManager) ResolveHandleForIdentity(ctx context.Conte
 			return nil, nil, err
 		}
 	}
-	if isToolBlockedByPolicies(m.loadToolPolicies(ctx, idCtx), rec.ServerSlug, rec.ToolName) {
-		return nil, nil, &domain.GatewayError{
-			StatusCode: 403,
-			Type:       domain.ErrorTypePermission,
-			Code:       "violated_tool_policy",
-			Message:    fmt.Sprintf("Tool %q is blocked by tenant tool policy", rec.ToolName),
-		}
-	}
 	return rec, tool, nil
 }
 
@@ -257,7 +233,6 @@ func (m *ProgressiveDiscoveryManager) SearchTools(ctx context.Context, idCtx *do
 		return nil, err
 	}
 
-	policies := m.loadToolPolicies(ctx, idCtx)
 	qLower := strings.ToLower(strings.TrimSpace(query))
 	var results []ToolSummary
 
@@ -279,9 +254,6 @@ func (m *ProgressiveDiscoveryManager) SearchTools(ctx context.Context, idCtx *do
 				continue
 			}
 			if m.rbac != nil && m.rbac.AuthorizeMCPTool(idCtx, srv.Slug, t.Name) != nil {
-				continue
-			}
-			if isToolBlockedByPolicies(policies, srv.Slug, t.Name) {
 				continue
 			}
 
@@ -340,7 +312,6 @@ func (m *ProgressiveDiscoveryManager) BuildRegistryFeed(ctx context.Context, idC
 		return nil, err
 	}
 
-	policies := m.loadToolPolicies(ctx, idCtx)
 	var feed []RegistryFeedEntry
 	for _, srv := range servers {
 		if !srv.IsActive {
@@ -355,9 +326,6 @@ func (m *ProgressiveDiscoveryManager) BuildRegistryFeed(ctx context.Context, idC
 		for _, t := range tools {
 			if t.IsActive {
 				if m.rbac != nil && m.rbac.AuthorizeMCPTool(idCtx, srv.Slug, t.Name) != nil {
-					continue
-				}
-				if isToolBlockedByPolicies(policies, srv.Slug, t.Name) {
 					continue
 				}
 				activeToolCount++

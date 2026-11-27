@@ -296,7 +296,6 @@ func (rs *realtimeSession) handleResponseCreate(ev *realtimeClientEvent) {
 		}
 		return
 	}
-	rs.server.GuardrailPipeline().EvaluateLoggingOnly(rs.req.Context(), prc, chatReq, resp)
 	replyContent := ""
 	if len(resp.Choices) > 0 {
 		replyContent = resp.Choices[0].Message.Content
@@ -619,28 +618,14 @@ func (s *GatewayServer) executeRealtimeTurn(
 	}
 	defer s.settleQuotaOnReturn(quotaSettlement)
 
-	upstreamCtx, duringHandle, duringInitErr := s.startDuringCallGuardrails(ctx, prc, chatReq)
-	if duringInitErr != nil {
-		return nil, duringInitErr
-	}
-	if duringHandle != nil {
-		defer duringHandle.Close()
-	}
-
 	if onAdmitted != nil {
 		onAdmitted()
 	}
 
-	upstreamCtx = quotaSettlement.trackDispatch(upstreamCtx)
+	upstreamCtx := quotaSettlement.trackDispatch(ctx)
 	resp, meta, err := s.reliability.ExecuteChat(upstreamCtx, idCtx, chatReq)
 	quotaSettlement.meta = meta
 	quotaSettlement.dispatchErr = err
-	if _, duringErr := duringHandle.Wait(ctx); duringErr != nil {
-		if quotaSettlement.dispatchErr == nil {
-			quotaSettlement.dispatchErr = duringErr
-		}
-		return nil, duringErr
-	}
 	if err != nil {
 		return nil, err
 	}
@@ -738,9 +723,6 @@ func mergeGoRouteExtensions(base, override *domain.GoRouteExtensions) *domain.Go
 	}
 	if override.ContextID != "" {
 		out.ContextID = override.ContextID
-	}
-	if len(override.Guardrails) > 0 {
-		out.Guardrails = append(out.Guardrails, override.Guardrails...)
 	}
 	if len(override.Tags) > 0 {
 		for _, tag := range override.Tags {

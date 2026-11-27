@@ -230,55 +230,6 @@ func PromptCacheAffinityKey(orgID, groupAlias, prefixHash string) string {
 	return fmt.Sprintf("gw:affinity:%s:pcache:%s:%s", orgClusterHashTag(orgID), groupAlias, prefixHash)
 }
 
-// SensitiveRouteKey returns the cluster-hash-tagged Redis key pinning a session's private route target.
-func SensitiveRouteKey(orgID, sessionID string) string {
-	return fmt.Sprintf("gw:affinity:%s:sensitive_route:%s", orgClusterHashTag(orgID), sessionID)
-}
-
-// GetSensitiveRoute returns any previously pinned private/compliance model target for (orgID, sessionID).
-func (s *AffinityStore) GetSensitiveRoute(ctx context.Context, orgID, sessionID string) string {
-	if s == nil {
-		return ""
-	}
-	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" {
-		return ""
-	}
-	key := SensitiveRouteKey(orgID, sessionID)
-	now := s.nowFn()
-	if target, ok := s.lru.get(key, now); ok && target != "" {
-		return target
-	}
-	if target := s.getRedis(ctx, key); target != "" {
-		s.lru.set(key, target, now.Add(s.DefaultTTL()))
-		return target
-	}
-	return ""
-}
-
-// SetSensitiveRoute pins (orgID, sessionID) to a designated private model target for session affinity duration.
-func (s *AffinityStore) SetSensitiveRoute(ctx context.Context, orgID, sessionID, target string) {
-	if s == nil {
-		return
-	}
-	sessionID = strings.TrimSpace(sessionID)
-	target = strings.TrimSpace(target)
-	if sessionID == "" || target == "" {
-		return
-	}
-	key := SensitiveRouteKey(orgID, sessionID)
-	expiresAt := s.nowFn().Add(s.DefaultTTL())
-	s.lru.set(key, target, expiresAt)
-	if s.redis != nil && s.redis.Client() != nil {
-		ttl := s.DefaultTTL()
-		_, _ = s.redis.Execute(func(rdb redis.UniversalClient) (any, error) {
-			rCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 100*time.Millisecond)
-			defer cancel()
-			return rdb.Set(rCtx, key, target, ttl).Result()
-		})
-	}
-}
-
 func writeLenString(h hash.Hash, s string) {
 	var lenBuf [8]byte
 	binary.BigEndian.PutUint64(lenBuf[:], uint64(len(s)))

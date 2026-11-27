@@ -450,22 +450,22 @@ async function run() {
     await addCredModal.locator('button[type="submit"]').click();
     await page.getByText(`ui-e2e-gemini-${suffix}`).waitFor({ state: 'visible' });
 
-    // Check 5a-bis: Named Guardrail Registry sensitive_route_target persistence
+    // Check 5a-bis: External Guardrail Webhook creation, editing & persistence
     await page.locator('aside button', { hasText: 'Guardrails' }).click();
-    await page.getByRole('button', { name: 'Named Guardrails & Registry' }).click();
+    await page.getByRole('heading', { name: 'Guardrails & Security Policy' }).waitFor({ state: 'visible' });
     await page.getByRole('button', { name: 'New Guardrail' }).click();
-    const defModal = modalByTitle(page, 'Create Named Guardrail');
+    const defModal = modalByTitle(page, 'Create External Guardrail');
     await defModal.waitFor({ state: 'visible' });
-    await defModal.locator('input[placeholder="e.g. prod-pii-presidio"]').fill(`ui-e2e-route-guard-${suffix}`);
-    await defModal.locator('input[placeholder="e.g. private-local"]').fill('private-local');
+    await defModal.locator('input[placeholder="e.g. corp-dlp-webhook"]').fill(`ui-e2e-webhook-${suffix}`);
+    await defModal.locator('input[placeholder="https://guardrails.internal.corp/v1/evaluate"]').fill('https://guardrails.example.com/v1/evaluate');
     await defModal.getByRole('button', { name: 'Create Guardrail' }).click();
-    const defCard = page.locator('div.rounded-lg', { hasText: `ui-e2e-route-guard-${suffix}` }).first();
-    await defCard.waitFor({ state: 'visible' });
-    await defCard.getByText('route:private-local', { exact: true }).waitFor({ state: 'visible' });
-    await defCard.getByRole('button', { name: 'Edit' }).click();
+    const defRow = page.locator('tbody tr', { hasText: `ui-e2e-webhook-${suffix}` }).first();
+    await defRow.waitFor({ state: 'visible' });
+    await defRow.getByText('generic_http', { exact: true }).waitFor({ state: 'visible' });
+    await defRow.locator('button[title="Edit Guardrail"]').click();
     const editDefModal = modalByTitle(page, /Edit Guardrail:/);
     await editDefModal.waitFor({ state: 'visible' });
-    assert.equal(await editDefModal.locator('input[placeholder="e.g. private-local"]').inputValue(), 'private-local');
+    assert.equal(await editDefModal.locator('input[placeholder="https://guardrails.internal.corp/v1/evaluate"]').inputValue(), 'https://guardrails.example.com/v1/evaluate');
     await editDefModal.getByRole('button', { name: 'Cancel' }).click();
 
     // Check 5b: ConfigView Rotate KEK visibility & execution for platform_admin

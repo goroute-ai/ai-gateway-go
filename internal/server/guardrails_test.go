@@ -47,24 +47,52 @@ func TestGuardrailTextInputAndOutputHelpers(t *testing.T) {
 		t.Fatalf("redacted input = %#v, err=%v", input, err)
 	}
 
-	// Verify Pipeline v2 named post_call drivers apply through sanitizeGuardrailText and sanitizeGuardrailValue.
+	// Verify external generic_http post_call driver applies through sanitizeGuardrailText and sanitizeGuardrailValue.
+	webhookSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Texts []string `json:"texts"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		modified := make([]string, len(req.Texts))
+		changed := false
+		for i, txt := range req.Texts {
+			if strings.Contains(txt, "internal-secret-") {
+				modified[i] = strings.ReplaceAll(strings.ReplaceAll(txt, "internal-secret-99", "[MASKED_INTERNAL]"), "internal-secret-7", "[MASKED_INTERNAL]")
+				changed = true
+			} else {
+				modified[i] = txt
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if changed {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"decision":       "modify",
+				"modified_texts": modified,
+			})
+			return
+		}
+		_, _ = w.Write([]byte(`{"decision":"allow"}`))
+	}))
+	defer webhookSrv.Close()
+
 	if err := repo.CreateGuardrailDefinition(context.Background(), &domain.GuardrailDefinition{
 		ID:         "def-post-text-filter",
 		OrgID:      "org",
 		Name:       "post-text-filter",
-		Provider:   "local_content_filter",
+		Provider:   "generic_http",
 		EventHooks: []domain.GuardrailHook{domain.GuardrailHookPostCall},
-		DefaultOn:  true,
-		Status:     domain.GuardrailStatusActive,
+		Enabled:    true,
 		Config: map[string]any{
-			"action":             "redact",
-			"redact_replacement": "[MASKED_INTERNAL]",
-			"patterns":           []string{`internal-secret-\d+`},
+			"url": webhookSrv.URL,
 		},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	sWithRepo := &GatewayServer{repo: repo, guardrails: guardrails.NewEngine(repo)}
+	netPol, err := network.NewPolicy(config.OutboundSSRFConfig{AllowPrivateNetworks: true, AllowInsecureHTTP: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sWithRepo := &GatewayServer{repo: repo, guardrails: guardrails.NewEngine(repo), netPolicy: netPol}
 	redactedText, err := sWithRepo.sanitizeGuardrailText(context.Background(), "org", "token internal-secret-99 ok")
 	if err != nil || redactedText != "token [MASKED_INTERNAL] ok" {
 		t.Fatalf("sanitizeGuardrailText with post_call driver = %q, err=%v", redactedText, err)
@@ -478,27 +506,8 @@ func setupA2AGuardrailsTestServer(t *testing.T, upstreamHandler http.HandlerFunc
 	return s, repo, mockUpstream
 }
 
-func TestStreamingOutputGuardrailBlockAndExternalScannerAcrossEndpoints(t *testing.T) {
+func TestStreamingOutputGuardrailBlockAcrossEndpoints(t *testing.T) {
 	ctx := context.Background()
-
-	var outputScannerCalls atomic.Int32
-	scannerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var payload struct {
-			Direction string `json:"direction"`
-			Content   string `json:"content"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&payload)
-		w.Header().Set("Content-Type", "application/json")
-		if payload.Direction == "output" {
-			outputScannerCalls.Add(1)
-			if strings.Contains(payload.Content, "FORBIDDEN_STREAM_TOKEN") {
-				_, _ = w.Write([]byte(`{"decision":"block","violations":["external_stream_block"]}`))
-				return
-			}
-		}
-		_, _ = w.Write([]byte(`{"decision":"allow"}`))
-	}))
-	defer scannerSrv.Close()
 
 	// Upstream OpenAI-compatible server supporting both /v1/chat/completions and /v1/completions SSE streams.
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -520,14 +529,6 @@ func TestStreamingOutputGuardrailBlockAndExternalScannerAcrossEndpoints(t *testi
 	cfg.Server.Environment = "test"
 	cfg.Security.Network.OutboundSSRF.AllowPrivateNetworks = true
 	cfg.Security.Network.OutboundSSRF.AllowInsecureHTTP = true
-	cfg.Guardrails.Scanners = []config.GuardrailScannerConfig{
-		{
-			Name:      "stream-scanner",
-			URL:       scannerSrv.URL,
-			TimeoutMs: 1000,
-			FailOpen:  false,
-		},
-	}
 	cfg.ModelList = []config.ModelListEntry{
 		{
 			ModelName: "gpt-4o-mini",
@@ -547,11 +548,20 @@ func TestStreamingOutputGuardrailBlockAndExternalScannerAcrossEndpoints(t *testi
 		},
 	}
 
-	gw, err := New(cfg, storage.NewMemoryRepository(), nil, upstream.Client())
+	repo := storage.NewMemoryRepository()
+	gw, err := New(cfg, repo, nil, upstream.Client())
 	if err != nil {
 		t.Fatalf("New server: %v", err)
 	}
 	defer gw.Shutdown(ctx)
+
+	if err := repo.SetGuardrailPolicy(ctx, &domain.GuardrailPolicy{
+		OrgID:           "org_default",
+		Mode:            domain.GuardrailModeEnforce,
+		BlockedKeywords: []string{"FORBIDDEN_STREAM_TOKEN"},
+	}); err != nil {
+		t.Fatalf("SetGuardrailPolicy: %v", err)
+	}
 
 	// Issue a virtual key with wildcard permissions.
 	keyReq := httptest.NewRequest(http.MethodPost, "/admin/v1/keys", strings.NewReader(`{"org_id":"org_default","name":"stream-block-key","allowed_endpoints":["*"],"allowed_models":["*"]}`))
@@ -597,7 +607,6 @@ func TestStreamingOutputGuardrailBlockAndExternalScannerAcrossEndpoints(t *testi
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			beforeBlocks := gw.collector.Snapshot().GuardrailBlocks
-			beforeScannerCalls := outputScannerCalls.Load()
 
 			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
 			req.Header.Set("Authorization", "Bearer "+issuedKey.Key)
@@ -606,9 +615,6 @@ func TestStreamingOutputGuardrailBlockAndExternalScannerAcrossEndpoints(t *testi
 			gw.Handler().ServeHTTP(rec, req)
 
 			out := rec.Body.String()
-			if outputScannerCalls.Load() <= beforeScannerCalls {
-				t.Fatalf("%s: expected external output scanner to be invoked on stream", tc.name)
-			}
 			if !strings.Contains(out, "guardrail_blocked") {
 				t.Fatalf("%s: expected SSE guardrail_blocked error event, got: %s", tc.name, out)
 			}

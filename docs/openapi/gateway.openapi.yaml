@@ -385,10 +385,6 @@ components:
           type: string
         context_id:
           type: string
-        guardrails:
-          type: array
-          items:
-            $ref: '#/components/schemas/GuardrailRequestOverride'
         tags:
           type: array
           items:
@@ -407,21 +403,6 @@ components:
           type: string
         drop_unsupported_params:
           type: boolean
-    GuardrailRequestOverride:
-      type: object
-      required:
-        - name
-      properties:
-        name:
-          type: string
-        enabled:
-          type: boolean
-        action:
-          type: string
-          enum: [block, redact, audit, route]
-        config:
-          type: object
-          additionalProperties: true
     EmbeddingResponse:
       type: object
       required:
@@ -1378,40 +1359,9 @@ components:
       properties:
         prompt:
           type: string
-        input:
-          type: string
-        text:
-          type: string
-        texts:
-          type: array
-          items:
-            type: string
-        messages:
-          type: array
-          items:
-            type: object
-            additionalProperties: true
-        tools:
-          type: array
-          items:
-            type: object
-            additionalProperties: true
-        tool_calls:
-          type: array
-          items:
-            type: object
-            additionalProperties: true
-        tags:
-          type: array
-          items:
-            type: string
         direction:
           type: string
           enum: [input, output]
-        guardrail_name:
-          type: string
-        stream_chunk_size:
-          type: integer
         policy:
           $ref: '#/components/schemas/GuardrailPolicy'
     GuardrailPolicy:
@@ -1428,18 +1378,22 @@ components:
           type: boolean
         prompt_injection_action:
           type: string
-          enum: [block, redact, audit, route]
+          enum: [block, redact, audit]
         enable_pii_detection:
           type: boolean
         pii_action:
           type: string
-          enum: [block, redact, audit, route]
+          enum: [block, redact, audit]
         enable_secret_detection:
           type: boolean
         secret_action:
           type: string
-          enum: [block, redact, audit, route]
+          enum: [block, redact, audit]
         blocked_keywords:
+          type: array
+          items:
+            type: string
+        blocked_patterns:
           type: array
           items:
             type: string
@@ -1449,7 +1403,7 @@ components:
           type: boolean
         toxicity_action:
           type: string
-          enum: [block, redact, audit, route]
+          enum: [block, redact, audit]
         toxicity_threshold:
           type: string
           enum: [low, medium, high]
@@ -1461,8 +1415,6 @@ components:
           type: array
           items:
             type: string
-        sensitive_route_target:
-          type: string
         updated_at:
           type: string
           format: date-time
@@ -1477,42 +1429,17 @@ components:
           type: string
         action:
           type: string
-        applied_action:
-          type: string
-        direction:
+        redacted:
+          type: boolean
+        redacted_text:
           type: string
         violations:
           type: array
-          items: {}
-        redacted:
-          type: boolean
-        redacted_prompt:
-          type: string
-        texts:
-          type: array
           items:
             type: string
-        modified_texts:
-          type: array
-          items:
-            type: string
-        modified_messages:
-          type: array
-          items:
-            type: object
-            additionalProperties: true
-        modified_tool_calls:
-          type: array
-          items:
-            type: object
-            additionalProperties: true
-        applied_guardrails:
-          type: array
-          items:
-            type: string
-        stream_chunks_evaluated:
-          type: integer
         error_message:
+          type: string
+        effective_mode:
           type: string
     CredentialValidateRequest:
       type: object
@@ -2766,113 +2693,6 @@ components:
           type: string
         auth_token:
           type: string
-    GuardrailApplyRequest:
-      type: object
-      properties:
-        guardrail_name:
-          type: string
-        input_type:
-          type: string
-          enum: [request, input, response, output]
-        text:
-          type: string
-        texts:
-          type: array
-          items:
-            type: string
-        messages:
-          type: array
-          items:
-            type: object
-            additionalProperties: true
-        tools:
-          type: array
-          items:
-            type: object
-            additionalProperties: true
-        tool_calls:
-          type: array
-          items:
-            type: object
-            additionalProperties: true
-        tags:
-          type: array
-          items:
-            type: string
-        metadata:
-          type: object
-          additionalProperties: true
-        model:
-          type: string
-    GuardrailViolation:
-      type: object
-      properties:
-        guardrail_name:
-          type: string
-        guardrail_id:
-          type: string
-        provider:
-          type: string
-        category:
-          type: string
-        rule:
-          type: string
-        severity:
-          type: string
-        message:
-          type: string
-        score:
-          type: number
-        action:
-          type: string
-        decision:
-          type: string
-        details:
-          type: object
-          additionalProperties: true
-    GuardrailApplyResponse:
-      type: object
-      properties:
-        decision:
-          type: string
-        action:
-          type: string
-        blocked:
-          type: boolean
-        texts:
-          type: array
-          items:
-            type: string
-        modified_texts:
-          type: array
-          items:
-            type: string
-        modified_messages:
-          type: array
-          items:
-            type: object
-            additionalProperties: true
-        modified_tool_calls:
-          type: array
-          items:
-            type: object
-            additionalProperties: true
-        violations:
-          type: array
-          items:
-            $ref: '#/components/schemas/GuardrailViolation'
-        applied_guardrails:
-          type: array
-          items:
-            type: string
-        usage_units:
-          type: integer
-          format: int64
-        latency_ms:
-          type: integer
-          format: int64
-        error_message:
-          type: string
     GuardrailDefinition:
       type: object
       properties:
@@ -2884,25 +2704,14 @@ components:
           type: string
         provider:
           type: string
+          enum: [generic_http, openai_moderation]
         event_hooks:
           type: array
           items:
             type: string
-        stream_scope:
-          type: string
-        stream_scope_by_hook:
-          type: object
-          additionalProperties:
-            type: string
-        mode_rule:
-          type: object
-          additionalProperties: true
-        default_on:
+            enum: [pre_call, post_call, logging_only]
+        enabled:
           type: boolean
-        enabled_roles:
-          type: array
-          items:
-            type: string
         timeout_ms:
           type: integer
         fail_open:
@@ -2914,16 +2723,6 @@ components:
           additionalProperties: true
         has_secrets:
           type: boolean
-        status:
-          type: string
-          enum: [active, pending_review, rejected]
-        sensitive_route_target:
-          type: string
-        guardrail_info:
-          type: object
-          additionalProperties: true
-        weight:
-          type: integer
         created_at:
           type: string
           format: date-time
@@ -2942,25 +2741,14 @@ components:
           type: string
         provider:
           type: string
+          enum: [generic_http, openai_moderation]
         event_hooks:
           type: array
           items:
             type: string
-        stream_scope:
-          type: string
-        stream_scope_by_hook:
-          type: object
-          additionalProperties:
-            type: string
-        mode_rule:
-          type: object
-          additionalProperties: true
-        default_on:
+            enum: [pre_call, post_call, logging_only]
+        enabled:
           type: boolean
-        enabled_roles:
-          type: array
-          items:
-            type: string
         timeout_ms:
           type: integer
         fail_open:
@@ -2973,306 +2761,6 @@ components:
         secrets:
           type: object
           additionalProperties: true
-        clear_secrets:
-          type: boolean
-        status:
-          type: string
-          enum: [active, pending_review, rejected]
-        sensitive_route_target:
-          type: string
-        guardrail_info:
-          type: object
-          additionalProperties: true
-        weight:
-          type: integer
-    GuardrailDefinitionPatchRequest:
-      type: object
-      properties:
-        name:
-          type: string
-        provider:
-          type: string
-        event_hooks:
-          type: array
-          items:
-            type: string
-        stream_scope:
-          type: string
-        stream_scope_by_hook:
-          type: object
-          additionalProperties:
-            type: string
-        mode_rule:
-          type: object
-          additionalProperties: true
-        default_on:
-          type: boolean
-        enabled_roles:
-          type: array
-          items:
-            type: string
-        timeout_ms:
-          type: integer
-        fail_open:
-          type: boolean
-        precedence:
-          type: integer
-        config:
-          type: object
-          additionalProperties: true
-        secrets:
-          type: object
-          additionalProperties: true
-        clear_secrets:
-          type: boolean
-        status:
-          type: string
-          enum: [active, pending_review, rejected]
-        sensitive_route_target:
-          type: string
-        guardrail_info:
-          type: object
-          additionalProperties: true
-        weight:
-          type: integer
-    GuardrailStatusUpdateRequest:
-      type: object
-      required:
-        - status
-      properties:
-        status:
-          type: string
-          enum: [active, pending_review, rejected]
-    GuardrailBinding:
-      type: object
-      properties:
-        id:
-          type: string
-        org_id:
-          type: string
-        guardrail_id:
-          type: string
-        guardrail_name:
-          type: string
-        team_id:
-          type: string
-        virtual_key_id:
-          type: string
-        end_user_id:
-          type: string
-        model_group_id:
-          type: string
-        tag:
-          type: string
-        param_overrides:
-          type: object
-          additionalProperties: true
-        is_locked:
-          type: boolean
-        created_at:
-          type: string
-          format: date-time
-        updated_at:
-          type: string
-          format: date-time
-    GuardrailBindingCreateRequest:
-      type: object
-      properties:
-        id:
-          type: string
-        org_id:
-          type: string
-        guardrail_id:
-          type: string
-        guardrail_name:
-          type: string
-        team_id:
-          type: string
-        virtual_key_id:
-          type: string
-        end_user_id:
-          type: string
-        model_group_id:
-          type: string
-        tag:
-          type: string
-        param_overrides:
-          type: object
-          additionalProperties: true
-        is_locked:
-          type: boolean
-    ToolPolicy:
-      type: object
-      properties:
-        id:
-          type: string
-        org_id:
-          type: string
-        team_id:
-          type: string
-        virtual_key_id:
-          type: string
-        tool_name:
-          type: string
-        input_policy:
-          type: string
-          enum: [untrusted, trusted, blocked]
-        output_policy:
-          type: string
-          enum: [untrusted, trusted]
-        created_at:
-          type: string
-          format: date-time
-        updated_at:
-          type: string
-          format: date-time
-    ToolPolicyUpsertRequest:
-      type: object
-      required:
-        - tool_name
-      properties:
-        id:
-          type: string
-        team_id:
-          type: string
-        virtual_key_id:
-          type: string
-        tool_name:
-          type: string
-        input_policy:
-          type: string
-          enum: [untrusted, trusted, blocked]
-        output_policy:
-          type: string
-          enum: [untrusted, trusted]
-    GuardrailUsageSummary:
-      type: object
-      properties:
-        org_id:
-          type: string
-        start_date:
-          type: string
-        end_date:
-          type: string
-        total_cost_micros:
-          type: integer
-          format: int64
-        totals:
-          type: object
-          properties:
-            evaluations:
-              type: integer
-              format: int64
-            blocks:
-              type: integer
-              format: int64
-            redactions:
-              type: integer
-              format: int64
-            flags:
-              type: integer
-              format: int64
-            errors:
-              type: integer
-              format: int64
-            latency_sum_ms:
-              type: integer
-              format: int64
-            total_units:
-              type: integer
-              format: int64
-            total_cost_micros:
-              type: integer
-              format: int64
-        daily_series:
-          type: array
-          items:
-            type: object
-            properties:
-              date:
-                type: string
-              guardrail_id:
-                type: string
-              guardrail_name:
-                type: string
-              evaluations:
-                type: integer
-                format: int64
-              blocks:
-                type: integer
-                format: int64
-              redactions:
-                type: integer
-                format: int64
-              flags:
-                type: integer
-                format: int64
-              errors:
-                type: integer
-                format: int64
-              latency_sum_ms:
-                type: integer
-                format: int64
-              units:
-                type: integer
-                format: int64
-              cost_micros:
-                type: integer
-                format: int64
-        usage_units:
-          type: array
-          items:
-            type: object
-            properties:
-              date:
-                type: string
-              guardrail_id:
-                type: string
-              team_id:
-                type: string
-              virtual_key_id:
-                type: string
-              usage_unit:
-                type: string
-              units:
-                type: integer
-                format: int64
-              cost_micros:
-                type: integer
-                format: int64
-        top_triggered:
-          type: array
-          items:
-            type: object
-            properties:
-              guardrail_id:
-                type: string
-              guardrail_name:
-                type: string
-              evaluations:
-                type: integer
-                format: int64
-              blocks:
-                type: integer
-                format: int64
-              redactions:
-                type: integer
-                format: int64
-              flags:
-                type: integer
-                format: int64
-              triggered_count:
-                type: integer
-                format: int64
-              errors:
-                type: integer
-                format: int64
-              units:
-                type: integer
-                format: int64
-              cost_micros:
-                type: integer
-                format: int64
     AdminQuotaPolicy:
       type: object
       required:
@@ -7338,27 +6826,10 @@ paths:
                   push_config:
                     type: object
                     additionalProperties: true
-  /v1/guardrails/apply:
-    post:
-      operationId: applyGuardrails
-      summary: Evaluate named or effective tenant guardrails against structured inputs, messages, or tool calls
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/GuardrailApplyRequest'
-      responses:
-        '200':
-          description: Guardrail evaluation outcome and optional modifications
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/GuardrailApplyResponse'
   /admin/v1/organizations/{orgID}/guardrail-definitions:
     post:
       operationId: createGuardrailDefinition
-      summary: Create a tenant-scoped guardrail definition with optional Vault-encrypted secrets
+      summary: Create a tenant-scoped external guardrail definition with optional Vault-encrypted secrets
       parameters:
         - name: orgID
           in: path
@@ -7380,21 +6851,17 @@ paths:
                 $ref: '#/components/schemas/GuardrailDefinition'
     get:
       operationId: listGuardrailDefinitions
-      summary: List guardrail definitions for an organization
+      summary: List external guardrail definitions for an organization
       parameters:
         - name: orgID
           in: path
           required: true
           schema:
             type: string
-        - name: status
+        - name: enabled
           in: query
           schema:
-            type: string
-        - name: name
-          in: query
-          schema:
-            type: string
+            type: boolean
       responses:
         '200':
           description: Guardrail definitions in the organization
@@ -7426,7 +6893,7 @@ paths:
                 $ref: '#/components/schemas/GuardrailDefinition'
     put:
       operationId: updateGuardrailDefinition
-      summary: Replace mutable fields on an existing guardrail definition
+      summary: Update an existing guardrail definition
       parameters:
         - name: guardrailID
           in: path
@@ -7442,28 +6909,6 @@ paths:
       responses:
         '200':
           description: Updated guardrail definition
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/GuardrailDefinition'
-    patch:
-      operationId: patchGuardrailDefinition
-      summary: Partially update an existing guardrail definition
-      parameters:
-        - name: guardrailID
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/GuardrailDefinitionPatchRequest'
-      responses:
-        '200':
-          description: Patched guardrail definition
           content:
             application/json:
               schema:
@@ -7484,220 +6929,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AdminDeleteStatusResponse'
-  /admin/v1/guardrail-definitions/{guardrailID}/status:
-    post:
-      operationId: setGuardrailDefinitionStatus
-      summary: Transition the approval status of a guardrail definition
-      parameters:
-        - name: guardrailID
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/GuardrailStatusUpdateRequest'
-      responses:
-        '200':
-          description: Updated guardrail definition status
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/GuardrailDefinition'
-  /admin/v1/guardrail-bindings:
-    post:
-      operationId: createGuardrailBinding
-      summary: Create a hierarchical scope binding for a guardrail definition
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/GuardrailBindingCreateRequest'
-      responses:
-        '201':
-          description: Created guardrail binding
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/GuardrailBinding'
-  /admin/v1/organizations/{orgID}/guardrail-bindings:
-    get:
-      operationId: listGuardrailBindings
-      summary: List guardrail bindings for an organization
-      parameters:
-        - name: orgID
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: guardrail_id
-          in: query
-          schema:
-            type: string
-        - name: guardrail_name
-          in: query
-          schema:
-            type: string
-        - name: team_id
-          in: query
-          schema:
-            type: string
-        - name: virtual_key_id
-          in: query
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Guardrail bindings
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  data:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/GuardrailBinding'
-  /admin/v1/guardrail-bindings/{bindingID}:
-    delete:
-      operationId: deleteGuardrailBinding
-      summary: Delete a guardrail binding
-      parameters:
-        - name: bindingID
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Guardrail binding deleted
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AdminDeleteStatusResponse'
-  /admin/v1/organizations/{orgID}/tool-policies:
-    post:
-      operationId: upsertToolPolicy
-      summary: Create or update a tenant-scoped tool trust policy
-      parameters:
-        - name: orgID
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ToolPolicyUpsertRequest'
-      responses:
-        '200':
-          description: Upserted tool trust policy
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ToolPolicy'
-    get:
-      operationId: listToolPolicies
-      summary: List tool trust policies for an organization
-      parameters:
-        - name: orgID
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: team_id
-          in: query
-          schema:
-            type: string
-        - name: virtual_key_id
-          in: query
-          schema:
-            type: string
-        - name: tool_name
-          in: query
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Tool policies
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  data:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/ToolPolicy'
-  /admin/v1/organizations/{orgID}/tool-policies/{policyID}:
-    delete:
-      operationId: deleteToolPolicy
-      summary: Delete a tool trust policy
-      parameters:
-        - name: orgID
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: policyID
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Tool policy deleted
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AdminDeleteStatusResponse'
-  /admin/v1/organizations/{orgID}/guardrail-usage:
-    get:
-      operationId: getGuardrailUsageSummary
-      summary: Retrieve daily guardrail metrics, top triggered guardrails, usage units, and micro-dollar cost rollups
-      parameters:
-        - name: orgID
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: start_date
-          in: query
-          schema:
-            type: string
-        - name: end_date
-          in: query
-          schema:
-            type: string
-        - name: guardrail_id
-          in: query
-          schema:
-            type: string
-        - name: team_id
-          in: query
-          schema:
-            type: string
-        - name: virtual_key_id
-          in: query
-          schema:
-            type: string
-        - name: top_limit
-          in: query
-          schema:
-            type: integer
-      responses:
-        '200':
-          description: Guardrail usage summary
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/GuardrailUsageSummary'
   /v1/key/info:
     get:
       operationId: getVirtualKeySelfInfo

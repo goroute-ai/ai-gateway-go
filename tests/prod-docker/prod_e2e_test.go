@@ -366,6 +366,45 @@ func TestProdDocker_Suite1_HealthMigrationsHeadersAndRemovedRoutes(t *testing.T)
 	if !strings.Contains(idxOut, "idx_audit_logs_org_created_id") {
 		t.Fatalf("migration 0041 audit_logs index missing: %q", idxOut)
 	}
+
+	// Verify migration 0044_simplify_guardrails schema parity & removed guardrail routes
+	gpCols := psqlExec(t, "SELECT column_name FROM information_schema.columns WHERE table_name='guardrail_policies' AND column_name='blocked_patterns';")
+	if !strings.Contains(gpCols, "blocked_patterns") {
+		t.Fatalf("migration 0044 column blocked_patterns missing from guardrail_policies: %q", gpCols)
+	}
+	gdCols := psqlExec(t, "SELECT column_name FROM information_schema.columns WHERE table_name='guardrail_definitions' AND column_name='enabled';")
+	if !strings.Contains(gdCols, "enabled") {
+		t.Fatalf("migration 0044 column enabled missing from guardrail_definitions: %q", gdCols)
+	}
+	for _, droppedTbl := range []string{
+		"guardrail_bindings",
+		"tool_policies",
+		"daily_guardrail_metrics",
+		"daily_guardrail_usage_units",
+		"spend_log_guardrails",
+	} {
+		if got := strings.TrimSpace(psqlExec(t, fmt.Sprintf("SELECT to_regclass('public.%s');", droppedTbl))); got != "" {
+			t.Fatalf("expected table %s dropped by migration 0044, got %q", droppedTbl, got)
+		}
+	}
+	v1Token := mintKeycloakToken(t, client, "goroute-prod", "goroute-ci-mint", "goroute-ci-mint-secret-2026", "orgadmin@goroute.local", "ProdOrgAdmin!2026")
+	for _, removedPath := range []struct {
+		method string
+		path   string
+		token  string
+	}{
+		{http.MethodPost, "/v1/guardrails/apply", v1Token},
+		{http.MethodPost, "/admin/v1/guardrail-bindings", prodMasterKey},
+		{http.MethodGet, "/admin/v1/organizations/org_default/tool-policies", prodMasterKey},
+		{http.MethodGet, "/admin/v1/organizations/org_default/guardrail-usage", prodMasterKey},
+	} {
+		resp, _ := doReq(t, client, removedPath.method, prodLBBase+removedPath.path, map[string]any{}, map[string]string{
+			"Authorization": "Bearer " + removedPath.token,
+		})
+		if resp.StatusCode != http.StatusNotFound && resp.StatusCode != http.StatusMethodNotAllowed {
+			t.Fatalf("removed guardrail route %s %s returned %d, want 404/405", removedPath.method, removedPath.path, resp.StatusCode)
+		}
+	}
 }
 
 func TestProdDocker_Suite3_AsymmetricJWT_MultiIssuer_GroupRoleSync_AndSCIM(t *testing.T) {
@@ -1011,11 +1050,6 @@ func TestProdDocker_Suite7_MCP_UnconditionalToolPolicy_A2A_AndUnifiedAccessGroup
 		"org_id": org.ID, "name": "GH Read Only", "slug": "gh-ro-" + suffix, "tool_ids": []string{getIssueID},
 	}, nil, http.StatusCreated)
 
-	// Upsert ToolPolicy blocking delete_repo WITHOUT creating any GuardrailBinding (unconditional enforcement!)
-	mustAdminJSON(t, client, http.MethodPost, prodPod1Base+"/admin/v1/organizations/"+org.ID+"/tool-policies", map[string]any{
-		"tool_name": "delete_repo", "input_policy": "blocked", "output_policy": "trusted",
-	}, nil, http.StatusOK, http.StatusCreated)
-
 	// Register A2A Agent
 	mustAdminJSON(t, client, http.MethodPost, prodPod1Base+"/admin/v1/a2a/agents", map[string]any{
 		"org_id": org.ID, "name": "Researcher", "slug": "researcher",
@@ -1043,18 +1077,15 @@ func TestProdDocker_Suite7_MCP_UnconditionalToolPolicy_A2A_AndUnifiedAccessGroup
 		"allowed_mcp_servers": []string{}, "allowed_a2a_agents": []string{},
 	}, &keyExplicitDeny, http.StatusCreated)
 
-	// 1. Direct POST /mcp & /mcp/github tools/list MUST hide delete_repo unconditionally; Pod 2 scoped cache must isolate keyToolScoped!
+	// 1. Direct POST /mcp/github tools/list returns synced tools; Pod 2 scoped cache must isolate keyToolScoped!
 	listFullResp, listFullBody := doReq(t, client, http.MethodPost, prodPod2Base+"/mcp/github", map[string]any{
 		"jsonrpc": "2.0", "id": 1, "method": "tools/list",
 	}, map[string]string{"Authorization": "Bearer " + keyFullMCP.RawKey})
 	if listFullResp.StatusCode != http.StatusOK {
 		t.Fatalf("tools/list keyFullMCP failed: %d %s", listFullResp.StatusCode, string(listFullBody))
 	}
-	if strings.Contains(string(listFullBody), "delete_repo") {
-		t.Fatalf("blocked ToolPolicy delete_repo leaked into tools/list: %s", string(listFullBody))
-	}
 	if !strings.Contains(string(listFullBody), "get_issue") || !strings.Contains(string(listFullBody), "list_files") {
-		t.Fatalf("expected non-blocked tools in keyFullMCP tools/list: %s", string(listFullBody))
+		t.Fatalf("expected tools in keyFullMCP tools/list: %s", string(listFullBody))
 	}
 
 	// Same endpoint with keyToolScoped must ONLY show get_issue (cache isolation!)
@@ -1068,12 +1099,12 @@ func TestProdDocker_Suite7_MCP_UnconditionalToolPolicy_A2A_AndUnifiedAccessGroup
 		t.Fatalf("keyToolScoped tools/list leaked unlisted tools or missed get_issue: %s", string(listScopedBody))
 	}
 
-	// Calling delete_repo returns 403 violated_tool_policy & emits mcp.tool_policy.blocked audit record
+	// Calling unlisted delete_repo with keyToolScoped is denied by RBAC allowlist
 	blkResp, blkBody := doReq(t, client, http.MethodPost, prodPod1Base+"/mcp/github", map[string]any{
 		"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": map[string]any{"name": "delete_repo", "arguments": map[string]any{}},
-	}, map[string]string{"Authorization": "Bearer " + keyFullMCP.RawKey})
-	if blkResp.StatusCode == http.StatusOK && !strings.Contains(string(blkBody), "violated_tool_policy") {
-		t.Fatalf("expected delete_repo blocked unconditionally, got: %d %s", blkResp.StatusCode, string(blkBody))
+	}, map[string]string{"Authorization": "Bearer " + keyToolScoped.RawKey})
+	if blkResp.StatusCode == http.StatusOK && !strings.Contains(string(blkBody), `"error"`) {
+		t.Fatalf("expected delete_repo denied for keyToolScoped, got: %d %s", blkResp.StatusCode, string(blkBody))
 	}
 	// Allowed tool call succeeds
 	okCallResp, okCallBody := doReq(t, client, http.MethodPost, prodPod2Base+"/mcp/github", map[string]any{
@@ -1224,7 +1255,6 @@ func TestProdDocker_Suite8_ExternalAuthorizer_AuditFilters_AndSIEM(t *testing.T)
 		_, siemBody = doReq(t, client, http.MethodGet, prodFixturesBase+"/_control/siem/events", nil, nil)
 		s := string(siemBody)
 		if strings.Contains(s, "sso.role_synced") &&
-			strings.Contains(s, "mcp.tool_policy.blocked") &&
 			strings.Contains(s, "virtual_key.issued") &&
 			strings.Contains(s, "mcp_server.created") &&
 			strings.Contains(s, "a2a_agent.created") {
@@ -1234,7 +1264,7 @@ func TestProdDocker_Suite8_ExternalAuthorizer_AuditFilters_AndSIEM(t *testing.T)
 		time.Sleep(300 * time.Millisecond)
 	}
 	if !siemOK {
-		t.Fatalf("expected HMAC-verified SIEM webhook events (sso.role_synced, mcp.tool_policy.blocked, virtual_key.issued, mcp_server.created, a2a_agent.created), got: %s", string(siemBody))
+		t.Fatalf("expected HMAC-verified SIEM webhook events (sso.role_synced, virtual_key.issued, mcp_server.created, a2a_agent.created), got: %s", string(siemBody))
 	}
 }
 
@@ -1565,10 +1595,30 @@ func TestProdDocker_Suite99_MultiReplicaHA_ResilienceAndKEKRotation(t *testing.T
 		}
 	}
 
+	// Seed a Vault-encrypted guardrail definition before live KEK rotation to verify DEK re-wrapping.
+	var kekGuard struct {
+		ID string `json:"id"`
+	}
+	mustAdminJSON(t, client, http.MethodPost, prodPod1Base+"/admin/v1/organizations/org_default/guardrail-definitions", map[string]any{
+		"name": "kek-rewrap-guard", "provider": "generic_http", "event_hooks": []string{"pre_call"},
+		"enabled": false, "config": map[string]any{"url": prodFixturesBase + "/guardrail/evaluate"},
+		"secrets": map[string]any{"bearer_token": "prod-guardrail-webhook-secret-2026"},
+	}, &kekGuard, http.StatusCreated)
+	defer func() {
+		doReq(t, client, http.MethodDelete, prodPod1Base+"/admin/v1/guardrail-definitions/"+kekGuard.ID, nil, map[string]string{
+			"Authorization": "Bearer " + prodMasterKey,
+		})
+	}()
+	beforeDEK := strings.TrimSpace(psqlExec(t, fmt.Sprintf("SELECT encrypted_dek FROM guardrail_definitions WHERE id='%s';", kekGuard.ID)))
+
 	rotResp, rotBody := doReq(t, client, http.MethodPost, prodPod1Base+"/admin/v1/security/rotate-kek", map[string]any{
 		"new_master_key": "b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1",
 	}, map[string]string{"Authorization": "Bearer " + prodMasterKey})
 	if rotResp.StatusCode != http.StatusOK {
 		t.Fatalf("live KEK rotation failed: status=%d body=%s", rotResp.StatusCode, string(rotBody))
+	}
+	afterDEK := strings.TrimSpace(psqlExec(t, fmt.Sprintf("SELECT encrypted_dek FROM guardrail_definitions WHERE id='%s';", kekGuard.ID)))
+	if beforeDEK == "" || afterDEK == "" || beforeDEK == afterDEK {
+		t.Fatalf("expected guardrail_definitions.encrypted_dek to be re-wrapped by live KEK rotation (before=%q after=%q)", beforeDEK, afterDEK)
 	}
 }

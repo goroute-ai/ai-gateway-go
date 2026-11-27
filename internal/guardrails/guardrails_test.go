@@ -5,7 +5,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
@@ -103,118 +102,61 @@ func TestMissingGuardrailPolicyRemainsAllowed(t *testing.T) {
 	}
 }
 
-type scannerFunc func(context.Context, ScanRequest) (ScanResult, error)
-
-func (f scannerFunc) Scan(ctx context.Context, req ScanRequest) (ScanResult, error) {
-	return f(ctx, req)
-}
-
-func testChatRequest() *domain.CanonicalChatRequest {
-	return &domain.CanonicalChatRequest{Messages: []domain.CanonicalMessage{{Role: "user", Content: "hello"}}}
-}
-
-func TestOptionalScannerAllowAndBlock(t *testing.T) {
+func TestPhoneIPv4AndBlockedPatterns(t *testing.T) {
+	ctx := context.Background()
 	eng := NewEngine(storage.NewMemoryRepository())
-	called := false
-	eng.ConfigureScanners(time.Second, true, scannerFunc(func(_ context.Context, req ScanRequest) (ScanResult, error) {
-		called = true
-		if req.OrgID != "org-1" || req.Direction != ScanInput || req.Content != "hello" {
-			t.Fatalf("unexpected scanner request: %+v", req)
-		}
-		return ScanResult{Decision: ScannerDecisionAllow}, nil
-	}))
-	if _, err := eng.EvaluateInput(context.Background(), "org-1", testChatRequest()); err != nil {
-		t.Fatalf("allow decision returned error: %v", err)
+
+	// 1. Phone numbers and IPv4 addresses are redacted when PII detection is enabled.
+	piiPol := &domain.GuardrailPolicy{
+		OrgID:              "org-pii",
+		Mode:               domain.GuardrailModeEnforce,
+		EnablePIIDetection: true,
+		PIIAction:          domain.GuardrailActionRedact,
 	}
-	if !called {
-		t.Fatal("configured scanner was not called")
+	req := &domain.CanonicalChatRequest{
+		Messages: []domain.CanonicalMessage{
+			{Role: "user", Content: "Call me at +1 (415) 555-2671 from host 192.168.10.42."},
+		},
+	}
+	outcome, err := eng.EvaluateInputWithPolicy(ctx, piiPol, req)
+	if err != nil {
+		t.Fatalf("unexpected error redacting phone/ipv4: %v", err)
+	}
+	if !outcome.Redacted {
+		t.Fatal("expected outcome.Redacted = true")
+	}
+	got := req.Messages[0].Content
+	if strings.Contains(got, "555-2671") || strings.Contains(got, "192.168.10.42") {
+		t.Fatalf("phone or ipv4 leaked: %q", got)
+	}
+	if !strings.Contains(got, "[REDACTED_PHONE]") || !strings.Contains(got, "[REDACTED_IP]") {
+		t.Fatalf("expected [REDACTED_PHONE] and [REDACTED_IP], got: %q", got)
 	}
 
-	eng.ConfigureScanners(time.Second, true, scannerFunc(func(context.Context, ScanRequest) (ScanResult, error) {
-		return ScanResult{Decision: ScannerDecisionBlock, Violations: []string{"policy:deny"}}, nil
-	}))
-	outcome, err := eng.EvaluateInput(context.Background(), "org-1", testChatRequest())
-	var gatewayErr *domain.GatewayError
-	if !errors.As(err, &gatewayErr) || gatewayErr.Code != "guardrail_scanner_blocked" || gatewayErr.StatusCode != 400 {
-		t.Fatalf("expected scanner block error, got outcome=%+v err=%v", outcome, err)
+	// 2. BlockedPatterns rejects matching requests and outputs.
+	patPol := &domain.GuardrailPolicy{
+		OrgID:           "org-pat",
+		Mode:            domain.GuardrailModeEnforce,
+		BlockedPatterns: []string{`INTERNAL-\d{4}`},
 	}
-	if len(outcome.Violations) == 0 || outcome.AppliedAction != domain.GuardrailActionBlock {
-		t.Fatalf("unexpected block outcome: %+v", outcome)
+	if err := ValidateBlockedPatterns(patPol.BlockedPatterns); err != nil {
+		t.Fatalf("ValidateBlockedPatterns failed for valid regex: %v", err)
 	}
-}
-
-func TestOptionalScannerErrorsFollowConfiguredPolicy(t *testing.T) {
-	boom := errors.New("scanner unavailable")
-	eng := NewEngine(storage.NewMemoryRepository())
-	eng.ConfigureScanners(time.Second, true, scannerFunc(func(context.Context, ScanRequest) (ScanResult, error) { return ScanResult{}, boom }))
-	_, err := eng.EvaluateInput(context.Background(), "org-1", testChatRequest())
-	var gatewayErr *domain.GatewayError
-	if !errors.As(err, &gatewayErr) || gatewayErr.Code != "guardrail_scanner_unavailable" || gatewayErr.StatusCode != 503 {
-		t.Fatalf("expected fail-closed scanner error, got %v", err)
+	if err := ValidateBlockedPatterns([]string{`[invalid-regex`}); err == nil {
+		t.Fatal("expected ValidateBlockedPatterns error for invalid regex")
 	}
-
-	eng.ConfigureScanners(time.Second, false, scannerFunc(func(context.Context, ScanRequest) (ScanResult, error) { return ScanResult{}, boom }))
-	if _, err := eng.EvaluateInput(context.Background(), "org-1", testChatRequest()); err != nil {
-		t.Fatalf("fail-open scanner error was not ignored: %v", err)
+	_, err = eng.EvaluateInputWithPolicy(ctx, patPol, &domain.CanonicalChatRequest{
+		Messages: []domain.CanonicalMessage{{Role: "user", Content: "Ticket INTERNAL-9001 details"}},
+	})
+	var gwErr *domain.GatewayError
+	if !errors.As(err, &gwErr) || gwErr.StatusCode != 400 {
+		t.Fatalf("expected 400 block on blocked pattern input, got %v", err)
 	}
-}
-
-func TestOptionalScannerTimeoutUsesBoundedContext(t *testing.T) {
-	eng := NewEngine(storage.NewMemoryRepository())
-	eng.ConfigureScanners(20*time.Millisecond, true, scannerFunc(func(ctx context.Context, _ ScanRequest) (ScanResult, error) {
-		<-ctx.Done()
-		return ScanResult{}, ctx.Err()
-	}))
-	started := time.Now()
-	_, err := eng.EvaluateInput(context.Background(), "org-1", testChatRequest())
-	if time.Since(started) > time.Second {
-		t.Fatal("scanner timeout was not bounded")
-	}
-	var gatewayErr *domain.GatewayError
-	if !errors.As(err, &gatewayErr) || gatewayErr.Code != "guardrail_scanner_unavailable" {
-		t.Fatalf("expected timeout to fail closed, got %v", err)
-	}
-}
-
-func TestNoOptionalScannerByDefault(t *testing.T) {
-	eng := NewEngine(storage.NewMemoryRepository())
-	if _, err := eng.EvaluateInput(context.Background(), "org-1", testChatRequest()); err != nil {
-		t.Fatalf("local-only default returned error: %v", err)
-	}
-}
-
-func TestOptionalScannerCanBlockModelOutput(t *testing.T) {
-	eng := NewEngine(storage.NewMemoryRepository())
-	eng.ConfigureScanners(time.Second, true, scannerFunc(func(_ context.Context, req ScanRequest) (ScanResult, error) {
-		if req.Direction != ScanOutput || req.Content != "unsafe output" {
-			t.Fatalf("unexpected output scan request: %+v", req)
-		}
-		return ScanResult{Decision: ScannerDecisionBlock}, nil
-	}))
-	resp := &domain.CanonicalChatResponse{Choices: []domain.CanonicalChoice{{Message: domain.CanonicalMessage{Role: "assistant", Content: "unsafe output"}}}}
-	_, err := eng.SanitizeOutput(context.Background(), "org-1", resp)
-	var gatewayErr *domain.GatewayError
-	if !errors.As(err, &gatewayErr) || gatewayErr.Code != "guardrail_scanner_blocked" {
-		t.Fatalf("expected output block, got %v", err)
-	}
-}
-
-func TestOutputScannerFailureFailsClosedOrOpenAsConfigured(t *testing.T) {
-	resp := func() *domain.CanonicalChatResponse {
-		return &domain.CanonicalChatResponse{Choices: []domain.CanonicalChoice{{Message: domain.CanonicalMessage{Role: "assistant", Content: "private completion"}}}}
-	}
-	scannerErr := errors.New("scanner failed while inspecting private completion")
-	eng := NewEngine(storage.NewMemoryRepository())
-	eng.ConfigureScanners(time.Second, true, scannerFunc(func(context.Context, ScanRequest) (ScanResult, error) { return ScanResult{}, scannerErr }))
-	_, err := eng.SanitizeOutput(context.Background(), "org-1", resp())
-	var gatewayErr *domain.GatewayError
-	if !errors.As(err, &gatewayErr) || gatewayErr.Code != "guardrail_scanner_unavailable" || gatewayErr.StatusCode != 503 {
-		t.Fatalf("expected output scanner error to fail closed, got %v", err)
-	}
-
-	eng.ConfigureScanners(time.Second, false, scannerFunc(func(context.Context, ScanRequest) (ScanResult, error) { return ScanResult{}, scannerErr }))
-	if _, err := eng.SanitizeOutput(context.Background(), "org-1", resp()); err != nil {
-		t.Fatalf("output scanner error should be ignored in fail-open mode: %v", err)
+	_, err = eng.EvaluateOutputWithPolicy(ctx, patPol, &domain.CanonicalChatResponse{
+		Choices: []domain.CanonicalChoice{{Message: domain.CanonicalMessage{Role: "assistant", Content: "Secret INTERNAL-4242"}}},
+	})
+	if !errors.As(err, &gwErr) || gwErr.StatusCode != 502 {
+		t.Fatalf("expected 502 block on blocked pattern output, got %v", err)
 	}
 }
 
@@ -333,9 +275,6 @@ func TestEvaluateInputScansAllRolesWhenEnabled(t *testing.T) {
 
 func TestLoggingOnlyModeRecordsViolationsWithoutBlockingOrMutating(t *testing.T) {
 	eng := NewEngine(storage.NewMemoryRepository())
-	eng.ConfigureScanners(time.Second, true, scannerFunc(func(context.Context, ScanRequest) (ScanResult, error) {
-		return ScanResult{Decision: ScannerDecisionBlock, Violations: []string{"scanner:policy_hit"}}, nil
-	}))
 
 	pol := &domain.GuardrailPolicy{
 		OrgID:                 "org",
@@ -365,7 +304,7 @@ func TestLoggingOnlyModeRecordsViolationsWithoutBlockingOrMutating(t *testing.T)
 	if outcome.AppliedAction != domain.GuardrailActionAudit {
 		t.Fatalf("expected AppliedAction=audit, got %q", outcome.AppliedAction)
 	}
-	if len(outcome.Violations) < 5 {
+	if len(outcome.Violations) < 4 {
 		t.Fatalf("expected all violations recorded, got %v", outcome.Violations)
 	}
 
@@ -379,7 +318,7 @@ func TestLoggingOnlyModeRecordsViolationsWithoutBlockingOrMutating(t *testing.T)
 	if outOutcome.Redacted || resp.Choices[0].Message.Content != orig {
 		t.Fatalf("logging_only output should not mutate content, redacted=%v content=%q", outOutcome.Redacted, resp.Choices[0].Message.Content)
 	}
-	if outOutcome.AppliedAction != domain.GuardrailActionAudit || len(outOutcome.Violations) < 4 {
+	if outOutcome.AppliedAction != domain.GuardrailActionAudit || len(outOutcome.Violations) < 3 {
 		t.Fatalf("unexpected logging_only output outcome: %+v", outOutcome)
 	}
 }
@@ -471,17 +410,6 @@ func TestEvaluateMCPToolCallHardening(t *testing.T) {
 	if !outcome.Redacted || args["email"] != "[REDACTED_EMAIL]" {
 		t.Fatalf("expected PII to be redacted in-place, got outcome=%+v args=%v", outcome, args)
 	}
-
-	// 6. External scanner must be invoked and block when configured
-	eng.ConfigureScanners(time.Second, true, scannerFunc(func(_ context.Context, req ScanRequest) (ScanResult, error) {
-		if req.Direction != ScanInput {
-			t.Fatalf("expected ScanInput, got %v", req.Direction)
-		}
-		return ScanResult{Decision: ScannerDecisionBlock, Violations: []string{"scanner:deny"}}, nil
-	}))
-	if _, err := eng.EvaluateMCPToolCall(ctx, orgID, "search", map[string]any{"q": "benign"}); err == nil {
-		t.Fatal("expected external scanner block on tool call")
-	}
 }
 
 func TestEvaluateMCPToolResultHardening(t *testing.T) {
@@ -522,17 +450,6 @@ func TestEvaluateMCPToolResultHardening(t *testing.T) {
 	outMap, ok := out.(map[string]any)
 	if !ok || !outcome.Redacted || outMap["contact"] != "[REDACTED_EMAIL]" {
 		t.Fatalf("expected redacted result map, got outcome=%+v out=%#v", outcome, out)
-	}
-
-	// 5. External scanner must run on tool result and withhold result on block
-	eng.ConfigureScanners(time.Second, true, scannerFunc(func(_ context.Context, req ScanRequest) (ScanResult, error) {
-		if req.Direction != ScanOutput {
-			t.Fatalf("expected ScanOutput, got %v", req.Direction)
-		}
-		return ScanResult{Decision: ScannerDecisionBlock}, nil
-	}))
-	if _, out, err := eng.EvaluateMCPToolResult(ctx, orgID, map[string]any{"ok": "safe"}); err == nil || out != nil {
-		t.Fatalf("expected scanner block on tool result with nil result, out=%v err=%v", out, err)
 	}
 }
 
@@ -715,65 +632,6 @@ func TestPromptInjectionUnicodeWhitespaceAndToolRole(t *testing.T) {
 		},
 	}); err != nil {
 		t.Fatalf("expected safe tool output to be allowed, got %v", err)
-	}
-}
-
-func TestExternalScannerCalledOncePerMessage(t *testing.T) {
-	var inputCalls, outputCalls int
-	eng := NewEngine(storage.NewMemoryRepository())
-	eng.ConfigureScanners(time.Second, true, scannerFunc(func(_ context.Context, req ScanRequest) (ScanResult, error) {
-		switch req.Direction {
-		case ScanInput:
-			inputCalls++
-		case ScanOutput:
-			outputCalls++
-		}
-		return ScanResult{Decision: ScannerDecisionAllow}, nil
-	}))
-
-	pol := &domain.GuardrailPolicy{OrgID: "org", Mode: domain.GuardrailModeEnforce}
-	req := &domain.CanonicalChatRequest{
-		Messages: []domain.CanonicalMessage{{
-			Role:             "user",
-			Content:          "main content",
-			ReasoningContent: "reasoning",
-			Parts: []domain.ContentPart{
-				{Type: "text", Text: "part 1"},
-				{Type: "text", Text: "part 2"},
-			},
-			ToolCalls: []domain.CanonicalToolCall{
-				{Function: domain.CanonicalFunctionCall{Arguments: `{"a":1}`}},
-			},
-		}},
-	}
-	if _, err := eng.EvaluateInputWithPolicy(context.Background(), pol, req); err != nil {
-		t.Fatalf("unexpected input error: %v", err)
-	}
-	if inputCalls != 1 {
-		t.Fatalf("expected external scanner to be called once per message on input, got %d", inputCalls)
-	}
-
-	resp := &domain.CanonicalChatResponse{
-		Choices: []domain.CanonicalChoice{{
-			Message: domain.CanonicalMessage{
-				Role:             "assistant",
-				Content:          "resp content",
-				ReasoningContent: "resp reasoning",
-				Parts: []domain.ContentPart{
-					{Type: "text", Text: "resp part 1"},
-					{Type: "text", Text: "resp part 2"},
-				},
-				ToolCalls: []domain.CanonicalToolCall{
-					{Function: domain.CanonicalFunctionCall{Arguments: `{"b":2}`}},
-				},
-			},
-		}},
-	}
-	if _, err := eng.EvaluateOutputWithPolicy(context.Background(), pol, resp); err != nil {
-		t.Fatalf("unexpected output error: %v", err)
-	}
-	if outputCalls != 1 {
-		t.Fatalf("expected external scanner to be called once per choice message on output, got %d", outputCalls)
 	}
 }
 

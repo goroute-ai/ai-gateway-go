@@ -617,7 +617,7 @@ export interface AuditLogFilter {
   limit?: number;
 }
 
-export type GuardrailPolicyAction = 'block' | 'redact' | 'audit' | 'route';
+export type GuardrailPolicyAction = 'block' | 'redact' | 'audit';
 
 export interface GuardrailPolicy {
   org_id: string;
@@ -631,50 +631,18 @@ export interface GuardrailPolicy {
   secret_action: GuardrailPolicyAction;
   redact_output_pii: boolean;
   blocked_keywords?: string[];
+  blocked_patterns?: string[];
   enable_toxicity_filter?: boolean;
   toxicity_action?: GuardrailPolicyAction;
   toxicity_threshold?: string;
   enabled_content_categories?: string[];
   content_exceptions?: string[];
-  sensitive_route_target?: string;
   updated_at?: string;
 }
 
-export type GuardrailHook =
-  | 'pre_call'
-  | 'during_call'
-  | 'post_call'
-  | 'logging_only'
-  | 'pre_mcp_call'
-  | 'during_mcp_call'
-  | 'post_mcp_call';
+export type GuardrailHook = 'pre_call' | 'post_call' | 'logging_only';
 
-export type StreamScope = 'both' | 'streaming' | 'non_streaming';
-
-export type GuardrailStatus = 'active' | 'pending_review' | 'rejected';
-
-export type GuardrailProviderType =
-  | 'openai_moderation'
-  | 'presidio'
-  | 'lakera_v2'
-  | 'guardrails_ai'
-  | 'pangea'
-  | 'local_content_filter'
-  | 'generic_http'
-  | 'custom_code'
-  | 'tool_permission'
-  | 'tool_policy'
-  | 'block_code_execution'
-  | 'mcp_security'
-  | 'mcp_end_user_permission'
-  | 'llm_as_a_judge'
-  | 'decision_model'
-  | string;
-
-export interface GuardrailModeRule {
-  tags?: Record<string, GuardrailHook[]>;
-  default?: GuardrailHook[];
-}
+export type GuardrailProviderType = 'generic_http' | 'openai_moderation' | string;
 
 export interface GuardrailDefinition {
   id: string;
@@ -682,20 +650,12 @@ export interface GuardrailDefinition {
   name: string;
   provider: GuardrailProviderType;
   event_hooks?: GuardrailHook[];
-  stream_scope?: StreamScope;
-  stream_scope_by_hook?: Partial<Record<GuardrailHook, StreamScope>>;
-  mode_rule?: GuardrailModeRule;
-  default_on: boolean;
-  enabled_roles?: string[];
+  enabled: boolean;
   timeout_ms?: number;
   fail_open: boolean;
   precedence: number;
   config?: Record<string, any>;
   has_secrets: boolean;
-  status: GuardrailStatus;
-  guardrail_info?: Record<string, any>;
-  weight: number;
-  sensitive_route_target?: string;
   created_at: string;
   updated_at: string;
 }
@@ -705,210 +665,30 @@ export interface GuardrailDefinitionWriteRequest {
   name: string;
   provider: GuardrailProviderType;
   event_hooks?: GuardrailHook[];
-  stream_scope?: StreamScope;
-  stream_scope_by_hook?: Partial<Record<GuardrailHook, StreamScope>>;
-  mode_rule?: GuardrailModeRule;
-  default_on?: boolean;
-  enabled_roles?: string[];
+  enabled?: boolean;
   timeout_ms?: number;
   fail_open?: boolean;
   precedence?: number;
   config?: Record<string, any>;
   secrets?: Record<string, any>;
-  clear_secrets?: boolean;
-  status?: GuardrailStatus;
-  guardrail_info?: Record<string, any>;
-  weight?: number;
-  sensitive_route_target?: string;
-}
-
-export interface GuardrailBinding {
-  id: string;
-  org_id: string;
-  guardrail_id: string;
-  guardrail_name: string;
-  team_id?: string;
-  virtual_key_id?: string;
-  end_user_id?: string;
-  model_group_id?: string;
-  tag?: string;
-  param_overrides?: Record<string, any>;
-  is_locked: boolean;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface GuardrailBindingCreateRequest {
-  id?: string;
-  org_id?: string;
-  guardrail_id: string;
-  guardrail_name?: string;
-  team_id?: string;
-  virtual_key_id?: string;
-  end_user_id?: string;
-  model_group_id?: string;
-  tag?: string;
-  param_overrides?: Record<string, any>;
-  is_locked?: boolean;
-}
-
-export type ToolTrustInputLevel = 'untrusted' | 'trusted' | 'blocked';
-export type ToolTrustOutputLevel = 'untrusted' | 'trusted';
-
-export interface ToolPolicy {
-  id: string;
-  org_id: string;
-  team_id?: string;
-  virtual_key_id?: string;
-  tool_name: string;
-  input_policy: ToolTrustInputLevel;
-  output_policy: ToolTrustOutputLevel;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface ToolPolicyUpsertRequest {
-  id?: string;
-  team_id?: string;
-  virtual_key_id?: string;
-  tool_name: string;
-  input_policy: ToolTrustInputLevel;
-  output_policy: ToolTrustOutputLevel;
-}
-
-export interface GuardrailUsageTotals {
-  evaluations: number;
-  blocks: number;
-  redactions: number;
-  flags: number;
-  errors: number;
-  latency_sum_ms: number;
-  total_units: number;
-  total_cost_micros: number;
-}
-
-export interface GuardrailDailyUsagePoint {
-  date: string;
-  guardrail_id: string;
-  guardrail_name: string;
-  evaluations: number;
-  blocks: number;
-  redactions: number;
-  flags: number;
-  errors: number;
-  latency_sum_ms: number;
-  units: number;
-  cost_micros: number;
-}
-
-export interface GuardrailUsageUnitBreakdown {
-  date: string;
-  guardrail_id: string;
-  team_id?: string;
-  virtual_key_id?: string;
-  usage_unit: string;
-  units: number;
-  cost_micros: number;
-}
-
-export interface GuardrailTopTriggered {
-  guardrail_id: string;
-  guardrail_name: string;
-  evaluations: number;
-  blocks: number;
-  redactions: number;
-  flags: number;
-  triggered_count: number;
-  errors: number;
-  units: number;
-  cost_micros: number;
-}
-
-export interface GuardrailUsageSummary {
-  org_id: string;
-  start_date: string;
-  end_date: string;
-  totals: GuardrailUsageTotals;
-  total_cost_micros: number;
-  daily_series: GuardrailDailyUsagePoint[];
-  usage_units: GuardrailUsageUnitBreakdown[];
-  top_triggered: GuardrailTopTriggered[];
-}
-
-export interface GuardrailViolation {
-  guardrail_name: string;
-  guardrail_id?: string;
-  provider?: string;
-  category?: string;
-  rule?: string;
-  severity?: string;
-  message: string;
-  score?: number;
-  action?: string;
-  decision?: string;
-  details?: Record<string, any>;
 }
 
 export interface GuardrailSimulateRequest {
   prompt?: string;
-  input?: string;
-  text?: string;
-  texts?: string[];
-  messages?: Array<Record<string, any>>;
-  tools?: Array<Record<string, any>>;
-  tool_calls?: Array<Record<string, any>>;
-  tags?: string[];
   direction?: 'input' | 'output';
-  guardrail_name?: string;
-  stream_chunk_size?: number;
   policy?: Partial<GuardrailPolicy>;
 }
 
 export interface GuardrailSimulateResponse {
   allowed: boolean;
-  blocked?: boolean;
-  decision?: string;
-  action?: string;
-  applied_action: string;
-  violations?: Array<string | GuardrailViolation>;
-  redacted: boolean;
-  direction?: string;
-  redacted_prompt?: string;
-  texts?: string[];
-  modified_texts?: string[];
-  modified_messages?: Array<Record<string, any>>;
-  modified_tool_calls?: Array<Record<string, any>>;
-  applied_guardrails?: string[];
-  stream_chunks_evaluated?: number;
-  error_message?: string;
-}
-
-export interface GuardrailApplyRequest {
-  guardrail_name?: string;
-  input_type?: 'request' | 'input' | 'response' | 'output';
-  text?: string;
-  texts?: string[];
-  messages?: Array<Record<string, any>>;
-  tools?: Array<Record<string, any>>;
-  tool_calls?: Array<Record<string, any>>;
-  tags?: string[];
-  metadata?: Record<string, any>;
-  model?: string;
-}
-
-export interface GuardrailApplyResponse {
+  blocked: boolean;
   decision: string;
   action: string;
-  blocked: boolean;
-  texts?: string[];
-  modified_texts?: string[];
-  modified_messages?: Array<Record<string, any>>;
-  modified_tool_calls?: Array<Record<string, any>>;
-  violations?: GuardrailViolation[];
-  applied_guardrails?: string[];
-  usage_units: number;
-  latency_ms: number;
+  redacted: boolean;
+  redacted_text?: string;
+  violations?: string[];
   error_message?: string;
+  effective_mode?: string;
 }
 
 export interface MCPSpecInfo {

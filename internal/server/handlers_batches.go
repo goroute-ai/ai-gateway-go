@@ -744,9 +744,6 @@ func (s *GatewayServer) processBatchAsync(
 			totalActualTokens += resp.Usage.TotalTokens
 			totalCostMicros += costMicros
 			_, sanitizeErr := s.evaluateChatOutputGuardrails(itemCtx, nil, prc, resp, "batch_item")
-			if sanitizeErr == nil {
-				s.GuardrailPipeline().EvaluateLoggingOnly(itemCtx, prc, &item.Body, resp)
-			}
 			status := http.StatusOK
 			if sanitizeErr != nil {
 				status = http.StatusServiceUnavailable
@@ -887,23 +884,12 @@ func (s *GatewayServer) processBatchAsync(
 
 func (s *GatewayServer) executeBatchItemChat(
 	itemCtx context.Context,
-	baseCtx context.Context,
+	_ context.Context,
 	idCtx *domain.IdentityContext,
-	prc guardrails.PipelineRequestContext,
+	_ guardrails.PipelineRequestContext,
 	body *domain.CanonicalChatRequest,
 ) (*domain.CanonicalChatResponse, *router.ExecutionMeta, error) {
-	upstreamCtx, duringHandle, duringInitErr := s.startDuringCallGuardrails(itemCtx, prc, body)
-	if duringInitErr != nil {
-		return nil, nil, duringInitErr
-	}
-	if duringHandle != nil {
-		defer duringHandle.Close()
-	}
-	resp, meta, err := s.reliability.ExecuteChat(upstreamCtx, idCtx, body)
-	if _, duringErr := duringHandle.Wait(baseCtx); duringErr != nil {
-		return nil, meta, duringErr
-	}
-	return resp, meta, err
+	return s.reliability.ExecuteChat(itemCtx, idCtx, body)
 }
 
 func cloneBatchRoutingHeaders(src http.Header) http.Header {

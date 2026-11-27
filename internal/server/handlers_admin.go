@@ -17,6 +17,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/auth"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
+	"github.com/goroute-ai/ai-gateway-go/internal/guardrails"
 	"github.com/goroute-ai/ai-gateway-go/internal/logger"
 	"github.com/goroute-ai/ai-gateway-go/internal/mcp/spec"
 	catalog "github.com/goroute-ai/ai-gateway-go/internal/modelcatalog"
@@ -443,7 +444,6 @@ func (s *GatewayServer) handleAdminSetGuardrailPolicy(w http.ResponseWriter, r *
 		return
 	}
 	pol.OrgID = orgID
-	pol.SensitiveRouteTarget = strings.TrimSpace(pol.SensitiveRouteTarget)
 	if err := validateGuardrailPolicy(&pol); err != nil {
 		domain.WriteHTTPError(w, err)
 		return
@@ -461,7 +461,6 @@ func (s *GatewayServer) handleAdminSetGuardrailPolicy(w http.ResponseWriter, r *
 		"enable_secret_detection": pol.EnableSecretDetection,
 		"secret_action":           pol.SecretAction,
 		"redact_output_pii":       pol.RedactOutputPII,
-		"sensitive_route_target":  pol.SensitiveRouteTarget,
 	}, beforePol, &pol)
 	writeJSON(w, http.StatusOK, pol)
 }
@@ -471,13 +470,12 @@ func validateGuardrailPolicy(pol *domain.GuardrailPolicy) *domain.GatewayError {
 		return nil
 	}
 	for _, field := range []struct {
-		name       string
-		action     domain.GuardrailAction
-		allowRoute bool
+		name   string
+		action domain.GuardrailAction
 	}{
 		{name: "prompt_injection_action", action: pol.PromptInjectionAction},
-		{name: "pii_action", action: pol.PIIAction, allowRoute: true},
-		{name: "secret_action", action: pol.SecretAction, allowRoute: true},
+		{name: "pii_action", action: pol.PIIAction},
+		{name: "secret_action", action: pol.SecretAction},
 		{name: "toxicity_action", action: pol.ToxicityAction},
 	} {
 		if field.action == "" {
@@ -485,15 +483,6 @@ func validateGuardrailPolicy(pol *domain.GuardrailPolicy) *domain.GatewayError {
 		}
 		switch field.action {
 		case domain.GuardrailActionBlock, domain.GuardrailActionRedact, domain.GuardrailActionAudit:
-		case domain.GuardrailActionRoute:
-			if !field.allowRoute {
-				return &domain.GatewayError{
-					StatusCode: http.StatusBadRequest,
-					Type:       domain.ErrorTypeInvalidRequest,
-					Code:       "invalid_guardrail_action",
-					Message:    fmt.Sprintf("%s does not support action %q", field.name, field.action),
-				}
-			}
 		default:
 			return &domain.GatewayError{
 				StatusCode: http.StatusBadRequest,
@@ -503,13 +492,12 @@ func validateGuardrailPolicy(pol *domain.GuardrailPolicy) *domain.GatewayError {
 			}
 		}
 	}
-	if (pol.PIIAction == domain.GuardrailActionRoute || pol.SecretAction == domain.GuardrailActionRoute) &&
-		strings.TrimSpace(pol.SensitiveRouteTarget) == "" {
+	if err := guardrails.ValidateBlockedPatterns(pol.BlockedPatterns); err != nil {
 		return &domain.GatewayError{
 			StatusCode: http.StatusBadRequest,
 			Type:       domain.ErrorTypeInvalidRequest,
-			Code:       "guardrail_route_target_missing",
-			Message:    "sensitive_route_target is required when pii_action or secret_action is set to route",
+			Code:       "invalid_guardrail_pattern",
+			Message:    err.Error(),
 		}
 	}
 	return nil
@@ -2285,14 +2273,21 @@ func sanitizeRuntimeConfig(cfg *config.Config) map[string]any {
 		return map[string]any{}
 	}
 
-	scanners := make([]map[string]any, 0, len(cfg.Guardrails.Scanners))
-	for _, sc := range cfg.Guardrails.Scanners {
-		scanners = append(scanners, map[string]any{
-			"name":       sc.Name,
-			"url":        redactURLPassword(sc.URL),
-			"timeout_ms": sc.TimeoutMs,
-			"fail_open":  sc.FailOpen,
-			"headers":    redactHeaders(sc.Headers),
+	definitions := make([]map[string]any, 0, len(cfg.Guardrails.Definitions))
+	for _, def := range cfg.Guardrails.Definitions {
+		enabled := true
+		if def.Enabled != nil {
+			enabled = *def.Enabled
+		}
+		definitions = append(definitions, map[string]any{
+			"name":        def.Name,
+			"provider":    def.Provider,
+			"event_hooks": def.EventHooks,
+			"enabled":     enabled,
+			"timeout_ms":  def.TimeoutMs,
+			"fail_open":   def.FailOpen,
+			"precedence":  def.Precedence,
+			"has_secrets": len(def.Secrets) > 0,
 		})
 	}
 
@@ -2636,7 +2631,7 @@ func sanitizeRuntimeConfig(cfg *config.Config) map[string]any {
 			},
 		},
 		"guardrails": map[string]any{
-			"scanners": scanners,
+			"definitions": definitions,
 		},
 		"mcp": map[string]any{
 			"enabled":                     cfg.MCP.Enabled,

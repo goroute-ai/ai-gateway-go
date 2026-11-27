@@ -56,19 +56,18 @@ type CanonicalChatRequest struct {
 	GoRouteExtensions *GoRouteExtensions `json:"goroute_extensions,omitempty"`
 }
 
-// GoRouteExtensions holds gateway-specific routing, state resumption, and guardrail extensions.
+// GoRouteExtensions holds gateway-specific routing and state resumption extensions.
 type GoRouteExtensions struct {
-	TaskID                string                     `json:"task_id,omitempty"`
-	ContextID             string                     `json:"context_id,omitempty"`
-	Guardrails            []GuardrailRequestOverride `json:"guardrails,omitempty"`
-	Tags                  []string                   `json:"tags,omitempty"`
-	AllowedRegion         string                     `json:"allowed_region,omitempty"`
-	SessionID             string                     `json:"session_id,omitempty"`
-	PreferredDeploymentID string                     `json:"preferred_deployment_id,omitempty"`
-	Priority              int                        `json:"priority,omitempty"`
-	HedgeAfterMs          int                        `json:"hedge_after_ms,omitempty"`
-	RoutingStrategy       string                     `json:"routing_strategy,omitempty"`
-	DropUnsupportedParams *bool                      `json:"drop_unsupported_params,omitempty"`
+	TaskID                string   `json:"task_id,omitempty"`
+	ContextID             string   `json:"context_id,omitempty"`
+	Tags                  []string `json:"tags,omitempty"`
+	AllowedRegion         string   `json:"allowed_region,omitempty"`
+	SessionID             string   `json:"session_id,omitempty"`
+	PreferredDeploymentID string   `json:"preferred_deployment_id,omitempty"`
+	Priority              int      `json:"priority,omitempty"`
+	HedgeAfterMs          int      `json:"hedge_after_ms,omitempty"`
+	RoutingStrategy       string   `json:"routing_strategy,omitempty"`
+	DropUnsupportedParams *bool    `json:"drop_unsupported_params,omitempty"`
 }
 
 // Clone returns a deep copy of e, or nil if e is nil.
@@ -79,9 +78,6 @@ func (e *GoRouteExtensions) Clone() *GoRouteExtensions {
 	cp := *e
 	if e.Tags != nil {
 		cp.Tags = append([]string(nil), e.Tags...)
-	}
-	if e.Guardrails != nil {
-		cp.Guardrails = append([]GuardrailRequestOverride(nil), e.Guardrails...)
 	}
 	if e.DropUnsupportedParams != nil {
 		v := *e.DropUnsupportedParams

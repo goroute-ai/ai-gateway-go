@@ -432,15 +432,10 @@ func TestGovernanceHardening_BulkGraceEviction_OwnershipAndAuditDiffs(t *testing
 		"enable_prompt_injection": true,
 		"prompt_injection_action": "audit",
 	}).Code)
-	require.Equal(t, http.StatusOK, doAdminJSONRequest(t, env.handler, http.MethodPost, "/admin/v1/organizations/org_a/tool-policies", env.orgAAdmin.RawKey, map[string]any{
-		"tool_name":     "shell_exec",
-		"input_policy":  "blocked",
-		"output_policy": "untrusted",
-	}).Code)
 
 	logs, err := env.repo.ListAuditLogs(ctx, "org_a", 100)
 	require.NoError(t, err)
-	var sawBulkDiff, sawSubDiff, sawGuardDiff, sawToolPolicyDiff bool
+	var sawBulkDiff, sawSubDiff, sawGuardDiff bool
 	for _, l := range logs {
 		if l == nil {
 			continue
@@ -454,14 +449,10 @@ func TestGovernanceHardening_BulkGraceEviction_OwnershipAndAuditDiffs(t *testing
 		if l.Action == "organization.guardrails.updated" && len(l.BeforeValue) > 0 && len(l.AfterValue) > 0 {
 			sawGuardDiff = true
 		}
-		if l.Action == "tool_policy.upserted" && len(l.AfterValue) > 0 {
-			sawToolPolicyDiff = true
-		}
 	}
 	assert.True(t, sawBulkDiff, "expected virtual_key.bulk_updated diff")
 	assert.True(t, sawSubDiff, "expected organization.subscription.updated diff")
 	assert.True(t, sawGuardDiff, "expected organization.guardrails.updated before+after diff")
-	assert.True(t, sawToolPolicyDiff, "expected tool_policy.upserted diff")
 }
 
 func TestRotateKEK_RewrapsStagedVirtualKeysAndConfigRedaction(t *testing.T) {

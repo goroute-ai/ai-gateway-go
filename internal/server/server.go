@@ -103,8 +103,6 @@ type GatewayServer struct {
 	uploadSem          chan struct{}
 	uploadInFlightMu   sync.Mutex
 	uploadInFlight     map[string]int64
-	routeAuditMu       sync.Mutex
-	routeAuditWindows  map[string]*routeAuditWindow
 	nowMu              sync.RWMutex
 	nowFunc            func() time.Time
 }
@@ -322,7 +320,6 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		uploadSem:          uploadSem,
 		uploadInFlight:     make(map[string]int64),
 	}
-	s.ConfigureGuardrailScannersFromConfig(cfg.Guardrails, netPolicy)
 	routingDeps.relMgr.SetDeploymentSlotTTL(cfg.RateLimit.ConcurrencyTTLSec)
 	routingDeps.relMgr.SetFallbackQuotaChecker(s.checkFallbackModelQuota)
 	authDeps.authSvc.AddInvalidationHandler(func(ev storage.InvalidationEvent) {
@@ -337,12 +334,7 @@ func New(cfg *config.Config, repo storage.Repository, redisFabric *storage.Redis
 		return cleanupOnErr(err)
 	}
 	pipeline := s.GuardrailPipeline()
-	protoDeps.mcpHub.SetGuardrailPipeline(pipeline)
 	protoDeps.a2aRouter.SetGuardrailPipeline(pipeline)
-	if tpRepo, ok := repo.(storage.ToolPolicyRepository); ok && tpRepo != nil {
-		protoDeps.toolOrchestrator.SetToolPolicyRepository(tpRepo)
-	}
-	protoDeps.toolOrchestrator.SetToolGuardrails(s.newOrchestratorToolGuardrailDriver())
 	if cfg.Auth.ExternalAuthorizer.Enabled {
 		extAuthz, extErr := auth.NewExternalAuthorizer(auth.ExternalAuthorizerConfig{
 			Mode:       cfg.Auth.ExternalAuthorizer.Mode,
@@ -1209,9 +1201,6 @@ func (s *GatewayServer) registerDataPlaneRoutes(r chi.Router) {
 		v1.Post("/responses", s.handleResponses)
 		v1.Get("/realtime", s.handleRealtimeWebSocket)
 
-		// Guardrails Data Plane evaluation
-		v1.Post("/guardrails/apply", s.handleApplyGuardrails)
-
 		// Data Plane Self-Inspection
 		v1.Get("/key/info", s.handleKeySelfInfo)
 	})
@@ -1362,26 +1351,14 @@ func (s *GatewayServer) registerAdminRoutes(r chi.Router) {
 		adm.Get("/organizations/{orgID}/models", s.handleAdminGetOrgModelPolicies)
 		adm.Post("/organizations/{orgID}/guardrails", s.handleAdminSetGuardrailPolicy)
 		adm.Get("/organizations/{orgID}/guardrails", s.handleAdminGetGuardrailPolicy)
-		adm.Post("/organizations/{orgID}/guardrails/simulate", s.handleAdminSimulateGuardrailsExpanded)
+		adm.Post("/organizations/{orgID}/guardrails/simulate", s.handleAdminSimulateGuardrails)
 
-		// Guardrail Registry, Bindings, Tool Trust Policies, and Usage Rollups
+		// External Guardrail Definitions
 		adm.Post("/organizations/{orgID}/guardrail-definitions", s.handleAdminCreateGuardrailDefinition)
 		adm.Get("/organizations/{orgID}/guardrail-definitions", s.handleAdminListGuardrailDefinitions)
 		adm.Get("/guardrail-definitions/{guardrailID}", s.handleAdminGetGuardrailDefinition)
 		adm.Put("/guardrail-definitions/{guardrailID}", s.handleAdminUpdateGuardrailDefinition)
-		adm.Patch("/guardrail-definitions/{guardrailID}", s.handleAdminPatchGuardrailDefinition)
 		adm.Delete("/guardrail-definitions/{guardrailID}", s.handleAdminDeleteGuardrailDefinition)
-		adm.Post("/guardrail-definitions/{guardrailID}/status", s.handleAdminSetGuardrailDefinitionStatus)
-
-		adm.Post("/guardrail-bindings", s.handleAdminCreateGuardrailBinding)
-		adm.Get("/organizations/{orgID}/guardrail-bindings", s.handleAdminListGuardrailBindings)
-		adm.Delete("/guardrail-bindings/{bindingID}", s.handleAdminDeleteGuardrailBinding)
-
-		adm.Post("/organizations/{orgID}/tool-policies", s.handleAdminUpsertToolPolicy)
-		adm.Get("/organizations/{orgID}/tool-policies", s.handleAdminListToolPolicies)
-		adm.Delete("/organizations/{orgID}/tool-policies/{policyID}", s.handleAdminDeleteToolPolicy)
-
-		adm.Get("/organizations/{orgID}/guardrail-usage", s.handleAdminGetGuardrailUsage)
 
 		// Teams, Memberships, Projects & Users
 		adm.Post("/teams", s.handleAdminCreateTeam)
@@ -1554,16 +1531,6 @@ func (s *GatewayServer) TelemetryRuntime() *observability.TelemetryRuntime {
 // HealthMonitor returns the background active health monitor.
 func (s *GatewayServer) HealthMonitor() *health.Monitor {
 	return s.healthMon
-}
-
-// ConfigureGuardrailScanners injects optional scanners before serving traffic.
-// Scanners are disabled by default; network-backed implementations must use the
-// configured outbound network security policy. Call only during startup, before
-// the server begins handling requests.
-func (s *GatewayServer) ConfigureGuardrailScanners(timeout time.Duration, failClosed bool, scanners ...guardrails.Scanner) {
-	if s != nil && s.guardrails != nil {
-		s.guardrails.ConfigureScanners(timeout, failClosed, scanners...)
-	}
 }
 
 // Reliability returns the Stage 2 ReliabilityManager.
