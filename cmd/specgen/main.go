@@ -41,6 +41,7 @@ func main() {
 		{Name: "Groq Official Spec", Path: filepath.Join(targetDir, "groq.openapi.yaml")},
 		{Name: "OpenRouter Official Spec", Path: filepath.Join(targetDir, "openrouter.openapi.yaml")},
 		{Name: "Ollama Official Spec", Path: filepath.Join(targetDir, "ollama.openapi.yaml")},
+		{Name: "Gemini Official Spec", Path: filepath.Join(targetDir, "gemini.openapi.yaml")},
 		{Name: "MCP Protocol Spec", Path: filepath.Join(targetDir, "mcp.openapi.yaml")},
 		{Name: "A2A Protocol Spec", Path: filepath.Join(targetDir, "a2a.openapi.yaml")},
 	}

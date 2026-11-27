@@ -179,6 +179,54 @@ func main() {
 		})
 	})
 
+	// Google Gemini v1beta native API mock handler
+	mux.HandleFunc("/gemini/", func(w http.ResponseWriter, r *http.Request) {
+		st.recordTraceparent("gemini", r.Header.Get("traceparent"))
+		_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, 2<<20))
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/models"):
+			writeJSON(w, http.StatusOK, map[string]any{
+				"models": []map[string]any{
+					{"name": "models/gemini-2.5-flash", "displayName": "Gemini 2.5 Flash", "supportedGenerationMethods": []string{"generateContent"}},
+					{"name": "models/gemini-embedding-001", "displayName": "Gemini Embedding 001", "supportedGenerationMethods": []string{"embedContent"}},
+				},
+			})
+		case strings.HasSuffix(r.URL.Path, ":streamGenerateContent"):
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.WriteHeader(http.StatusOK)
+			time.Sleep(15 * time.Millisecond)
+			_, _ = fmt.Fprint(w, "data: {\"responseId\":\"resp_gemini_obs_stream\",\"modelVersion\":\"gemini-2.5-flash\",\"candidates\":[{\"index\":0,\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"gemini-obs-ok\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":20,\"candidatesTokenCount\":8,\"thoughtsTokenCount\":4,\"totalTokenCount\":32}}\n\n")
+		case strings.HasSuffix(r.URL.Path, ":embedContent"):
+			writeJSON(w, http.StatusOK, map[string]any{
+				"embedding": map[string]any{"values": []float64{0.1, 0.2, 0.3, 0.4}},
+			})
+		case strings.HasSuffix(r.URL.Path, ":batchEmbedContents"):
+			writeJSON(w, http.StatusOK, map[string]any{
+				"embeddings": []map[string]any{{"values": []float64{0.1, 0.2}}, {"values": []float64{0.3, 0.4}}},
+			})
+		default:
+			writeJSON(w, http.StatusOK, map[string]any{
+				"responseId":   "resp_gemini_obs",
+				"modelVersion": "gemini-2.5-flash",
+				"candidates": []map[string]any{{
+					"index": 0,
+					"content": map[string]any{
+						"role":  "model",
+						"parts": []map[string]any{{"text": "gemini-obs-ok"}},
+					},
+					"finishReason": "STOP",
+				}},
+				"usageMetadata": map[string]any{
+					"promptTokenCount":     20,
+					"candidatesTokenCount": 8,
+					"thoughtsTokenCount":   4,
+					"totalTokenCount":      32,
+				},
+			})
+		}
+	})
+
 	// Streamable HTTP MCP Server (/mcp)
 	mux.HandleFunc("/mcp", handleMCPFixture(st))
 

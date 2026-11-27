@@ -1238,7 +1238,7 @@ components:
           type: string
         provider:
           type: string
-          description: Provider identifier (openai, anthropic, groq, openrouter, ollama)
+          description: Provider identifier (openai, anthropic, groq, openrouter, ollama, gemini)
         is_enabled:
           type: boolean
           description: Whether the organization is entitled to route traffic to this provider
@@ -1521,7 +1521,7 @@ components:
       properties:
         provider:
           type: string
-          description: Provider identifier (openai, anthropic, groq, openrouter, ollama)
+          description: Provider identifier (openai, anthropic, groq, openrouter, ollama, gemini)
         api_key:
           type: string
           description: Upstream provider API key.

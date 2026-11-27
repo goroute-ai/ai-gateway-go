@@ -31,6 +31,7 @@ func TestCatalog_IsCallableProvider(t *testing.T) {
 		domain.ProviderGroq,
 		domain.ProviderOpenRouter,
 		domain.ProviderOllama,
+		domain.ProviderGemini,
 	}
 	for _, p := range callableProviders {
 		if !catalog.IsCallableProvider(p) {
@@ -39,7 +40,6 @@ func TestCatalog_IsCallableProvider(t *testing.T) {
 	}
 
 	uncallableProviders := []domain.ProviderType{
-		"gemini",
 		"bedrock",
 		"vertex",
 		"cohere",
@@ -176,10 +176,15 @@ func TestCatalog_LookupAppliesFamilyGeneralizationsOnMiss(t *testing.T) {
 		t.Fatalf("expected family inference for groq llama-3.1-8b-instant, got %+v (ok=%v)", groqInferred, ok)
 	}
 
+	geminiInferred, ok := catalog.LookupByProviderAndModel(domain.ProviderGemini, "gemini-2.5-flash-future")
+	if !ok || geminiInferred == nil || geminiInferred.Provider != domain.ProviderGemini || geminiInferred.Capabilities.Reasoning != domain.CapabilitySupported {
+		t.Fatalf("expected family inference for gemini-2.5-flash-future, got %+v (ok=%v)", geminiInferred, ok)
+	}
+
 	if _, ok := catalog.LookupByProviderAndModel("unknown-provider", "gpt-5.99-future"); ok {
 		t.Fatal("family inference must not make unknown providers callable")
 	}
-	if _, ok := catalog.LookupByProviderAndModel("gemini", "gemini-2.5-flash"); ok {
+	if _, ok := catalog.LookupByProviderAndModel("bedrock", "claude-sonnet-4-20250514"); ok {
 		t.Fatal("family inference must not make pruned providers callable")
 	}
 }

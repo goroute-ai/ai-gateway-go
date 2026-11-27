@@ -11,6 +11,7 @@ import (
 
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/anthropic"
+	"github.com/goroute-ai/ai-gateway-go/internal/adapter/gemini"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/groq"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/ollama"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/openai"
@@ -100,6 +101,23 @@ func TestAllProviderAdapters_ChatStreamEmbeddingsAndModels(t *testing.T) {
 	}))
 	defer ollamaSrv.Close()
 
+	// 6. Mock Gemini Server
+	gemSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("x-goog-api-key") == "" {
+			t.Errorf("expected x-goog-api-key header")
+		}
+		switch r.URL.Path {
+		case "/v1beta/models/test-model:generateContent":
+			fmt.Fprint(w, `{"responseId":"resp-gem-1","modelVersion":"gemini-2.5-flash","candidates":[{"index":0,"content":{"role":"model","parts":[{"text":"Gemini ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":8,"candidatesTokenCount":3,"totalTokenCount":11}}`)
+		case "/v1beta/models/test-model:streamGenerateContent":
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "data: {\"responseId\":\"resp-gem-s1\",\"modelVersion\":\"gemini-2.5-flash\",\"candidates\":[{\"index\":0,\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Gemini stream\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":9,\"candidatesTokenCount\":4,\"thoughtsTokenCount\":2,\"totalTokenCount\":15}}\n\n")
+		case "/v1beta/models":
+			fmt.Fprint(w, `{"models":[{"name":"models/gemini-2.5-flash","displayName":"Gemini 2.5 Flash","supportedGenerationMethods":["generateContent"]}]}`)
+		}
+	}))
+	defer gemSrv.Close()
+
 	loopbackPol, err := network.NewPolicy(config.OutboundSSRFConfig{
 		AllowPrivateNetworks: true,
 		AllowInsecureHTTP:    true,
@@ -119,12 +137,15 @@ func TestAllProviderAdapters_ChatStreamEmbeddingsAndModels(t *testing.T) {
 	orAdp.SetSSRFPolicy(loopbackPol)
 	ollamaAdp := ollama.NewAdapter(ollamaSrv.Client())
 	ollamaAdp.SetSSRFPolicy(loopbackPol)
+	gemAdp := gemini.NewAdapter(gemSrv.Client())
+	gemAdp.SetSSRFPolicy(loopbackPol)
 
 	reg.Register(oaiAdp)
 	reg.Register(antAdp)
 	reg.Register(groqAdp)
 	reg.Register(orAdp)
 	reg.Register(ollamaAdp)
+	reg.Register(gemAdp)
 
 	req := &domain.CanonicalChatRequest{
 		Model: "test-model",
@@ -144,6 +165,7 @@ func TestAllProviderAdapters_ChatStreamEmbeddingsAndModels(t *testing.T) {
 		{domain.ProviderGroq, groqSrv.URL, "Groq ok"},
 		{domain.ProviderOpenRouter, orSrv.URL, "OpenRouter ok"},
 		{domain.ProviderOllama, ollamaSrv.URL, "Ollama ok"},
+		{domain.ProviderGemini, gemSrv.URL, "Gemini ok"},
 	}
 
 	for _, tc := range testCases {
@@ -187,6 +209,22 @@ func TestAllProviderAdapters_ChatStreamEmbeddingsAndModels(t *testing.T) {
 	})
 	if err != nil || antStreamed != "Claude stream" || antUsage.TotalTokens != 21 {
 		t.Fatalf("Anthropic stream failed: err=%v text=%q usage=%+v", err, antStreamed, antUsage)
+	}
+
+	// Verify Gemini SSE stream
+	gemStreamAdp, _ := reg.Get(domain.ProviderGemini)
+	var gemStreamed string
+	gemUsage, err := gemStreamAdp.StreamChatCompletion(ctx, &domain.Deployment{
+		Credential:  &domain.ProviderCredential{BaseURL: gemSrv.URL, DecryptedAPIKey: "k"},
+		GlobalModel: &domain.GlobalModel{ModelName: "test-model"},
+	}, req, func(c *domain.CanonicalStreamChunk) error {
+		if len(c.Choices) > 0 {
+			gemStreamed += c.Choices[0].Delta.Content
+		}
+		return nil
+	})
+	if err != nil || gemStreamed != "Gemini stream" || gemUsage.TotalTokens != 15 || gemUsage.CompletionTokens != 6 || gemUsage.ReasoningTokens != 2 {
+		t.Fatalf("Gemini stream failed: err=%v text=%q usage=%+v", err, gemStreamed, gemUsage)
 	}
 }
 

@@ -16,13 +16,13 @@
 
 ## What Is GoRoute?
 
-GoRoute sits between your apps and major AI providers (**OpenAI**, **Anthropic**, **Groq**, **OpenRouter**, and **Ollama**). Instead of managing separate API keys, billing dashboards, and safety rules for every provider, your team connects to GoRoute once and manages everything from one place.
+GoRoute sits between your apps and major AI providers (**OpenAI**, **Anthropic**, **Groq**, **OpenRouter**, **Ollama**, and **Google Gemini**). Instead of managing separate API keys, billing dashboards, and safety rules for every provider, your team connects to GoRoute once and manages everything from one place.
 
 ---
 
 ## Why Teams Use GoRoute
 
-- **One Connection for Every AI Model** — Switch or combine OpenAI, Anthropic, Groq, OpenRouter, and local or cloud Ollama models without rewriting your apps.
+- **One Connection for Every AI Model** — Switch or combine OpenAI, Anthropic, Groq, OpenRouter, local or cloud Ollama, and Google Gemini models without rewriting your apps.
 - **Automatic Backup & Reliability** — If one AI provider slows down or goes offline, GoRoute automatically routes requests to a healthy backup.
 - **Built-In Spending & Usage Limits** — Set clear daily, weekly, or monthly budgets per team, project, or user so AI bills never surprise you.
 - **Built-In Exact & Semantic Response Caching** — Cut latency and LLM spend to `$0` on repeated or paraphrased prompts using in-memory `local` LRU, shared `redis` KV, or Redis 8 `redis-semantic` vector similarity search.

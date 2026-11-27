@@ -32,7 +32,6 @@ const (
 	cacheCertCAPath   = "../../.tmp/cache-prod-certs/ca.crt"
 	cachePrimaryRPass = "prod-cache-primary-pass-2026"
 	cacheDedRPass     = "prod-cache-dedicated-pass-2026"
-	geminiOpenAIBase  = "https://generativelanguage.googleapis.com/v1beta/openai"
 	geminiChatModel   = "gemini-3.5-flash-lite"
 	geminiEmbedModel  = "gemini-embedding-001"
 	geminiChatAlias   = "gemini-chat"
@@ -186,10 +185,10 @@ INSERT INTO global_models (
 	pricing_status, pricing_version, pricing_provenance_source,
 	max_input_tokens, max_output_tokens, supports_inference, capabilities
 ) VALUES (
-	'%s', 'openai', '%s', '%s',
+	'%s', 'gemini', '%s', '%s',
 	%d, %d,
 	'verified', 1, 'cache-prod-docker-test',
-	128000, 16384, TRUE, '%s'::jsonb
+	1048576, 65536, TRUE, '%s'::jsonb
 )
 ON CONFLICT (provider, model_name) DO UPDATE SET
 	input_cost_micros_per_1m = EXCLUDED.input_cost_micros_per_1m,
@@ -206,8 +205,8 @@ RETURNING id;`,
 		}
 		return out
 	}
-	chatGlobalID = seed("openai/"+geminiChatModel, geminiChatModel, `{"streaming":"supported","tools":"supported"}`, 100000, 400000)
-	embedGlobalID = seed("openai/"+geminiEmbedModel, geminiEmbedModel, `{"embeddings":"supported"}`, 150000, 0)
+	chatGlobalID = seed("gemini/"+geminiChatModel, geminiChatModel, `{"streaming":"supported","tools":"supported"}`, 100000, 400000)
+	embedGlobalID = seed("gemini/"+geminiEmbedModel, geminiEmbedModel, `{"embeddings":"supported"}`, 150000, 0)
 	return chatGlobalID, embedGlobalID
 }
 
@@ -235,7 +234,7 @@ func provisionTenant(t *testing.T, client *http.Client, prefix, apiKey, chatGlob
 	}, &org, http.StatusCreated)
 
 	mustAdminJSON(t, client, http.MethodPost, cachePod1Base+"/admin/v1/organizations/"+org.ID+"/subscriptions", map[string]any{
-		"provider":   "openai",
+		"provider":   "gemini",
 		"is_enabled": true,
 	}, nil, http.StatusOK)
 
@@ -244,10 +243,9 @@ func provisionTenant(t *testing.T, client *http.Client, prefix, apiKey, chatGlob
 	}
 	mustAdminJSON(t, client, http.MethodPost, cachePod1Base+"/admin/v1/credentials", map[string]any{
 		"org_id":   org.ID,
-		"provider": "openai",
+		"provider": "gemini",
 		"name":     "gemini-cred-" + suffix,
 		"api_key":  apiKey,
-		"base_url": geminiOpenAIBase,
 	}, &cred, http.StatusCreated)
 
 	createGroupAndDep := func(alias, globalID, depName string) {
@@ -275,6 +273,14 @@ func provisionTenant(t *testing.T, client *http.Client, prefix, apiKey, chatGlob
 	createGroupAndDep(geminiAltAlias, chatGlobalID, "dep-alt-"+suffix)
 	if withEmbeddings {
 		createGroupAndDep(geminiEmbedModel, embedGlobalID, "dep-embed-"+suffix)
+	} else {
+		// Explicitly disable the embedding global model via Layer-3 OrgModelPolicy so
+		// direct bare-model resolution (gemini-embedding-001 -> gemini/gemini-embedding-001)
+		// is blocked and the semantic cache exercises its fail-open error path.
+		mustAdminJSON(t, client, http.MethodPost, cachePod1Base+"/admin/v1/organizations/"+org.ID+"/models", map[string]any{
+			"global_model_id": embedGlobalID,
+			"is_enabled":      false,
+		}, nil, http.StatusOK)
 	}
 
 	var team1, team2 struct {

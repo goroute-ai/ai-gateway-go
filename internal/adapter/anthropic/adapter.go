@@ -851,11 +851,9 @@ func setHeaders(req *http.Request, cred *domain.ProviderCredential) {
 	req.Header.Set("anthropic-version", anthropicVersion)
 	observability.InjectTraceHeaders(req.Context(), req)
 	if cred != nil {
+		adapter.ApplySafeCustomHeaders(req, cred.Headers)
 		if cred.DecryptedAPIKey != "" {
 			req.Header.Set("x-api-key", cred.DecryptedAPIKey)
-		}
-		for k, v := range cred.Headers {
-			req.Header.Set(k, v)
 		}
 	}
 }

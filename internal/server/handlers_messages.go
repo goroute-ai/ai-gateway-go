@@ -66,13 +66,8 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 	}
 
 	var payload anthropicMessagesPayload
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		domain.WriteAnthropicHTTPError(w, &domain.GatewayError{
-			StatusCode: http.StatusBadRequest,
-			Type:       domain.ErrorTypeInvalidRequest,
-			Code:       "invalid_json_body",
-			Message:    "Failed to parse Anthropic Messages request: " + err.Error(),
-		})
+	if gwErr := decodeBoundedJSON(w, r, maxChatCompletionBodyBytes, &payload, "Failed to parse Anthropic Messages request"); gwErr != nil {
+		domain.WriteAnthropicHTTPError(w, gwErr)
 		return
 	}
 

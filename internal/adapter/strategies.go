@@ -70,15 +70,11 @@ func (s *BearerAuthStrategy) ApplyAuth(req *http.Request, cred *domain.ProviderC
 	if cred == nil {
 		return fmt.Errorf("nil provider credential")
 	}
+	// Apply safe custom headers first so vault-decrypted Authorization always takes precedence.
+	ApplySafeCustomHeaders(req, cred.Headers)
 	apiKey := strings.TrimSpace(cred.DecryptedAPIKey)
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
-	}
-	// Inject any custom static headers configured for this credential
-	for k, v := range cred.Headers {
-		if strings.TrimSpace(k) != "" && strings.TrimSpace(v) != "" {
-			req.Header.Set(k, v)
-		}
 	}
 	return nil
 }
@@ -92,14 +88,10 @@ func (s *HeaderAuthStrategy) ApplyAuth(req *http.Request, cred *domain.ProviderC
 	if cred == nil {
 		return fmt.Errorf("nil provider credential")
 	}
+	ApplySafeCustomHeaders(req, cred.Headers)
 	apiKey := strings.TrimSpace(cred.DecryptedAPIKey)
 	if apiKey != "" && strings.TrimSpace(s.HeaderName) != "" {
 		req.Header.Set(s.HeaderName, apiKey)
-	}
-	for k, v := range cred.Headers {
-		if strings.TrimSpace(k) != "" && strings.TrimSpace(v) != "" {
-			req.Header.Set(k, v)
-		}
 	}
 	return nil
 }

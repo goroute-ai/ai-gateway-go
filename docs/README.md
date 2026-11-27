@@ -75,7 +75,7 @@ docs/
    - Complete configuration parameters table with default values and security notes.
 
 7. **[Upgrade & Rollback Guide (`UPGRADING.md`)](./UPGRADING.md)**  
-   *Upgrade guidance for `v0.2.0`, migrations `0001`–`0042`, `0034` rollback duplicate-subject preflight checks, and `rolling_24h` cold recovery boundaries.*
+   *Upgrade guidance for `v0.2.0`+, migrations `0001`–`0043`, `0034` rollback duplicate-subject preflight checks, and `rolling_24h` cold recovery boundaries.*
 
 8. **[Testing & Verification Guide (`TESTING.md`)](./TESTING.md)**  
    *Complete 3-tier testing workflow covering static/contract parity, unit/race checks, live PostgreSQL 16 & Redis 8 E2E suites, Playwright headless Chromium Web UI tests, and production Docker OIDC, Caching & OTLP Observability HA suites.*
@@ -85,7 +85,7 @@ docs/
    - Unified Gateway Data Plane contract (`gateway.openapi.yaml`).
    - Model Context Protocol contract (`mcp.openapi.yaml`) and multi-release YAML schema generator (`cmd/mcpgen`).
    - Agent-to-Agent Protocol contract (`a2a.openapi.yaml`).
-   - Official upstream provider contracts (`openai`, `anthropic`, `groq`, `openrouter`, `ollama`).
+   - Official upstream provider contracts (`openai`, `anthropic`, `groq`, `openrouter`, `ollama`, `gemini`).
 
 10. **[Code Quality Audit & Standards (`CODE_QUALITY_AUDIT.md`)](./CODE_QUALITY_AUDIT.md)**  
     *Inventory of dead-code removal, static analysis fixes, Go documentation coverage (`doc.go` & exported APIs), structural decompositions, and Go tooling setup (`.golangci.yml`, `make lint`, `make deadcode`, `cc-skills-golang`).*

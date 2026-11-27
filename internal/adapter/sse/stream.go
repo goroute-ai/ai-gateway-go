@@ -3,6 +3,7 @@ package sse
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +11,12 @@ import (
 
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 )
+
+const maxSSEEventBytes = 4 * 1024 * 1024 // 4 MiB cumulative cap per multi-line SSE event
+
+// ErrEventTooLarge is returned by ReadEvents when a single SSE event's accumulated
+// data payload exceeds the maximum permitted size before a blank-line delimiter.
+var ErrEventTooLarge = errors.New("sse: event exceeds maximum size limit")
 
 // Event represents a single Server-Sent Event frame (`event:` and `data:`).
 type Event struct {
@@ -26,6 +33,7 @@ func ReadEvents(r io.Reader, fn func(ev Event) error) error {
 
 	var curEvent string
 	var dataLines []string
+	var dataBytes int
 
 	flush := func() error {
 		if len(dataLines) == 0 && curEvent == "" {
@@ -37,6 +45,7 @@ func ReadEvents(r io.Reader, fn func(ev Event) error) error {
 		}
 		curEvent = ""
 		dataLines = dataLines[:0]
+		dataBytes = 0
 		return fn(ev)
 	}
 
@@ -55,7 +64,15 @@ func ReadEvents(r io.Reader, fn func(ev Event) error) error {
 		if strings.HasPrefix(line, "event:") {
 			curEvent = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
 		} else if strings.HasPrefix(line, "data:") {
-			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+			payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			dataBytes += len(payload)
+			if len(dataLines) > 0 {
+				dataBytes++ // newline join delimiter
+			}
+			if dataBytes > maxSSEEventBytes {
+				return ErrEventTooLarge
+			}
+			dataLines = append(dataLines, payload)
 		}
 	}
 	if err := scanner.Err(); err != nil {

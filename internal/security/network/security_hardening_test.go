@@ -39,10 +39,12 @@ func TestRoundTrip_ValidatesURLWithEgressProxy(t *testing.T) {
 }
 
 func TestCheckRedirect_StripsAPIKeyHeadersCrossOrigin(t *testing.T) {
-	var seenXAPIKey, seenAPIKey string
+	var seenXAPIKey, seenAPIKey, seenXGoogAPIKey, seenProxyAuth string
 	targetSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seenXAPIKey = r.Header.Get("X-Api-Key")
 		seenAPIKey = r.Header.Get("Api-Key")
+		seenXGoogAPIKey = r.Header.Get("X-Goog-Api-Key")
+		seenProxyAuth = r.Header.Get("Proxy-Authorization")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer targetSrv.Close()
@@ -68,6 +70,8 @@ func TestCheckRedirect_StripsAPIKeyHeadersCrossOrigin(t *testing.T) {
 	}
 	req.Header.Set("X-Api-Key", "secret-1")
 	req.Header.Set("Api-Key", "secret-2")
+	req.Header.Set("X-Goog-Api-Key", "secret-3")
+	req.Header.Set("Proxy-Authorization", "Basic secret-4")
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -75,8 +79,9 @@ func TestCheckRedirect_StripsAPIKeyHeadersCrossOrigin(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	if seenXAPIKey != "" || seenAPIKey != "" {
-		t.Fatalf("expected X-Api-Key and Api-Key to be stripped on cross-origin redirect, got %q / %q", seenXAPIKey, seenAPIKey)
+	if seenXAPIKey != "" || seenAPIKey != "" || seenXGoogAPIKey != "" || seenProxyAuth != "" {
+		t.Fatalf("expected credential headers to be stripped on cross-origin redirect, got X-Api-Key=%q Api-Key=%q X-Goog-Api-Key=%q Proxy-Authorization=%q",
+			seenXAPIKey, seenAPIKey, seenXGoogAPIKey, seenProxyAuth)
 	}
 }
 

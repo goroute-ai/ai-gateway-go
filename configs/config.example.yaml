@@ -382,8 +382,8 @@ security:
       # In production, private networks and insecure HTTP must be disabled
       allow_private_networks: false
       allowed_private_cidrs: []   # Targeted VPC CIDRs only (e.g. ["10.20.0.0/16"]); production rejects < /8 (IPv4), < /7 (IPv6), loopback, link-local, and IMDS ranges (override: GATEWAY_SECURITY_SSRF_ALLOWED_PRIVATE_CIDRS)
-      allow_insecure_http: false   # Strict HTTPS enforcement
-      allow_loopback_http: false   # Set true in local dev ONLY to allow http://localhost|127.0.0.1|::1 (e.g. Keycloak dev server) without opening private RFC 1918 networks
+      allow_insecure_http: false   # Strict HTTPS enforcement (enabling restricts custom credential base_url overrides to platform_admin)
+      allow_loopback_http: false   # Set true in local dev ONLY to allow http://localhost|127.0.0.1|::1 (e.g. Keycloak dev server) without opening private RFC 1918 networks; restricts custom credential base_url overrides to platform_admin
       allowed_schemes: ["https"]
       blocked_ips:
         - "169.254.169.254"       # Cloud metadata service protection
@@ -509,3 +509,9 @@ model_list:
   #     model: ollama/qwen2.5:0.5b
   #     api_base: http://127.0.0.1:11434
   #     weight: 100
+
+  - model_name: gemini-flash
+    model_params:
+      model: gemini/gemini-2.5-flash
+      api_key: os.environ/GEMINI_API_KEY
+      weight: 100

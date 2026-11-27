@@ -18,6 +18,7 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/a2a"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/anthropic"
+	"github.com/goroute-ai/ai-gateway-go/internal/adapter/gemini"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/groq"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/ollama"
 	"github.com/goroute-ai/ai-gateway-go/internal/adapter/openai"
@@ -470,6 +471,8 @@ func buildAdapterRegistry(_ *config.Config, netPolicy *network.Policy, adapterCl
 	openrouterAdp.SetSSRFPolicy(netPolicy)
 	ollamaAdp := ollama.NewAdapter(adapterClient)
 	ollamaAdp.SetSSRFPolicy(netPolicy)
+	geminiAdp := gemini.NewAdapter(adapterClient)
+	geminiAdp.SetSSRFPolicy(netPolicy)
 
 	reg := adapter.NewRegistry()
 	reg.Register(openaiAdp)
@@ -477,6 +480,7 @@ func buildAdapterRegistry(_ *config.Config, netPolicy *network.Policy, adapterCl
 	reg.Register(groqAdp)
 	reg.Register(openrouterAdp)
 	reg.Register(ollamaAdp)
+	reg.Register(geminiAdp)
 	return reg, nil
 }
 

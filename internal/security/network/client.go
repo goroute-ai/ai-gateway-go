@@ -264,6 +264,8 @@ func WrapCheckRedirect(policy *Policy, next func(*http.Request, []*http.Request)
 		if len(via) > 0 && (!sameOrigin(via[len(via)-1].URL, req.URL) || !sameOrigin(via[0].URL, req.URL)) {
 			req.Header.Del("x-api-key")
 			req.Header.Del("api-key")
+			req.Header.Del("x-goog-api-key")
+			req.Header.Del("proxy-authorization")
 		}
 		if next != nil {
 			return next(req, via)

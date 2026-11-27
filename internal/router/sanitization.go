@@ -76,7 +76,7 @@ func resolveEffectiveStrategy(group *domain.ModelGroup, req *domain.CanonicalCha
 }
 
 func isOpenAIWireProvider(p domain.ProviderType) bool {
-	return p != domain.ProviderAnthropic
+	return p != domain.ProviderAnthropic && p != domain.ProviderGemini
 }
 
 func isReasoningSeriesModel(modelName string) bool {

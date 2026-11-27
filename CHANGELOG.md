@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### First-Class OpenAPI-First Google Gemini Provider (`gemini`, Migration `0043`)
+
+#### Added
+- **Google Gemini Provider (`internal/adapter/gemini/`, `docs/openapi/gemini.openapi.yaml`, `migrations/0043_seed_gemini_models.{up,down}.sql`)**:
+  - Added official Discovery-derived OpenAPI 3.0.3 contract (`docs/openapi/gemini.openapi.yaml`) and `oapi-codegen` v2.8.0 generated wire DTOs (`internal/openapi/providers/gemini_types.gen.go`) covering `:generateContent`, `:streamGenerateContent?alt=sse`, `:embedContent`, `:batchEmbedContents`, `:countTokens`, and `/v1beta/models`.
+  - Implemented native `internal/adapter/gemini` adapter supporting synchronous chat, SSE streaming (`?alt=sse`), thinking/reasoning parts (`thinkingConfig`, `thought: true` -> `reasoning_content`, exact `candidatesTokenCount + thoughtsTokenCount` micro-dollar accounting), function calling + `functionResponse` round-trips, structured outputs (`json_object` / `json_schema` via `responseJsonSchema`), multimodal `image_url` / `document` inputs with strict SSRF-guarded remote media fetches, single & batch embeddings, bounded paginated `ListModels`, header-only `x-goog-api-key` authentication, and W3C `traceparent` propagation.
+  - Registered `domain.ProviderGemini` (`gemini`, `google`, `google_ai`, `google-ai`, `generativelanguage` aliases and bare `gemini-*` model parsing), `GEMINI_API_KEY` / `GOOGLE_API_KEY` zero-boilerplate bootstrap, non-OpenAI extra-parameter sanitization (`isOpenAIWireProvider`), `gemini_sentencepiece` tokenizer profile, Gemini `2.5`/`3.x`/`2.0` catalog generalizations, baseline verified micro-dollar seeds (`gemini-2.5-flash`, `gemini-2.5-pro`, `gemini-2.5-flash-lite`, `gemini-embedding-001`), SDK demo mock, and Operator Web UI support (`CredentialsView`, `ModelsView`, `Badge`).
+
+#### Security
+- **Cross-Origin Redirect, FinOps, Multi-Tenant & DoS Hardening (`internal/security/network/`, `internal/adapter/`, `internal/router/`, `internal/server/`, `internal/logger/`)**:
+  - Stripped `x-goog-api-key` and `proxy-authorization` on cross-origin HTTP redirects in `network.WrapCheckRedirect`.
+  - Added estimated-token (`estTokens`) billing fallback in `POST /v1/embeddings` when upstream omits `usageMetadata` (such as Gemini `:embedContent`/`:batchEmbedContents`), closing zero-cost budget/TPM bypasses.
+  - Prevented untrusted data-plane model names for built-in catalog providers from polluting the shared cross-tenant `global_models` table or hijacking `<provider>/*` wildcard routing (`resolveDynamicProviderModel` / `pickWildcardProviderModel`).
+  - Added `http.MaxBytesReader` body limits (`413 request_body_too_large`) across `/v1/embeddings` (10 MiB + 2,048-item global / 100-item Gemini batch caps), `/v1/messages`, `/v1/completions`, `/v1/tokenize`, `/v1/messages/count_tokens`, `/v1/moderations`, `/v1/batches`, `/v1/audio/speech`, `/v1/images/generations`, and key lifecycle mutations, plus strict string element validation for embedding/moderation input arrays.
+  - Extended `authorizeCustomBaseURL` to require `platform_admin` whenever `allow_loopback_http` or `allow_insecure_http` is enabled.
+  - Default-disabled Gemini `ExtraParams["cached_content"]` and `ExtraParams["safety_settings"]` passthrough (fail-closed opt-in with `^cachedContents/[A-Za-z0-9_-]{1,128}$` validation), bounded `thinking_budget` (`0..24576`), isolated remote media fetches behind a dedicated 15s strict-public-HTTPS client with per-request fan-out (`<= 8` parts, `<= 25 MiB` aggregate) and O(1)-memory base64 validation, enforced strict `[A-Za-z0-9._-]` model allowlist (rejecting AIP-136 `:`), bounds-checked `int32` casts & non-negative usage clamping, scrubbed upstream errors, and capped consecutive malformed SSE frames.
+  - Unified reserved/hop-by-hop/auth/CRLF custom header filtering (`adapter.ApplySafeCustomHeaders`) across all 6 adapters (`openai`, `anthropic`, `groq`, `openrouter`, `ollama`, `gemini`) applied *before* vault auth headers, redacted `ProviderCredential.Headers` values to `"[REDACTED]"` in admin API responses and audit diffs, capped multi-line SSE event accumulation at 4 MiB (`sse.ErrEventTooLarge`), and added `?key=` / `x-goog-api-key` redaction patterns to `logger.ScrubSecrets`.
+
 ---
 
 ## [0.2.0] - 2026-11-25

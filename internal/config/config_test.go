@@ -51,6 +51,22 @@ func TestResolveEnvValueAndParseProviderModel(t *testing.T) {
 	if prov != domain.ProviderAnthropic || bare != "claude-sonnet-4-20250514" || globalID != "anthropic/claude-sonnet-4-20250514" {
 		t.Fatalf("unexpected ParseProviderModel for bare claude model: %v %v %v", prov, bare, globalID)
 	}
+
+	prov, bare, globalID = config.ParseProviderModel("gemini/gemini-2.5-flash")
+	if prov != domain.ProviderGemini || bare != "gemini-2.5-flash" || globalID != "gemini/gemini-2.5-flash" {
+		t.Fatalf("unexpected ParseProviderModel for gemini/gemini-2.5-flash: %v %v %v", prov, bare, globalID)
+	}
+	prov, bare, globalID = config.ParseProviderModel("google/gemini-2.5-pro")
+	if prov != domain.ProviderGemini || bare != "gemini-2.5-pro" || globalID != "gemini/gemini-2.5-pro" {
+		t.Fatalf("unexpected ParseProviderModel for google alias: %v %v %v", prov, bare, globalID)
+	}
+	prov, bare, globalID = config.ParseProviderModel("gemini-embedding-001")
+	if prov != domain.ProviderGemini || bare != "gemini-embedding-001" || globalID != "gemini/gemini-embedding-001" {
+		t.Fatalf("unexpected ParseProviderModel for bare gemini model: %v %v %v", prov, bare, globalID)
+	}
+	if !config.IsKnownProviderAlias("gemini") || !config.IsKnownProviderAlias("google") || !config.IsKnownProviderAlias("google_ai") {
+		t.Fatal("expected gemini and google aliases to be recognized")
+	}
 }
 
 func TestLoadModelListYAML(t *testing.T) {

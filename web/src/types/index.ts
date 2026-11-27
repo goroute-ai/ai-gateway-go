@@ -4,6 +4,7 @@ export type ProviderType =
   | 'groq'
   | 'openrouter'
   | 'ollama'
+  | 'gemini'
   | string;
 
 export type BudgetResetPeriod = 'daily' | 'monthly' | 'never';

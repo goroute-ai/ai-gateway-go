@@ -29,13 +29,8 @@ func (s *GatewayServer) handleTokenize(w http.ResponseWriter, r *http.Request) {
 		Messages []domain.CanonicalMessage `json:"messages,omitempty"`
 		Tools    []domain.CanonicalTool    `json:"tools,omitempty"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
-		domain.WriteHTTPError(w, &domain.GatewayError{
-			StatusCode: http.StatusBadRequest,
-			Type:       domain.ErrorTypeInvalidRequest,
-			Code:       "invalid_json_body",
-			Message:    "Failed to parse tokenize request: " + err.Error(),
-		})
+	if gwErr := decodeBoundedJSON(w, r, maxChatCompletionBodyBytes, &raw, "Failed to parse tokenize request"); gwErr != nil {
+		domain.WriteHTTPError(w, gwErr)
 		return
 	}
 
@@ -98,13 +93,8 @@ func (s *GatewayServer) handleAnthropicCountTokens(w http.ResponseWriter, r *htt
 	}
 
 	var payload anthropicMessagesPayload
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		domain.WriteAnthropicHTTPError(w, &domain.GatewayError{
-			StatusCode: http.StatusBadRequest,
-			Type:       domain.ErrorTypeInvalidRequest,
-			Code:       "invalid_json_body",
-			Message:    "Failed to parse count_tokens request: " + err.Error(),
-		})
+	if gwErr := decodeBoundedJSON(w, r, maxChatCompletionBodyBytes, &payload, "Failed to parse count_tokens request"); gwErr != nil {
+		domain.WriteAnthropicHTTPError(w, gwErr)
 		return
 	}
 

@@ -1368,7 +1368,18 @@ func (s *GatewayServer) handleAdminRotateKey(w http.ResponseWriter, r *http.Requ
 		GracePeriodSeconds *int64  `json:"grace_period_seconds,omitempty"`
 	}
 	if r.Body != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, maxAdminRequestBodyBytes)
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(err, &maxBytesErr) {
+				domain.WriteHTTPError(w, &domain.GatewayError{
+					StatusCode: http.StatusRequestEntityTooLarge,
+					Type:       domain.ErrorTypeInvalidRequest,
+					Code:       "request_body_too_large",
+					Message:    "Request body exceeds the 2 MiB limit",
+				})
+				return
+			}
 			domain.WriteHTTPError(w, &domain.GatewayError{
 				StatusCode: http.StatusBadRequest,
 				Type:       domain.ErrorTypeInvalidRequest,

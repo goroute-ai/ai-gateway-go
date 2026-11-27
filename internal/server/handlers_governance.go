@@ -52,12 +52,23 @@ func redactAuditMap(m map[string]any) map[string]any {
 			lower == "password" || lower == "password_hash" || lower == "password_sha1" ||
 			lower == "auth_secret" || lower == "auth_token" || lower == "token" || lower == "secret" ||
 			lower == "csrf_token" ||
-			lower == "authorization" || lower == "x-api-key" || lower == "api_key" ||
+			lower == "authorization" || lower == "proxy-authorization" ||
+			lower == "x-api-key" || lower == "x-goog-api-key" || lower == "api_key" ||
 			strings.HasPrefix(lower, "encrypted_") ||
 			lower == "dek_nonce" || lower == "data_nonce" ||
 			strings.HasPrefix(lower, "decrypted_") {
 			m[k] = "[REDACTED]"
 			continue
+		}
+		if lower == "headers" {
+			if sub, ok := v.(map[string]any); ok {
+				redacted := make(map[string]any, len(sub))
+				for hk := range sub {
+					redacted[hk] = "[REDACTED]"
+				}
+				m[k] = redacted
+				continue
+			}
 		}
 		if sub, ok := v.(map[string]any); ok {
 			m[k] = redactAuditMap(sub)

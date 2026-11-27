@@ -1261,7 +1261,7 @@ func TestProdDocker_Suite10_LiveMultiProviderAuthorizationAndFinOps(t *testing.T
 		{Name: "openai", EnvVar: "PROD_LIVE_OPENAI_API_KEY", Provider: "openai", GlobalID: "openai/gpt-4o-mini", ModelName: "gpt-4o-mini", InputMicros: 150000, OutMicros: 600000},
 		{Name: "openrouter", EnvVar: "PROD_LIVE_OPENROUTER_API_KEY", Provider: "openrouter", GlobalID: "openrouter/openai/gpt-4o-mini", ModelName: "openai/gpt-4o-mini", InputMicros: 150000, OutMicros: 600000},
 		{Name: "anthropic", EnvVar: "PROD_LIVE_ANTHROPIC_API_KEY", Provider: "anthropic", GlobalID: "anthropic/claude-haiku-4-5-20251001", ModelName: "claude-haiku-4-5-20251001", InputMicros: 800000, OutMicros: 4000000},
-		{Name: "gemini", EnvVar: "PROD_LIVE_GEMINI_API_KEY", Provider: "openai", BaseURL: "https://generativelanguage.googleapis.com/v1beta/openai", GlobalID: "openai/gemini-2.5-flash", ModelName: "gemini-2.5-flash", InputMicros: 150000, OutMicros: 600000},
+		{Name: "gemini", EnvVar: "PROD_LIVE_GEMINI_API_KEY", Provider: "gemini", GlobalID: "gemini/gemini-2.5-flash", ModelName: "gemini-2.5-flash", InputMicros: 300000, OutMicros: 2500000},
 	}
 
 	var configured []liveSpec
@@ -1281,7 +1281,7 @@ func TestProdDocker_Suite10_LiveMultiProviderAuthorizationAndFinOps(t *testing.T
 	mustAdminJSON(t, client, http.MethodPost, prodLBBase+"/admin/v1/organizations", map[string]any{
 		"name": "Suite10 Live LLM Org " + suffix, "slug": "suite10-" + suffix,
 	}, &org, http.StatusCreated)
-	for _, prov := range []string{"openai", "groq", "openrouter", "anthropic"} {
+	for _, prov := range []string{"openai", "groq", "openrouter", "anthropic", "gemini"} {
 		mustAdminJSON(t, client, http.MethodPost, prodLBBase+"/admin/v1/organizations/"+org.ID+"/subscriptions", map[string]any{
 			"provider": prov, "is_enabled": true,
 		}, nil, http.StatusOK)
