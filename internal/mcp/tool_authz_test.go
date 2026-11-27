@@ -55,66 +55,6 @@ func TestHub_UnconditionalToolPolicyAndPositiveToolAllowlists(t *testing.T) {
 		t.Fatalf("CreateMCPToolset: %v", err)
 	}
 
-	// Block delete_repo via ToolPolicy WITHOUT configuring any GuardrailBinding.
-	if err := repo.UpsertToolPolicy(ctx, &storage.ToolPolicy{
-		OrgID:        "org-1",
-		ToolName:     "delete_repo",
-		InputPolicy:  storage.ToolTrustBlocked,
-		OutputPolicy: storage.ToolTrustUntrusted,
-	}); err != nil {
-		t.Fatalf("UpsertToolPolicy: %v", err)
-	}
-
-	t.Run("blocked ToolPolicy hides tool in ListTools, tools/list, SearchTools, and blocks CallTool without GuardrailBinding", func(t *testing.T) {
-		idCtx := &domain.IdentityContext{
-			OrgID:        "org-1",
-			VirtualKeyID: "vk-1",
-			KeyPrefix:    "sk-gw-1",
-		}
-		tools, err := hub.ListTools(ctx, idCtx, "github")
-		if err != nil {
-			t.Fatalf("ListTools: %v", err)
-		}
-		for _, tool := range tools {
-			if tool.Name == "delete_repo" {
-				t.Fatalf("expected delete_repo to be hidden from ListTools")
-			}
-		}
-		if len(tools) != 2 {
-			t.Fatalf("expected 2 visible tools, got %d", len(tools))
-		}
-
-		summaries, err := hub.ProgressiveDiscovery().SearchTools(ctx, idCtx, "", 10)
-		if err != nil {
-			t.Fatalf("SearchTools: %v", err)
-		}
-		for _, s := range summaries {
-			if s.Name == "delete_repo" {
-				t.Fatalf("expected delete_repo to be hidden from SearchTools")
-			}
-		}
-
-		_, err = hub.CallTool(ctx, idCtx, ToolCallInput{
-			ServerSlug: "github",
-			ToolName:   "delete_repo",
-		}, CallMetadata{})
-		var gwErr *domain.GatewayError
-		if !errors.As(err, &gwErr) || gwErr.StatusCode != http.StatusForbidden || gwErr.Code != "violated_tool_policy" {
-			t.Fatalf("expected 403 violated_tool_policy, got %v", err)
-		}
-		logs, _ := repo.ListAuditLogs(ctx, "org-1", 10)
-		foundAudit := false
-		for _, l := range logs {
-			if l.Action == "mcp.tool_policy.blocked" {
-				foundAudit = true
-				break
-			}
-		}
-		if !foundAudit {
-			t.Fatalf("expected mcp.tool_policy.blocked audit log")
-		}
-	})
-
 	t.Run("positive AllowedMCPTools filters tools/list and blocks unlisted tools", func(t *testing.T) {
 		idCtx := &domain.IdentityContext{
 			OrgID:              "org-1",

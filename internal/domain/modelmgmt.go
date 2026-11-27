@@ -309,7 +309,6 @@ const (
 	GuardrailActionBlock  GuardrailAction = "block"
 	GuardrailActionRedact GuardrailAction = "redact"
 	GuardrailActionAudit  GuardrailAction = "audit"
-	GuardrailActionRoute  GuardrailAction = "route"
 )
 
 // GuardrailMode controls whether a guardrail policy enforces actions or only logs violations.
@@ -321,7 +320,7 @@ const (
 	GuardrailModeLoggingOnly GuardrailMode = "logging_only"
 )
 
-// GuardrailPolicy defines per-organization security, PII redaction, and prompt-injection rules.
+// GuardrailPolicy defines per-organization security, PII redaction, moderation, and prompt-injection rules.
 type GuardrailPolicy struct {
 	OrgID                    string          `json:"org_id"`
 	Mode                     GuardrailMode   `json:"mode,omitempty"`
@@ -333,13 +332,13 @@ type GuardrailPolicy struct {
 	EnableSecretDetection    bool            `json:"enable_secret_detection"`
 	SecretAction             GuardrailAction `json:"secret_action"`
 	BlockedKeywords          []string        `json:"blocked_keywords,omitempty"`
+	BlockedPatterns          []string        `json:"blocked_patterns,omitempty"`
 	RedactOutputPII          bool            `json:"redact_output_pii"`
 	EnableToxicityFilter     bool            `json:"enable_toxicity_filter,omitempty"`
 	ToxicityAction           GuardrailAction `json:"toxicity_action,omitempty"`
 	ToxicityThreshold        string          `json:"toxicity_threshold,omitempty"`
 	EnabledContentCategories []string        `json:"enabled_content_categories,omitempty"`
 	ContentExceptions        []string        `json:"content_exceptions,omitempty"`
-	SensitiveRouteTarget     string          `json:"sensitive_route_target,omitempty"`
 	UpdatedAt                time.Time       `json:"updated_at"`
 }
 

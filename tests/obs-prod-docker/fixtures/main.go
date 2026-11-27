@@ -308,6 +308,20 @@ func main() {
 		writeJSON(w, http.StatusOK, map[string]any{"reset": true})
 	})
 
+	// Standard generic_http guardrail webhook for observability span & metric tests
+	mux.HandleFunc("/guardrail/evaluate", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 2<<20))
+		if strings.Contains(string(body), "FORBIDDEN_OBS_BLOCK_TOKEN") {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"decision":   "block",
+				"reason":     "blocked by obs guardrail fixture",
+				"violations": []string{"obs_forbidden_token"},
+			})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"decision": "allow"})
+	})
+
 	log.Printf("obs-test-fixtures listening on %s", addr)
 	srv := &http.Server{
 		Addr:              addr,

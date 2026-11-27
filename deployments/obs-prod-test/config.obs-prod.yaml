@@ -78,14 +78,14 @@ audit:
 guardrails:
   definitions:
     - name: "obs-pii-guard"
-      provider: "local_content_filter"
+      provider: "generic_http"
       event_hooks:
         - "pre_call"
-      default_on: true
+      enabled: true
+      timeout_ms: 2000
+      fail_open: false
       config:
-        action: "block"
-        blocked_words:
-          - "FORBIDDEN_OBS_BLOCK_TOKEN"
+        url: "https://fixtures.prod.test:20443/guardrail/evaluate"
 
 security:
   network:

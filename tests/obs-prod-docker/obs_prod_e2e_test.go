@@ -338,15 +338,16 @@ func TestObsProd_FullOTLPVerificationSuites(t *testing.T) {
 		"Authorization": "Bearer " + vk.RawKey,
 	}
 
-	// Create an org-scoped local_content_filter guardrail so guardrail.evaluate spans & gateway.guardrail.* metrics fire deterministically.
+	// Create an org-scoped generic_http guardrail so guardrail.evaluate spans & gateway.guardrail.* metrics fire deterministically.
 	mustAdminJSON(t, client, http.MethodPost, obsPod1Base+"/admin/v1/organizations/"+org.ID+"/guardrail-definitions", map[string]any{
 		"name":        "obs-pii-guard",
-		"provider":    "local_content_filter",
+		"provider":    "generic_http",
 		"event_hooks": []string{"pre_call"},
-		"default_on":  true,
+		"enabled":     true,
+		"timeout_ms":  2000,
+		"fail_open":   false,
 		"config": map[string]any{
-			"action":        "block",
-			"blocked_words": []string{"FORBIDDEN_OBS_BLOCK_TOKEN"},
+			"url": obsFixturesBase + "/guardrail/evaluate",
 		},
 	}, nil, http.StatusCreated)
 

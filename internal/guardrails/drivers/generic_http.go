@@ -66,44 +66,40 @@ type GenericHTTPDriver struct {
 
 // GenericHTTPRequest is the structured JSON payload dispatched to generic_http webhooks.
 type GenericHTTPRequest struct {
-	InputType          string                     `json:"input_type"`
-	Direction          string                     `json:"direction,omitempty"`
-	Hook               string                     `json:"hook,omitempty"`
-	CallID             string                     `json:"call_id,omitempty"`
-	RequestID          string                     `json:"request_id,omitempty"`
-	TraceID            string                     `json:"trace_id,omitempty"`
-	OrgID              string                     `json:"org_id,omitempty"`
-	TeamID             string                     `json:"team_id,omitempty"`
-	VirtualKeyID       string                     `json:"virtual_key_id,omitempty"`
-	EndUserID          string                     `json:"end_user_id,omitempty"`
-	Model              string                     `json:"model,omitempty"`
-	Tags               []string                   `json:"tags,omitempty"`
-	Content            string                     `json:"content,omitempty"`
-	Texts              []string                   `json:"texts,omitempty"`
-	StructuredMessages []domain.CanonicalMessage  `json:"structured_messages,omitempty"`
-	Images             []domain.ImageURL          `json:"images,omitempty"`
-	Tools              []domain.CanonicalTool     `json:"tools,omitempty"`
-	ToolCalls          []domain.CanonicalToolCall `json:"tool_calls,omitempty"`
-	RequestHeaders     map[string]string          `json:"request_headers,omitempty"`
-	Metadata           map[string]any             `json:"metadata,omitempty"`
+	InputType          string                    `json:"input_type"`
+	Direction          string                    `json:"direction,omitempty"`
+	Hook               string                    `json:"hook,omitempty"`
+	CallID             string                    `json:"call_id,omitempty"`
+	RequestID          string                    `json:"request_id,omitempty"`
+	TraceID            string                    `json:"trace_id,omitempty"`
+	OrgID              string                    `json:"org_id,omitempty"`
+	TeamID             string                    `json:"team_id,omitempty"`
+	VirtualKeyID       string                    `json:"virtual_key_id,omitempty"`
+	EndUserID          string                    `json:"end_user_id,omitempty"`
+	Model              string                    `json:"model,omitempty"`
+	Tags               []string                  `json:"tags,omitempty"`
+	Content            string                    `json:"content,omitempty"`
+	Texts              []string                  `json:"texts,omitempty"`
+	StructuredMessages []domain.CanonicalMessage `json:"structured_messages,omitempty"`
+	Images             []domain.ImageURL         `json:"images,omitempty"`
+	RequestHeaders     map[string]string         `json:"request_headers,omitempty"`
+	Metadata           map[string]any            `json:"metadata,omitempty"`
 }
 
 type genericHTTPWireResponse struct {
-	Decision          string                     `json:"decision"`
-	Action            string                     `json:"action"`
-	Blocked           *bool                      `json:"blocked"`
-	SanitizedText     *string                    `json:"sanitized_text"`
-	ModifiedContent   *string                    `json:"modified_content"`
-	ModifiedTexts     []string                   `json:"modified_texts"`
-	Texts             []string                   `json:"texts"`
-	ModifiedMessages  []domain.CanonicalMessage  `json:"modified_messages"`
-	ModifiedToolCalls []domain.CanonicalToolCall `json:"modified_tool_calls"`
-	ToolCalls         []domain.CanonicalToolCall `json:"tool_calls"`
-	Violations        []json.RawMessage          `json:"violations"`
-	Reason            string                     `json:"reason"`
-	Message           string                     `json:"message"`
-	Error             string                     `json:"error"`
-	UsageUnits        int64                      `json:"usage_units"`
+	Decision         string                    `json:"decision"`
+	Action           string                    `json:"action"`
+	Blocked          *bool                     `json:"blocked"`
+	BlockedReason    string                    `json:"blocked_reason"`
+	SanitizedText    *string                   `json:"sanitized_text"`
+	ModifiedContent  *string                   `json:"modified_content"`
+	ModifiedTexts    []string                  `json:"modified_texts"`
+	Texts            []string                  `json:"texts"`
+	ModifiedMessages []domain.CanonicalMessage `json:"modified_messages"`
+	Violations       []json.RawMessage         `json:"violations"`
+	Reason           string                    `json:"reason"`
+	Message          string                    `json:"message"`
+	Error            string                    `json:"error"`
 }
 
 // NewGenericHTTPDriver constructs a GenericHTTPDriver from cfg. When httpClient is nil,
@@ -256,8 +252,7 @@ func (d *GenericHTTPDriver) buildPayload(input *domain.GuardrailEvalInput) Gener
 
 	inputType := "request"
 	if strings.EqualFold(input.Direction, domain.GuardrailDirectionOutput) ||
-		input.Hook == domain.GuardrailHookPostCall ||
-		input.Hook == domain.GuardrailHookPostMCPCall {
+		input.Hook == domain.GuardrailHookPostCall {
 		inputType = "response"
 	}
 
@@ -283,8 +278,6 @@ func (d *GenericHTTPDriver) buildPayload(input *domain.GuardrailEvalInput) Gener
 		Texts:              slices.Clone(input.Texts),
 		StructuredMessages: input.StructuredMessages,
 		Images:             input.Images,
-		Tools:              input.Tools,
-		ToolCalls:          input.ToolCalls,
 		RequestHeaders:     d.sanitizeIncomingHeaders(input.RequestHeaders),
 		Metadata:           input.Metadata,
 	}
@@ -338,7 +331,6 @@ func (d *GenericHTTPDriver) parseResponse(respBytes []byte) (*domain.GuardrailEv
 	res := &domain.GuardrailEvalResult{
 		Decision:          decision,
 		AppliedGuardrails: []string{d.guardrailName},
-		UsageUnits:        wire.UsageUnits,
 	}
 
 	if decision == domain.GuardrailDecisionModify {
@@ -354,18 +346,11 @@ func (d *GenericHTTPDriver) parseResponse(respBytes []byte) (*domain.GuardrailEv
 		}
 
 		res.ModifiedMessages = wire.ModifiedMessages
-
-		switch {
-		case len(wire.ModifiedToolCalls) > 0:
-			res.ModifiedToolCalls = wire.ModifiedToolCalls
-		case len(wire.ToolCalls) > 0:
-			res.ModifiedToolCalls = wire.ToolCalls
-		}
 	}
 
 	res.Violations = d.parseViolations(wire.Violations, decision)
 
-	reason := firstNonEmptyString(wire.Reason, wire.Message, wire.Error)
+	reason := firstNonEmptyString(wire.BlockedReason, wire.Reason, wire.Message, wire.Error)
 	if reason != "" {
 		res.ErrorMessage = reason
 		if (decision == domain.GuardrailDecisionBlock || decision == domain.GuardrailDecisionFlag) && len(res.Violations) == 0 {
@@ -386,17 +371,27 @@ func (d *GenericHTTPDriver) resolveDecision(wire *genericHTTPWireResponse) (doma
 	if wire.Blocked != nil && *wire.Blocked {
 		return domain.GuardrailDecisionBlock, nil
 	}
+	hasModifications := wire.SanitizedText != nil ||
+		wire.ModifiedContent != nil ||
+		len(wire.ModifiedTexts) > 0 ||
+		len(wire.Texts) > 0 ||
+		len(wire.ModifiedMessages) > 0
 	rawDecision := firstNonEmptyString(wire.Decision, wire.Action)
 	if rawDecision != "" {
 		switch strings.ToLower(strings.TrimSpace(rawDecision)) {
 		case "allow", "pass", "ok", "none":
 			return domain.GuardrailDecisionAllow, nil
-		case "block", "deny", "reject":
+		case "block", "blocked", "deny", "reject":
 			return domain.GuardrailDecisionBlock, nil
 		case "flag", "audit", "alert", "warn":
 			return domain.GuardrailDecisionFlag, nil
 		case "modify", "redact", "mask", "sanitize":
 			return domain.GuardrailDecisionModify, nil
+		case "guardrail_intervened":
+			if hasModifications {
+				return domain.GuardrailDecisionModify, nil
+			}
+			return domain.GuardrailDecisionBlock, nil
 		default:
 			return "", fmt.Errorf("generic_http %q returned unsupported decision %q", d.guardrailName, rawDecision)
 		}
@@ -405,8 +400,7 @@ func (d *GenericHTTPDriver) resolveDecision(wire *genericHTTPWireResponse) (doma
 	if wire.SanitizedText != nil ||
 		wire.ModifiedContent != nil ||
 		len(wire.ModifiedTexts) > 0 ||
-		len(wire.ModifiedMessages) > 0 ||
-		len(wire.ModifiedToolCalls) > 0 {
+		len(wire.ModifiedMessages) > 0 {
 		return domain.GuardrailDecisionModify, nil
 	}
 	return domain.GuardrailDecisionAllow, nil

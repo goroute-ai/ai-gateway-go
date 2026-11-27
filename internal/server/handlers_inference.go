@@ -453,7 +453,6 @@ func (s *GatewayServer) tryServeCachedChatCompletion(
 	if redacted {
 		guardrailRedacted = true
 	}
-	s.GuardrailPipeline().EvaluateLoggingOnly(r.Context(), prc, chatReq, cachedResp)
 	quotaSettlement.actualTokensReconciled = true
 	quotaSettlement.releaseQuota(0, -2)
 	s.collector.Record(observability.RequestObservation{
@@ -548,16 +547,8 @@ func (s *GatewayServer) handleChatCompletionsStream(
 	quotaSettlement *postDispatchSettlement,
 	guardrailRedacted bool,
 ) {
-	upstreamCtx, duringHandle, duringInitErr := s.startDuringCallGuardrails(r.Context(), prc, chatReq)
-	if duringInitErr != nil {
-		domain.WriteHTTPError(w, duringInitErr)
-		return
-	}
-	streamSession, sessionErr := s.newStreamGuardrailSession(r.Context(), prc, duringHandle)
+	streamSession, sessionErr := s.newStreamGuardrailSession(r.Context(), prc)
 	if sessionErr != nil {
-		if duringHandle != nil {
-			duringHandle.Close()
-		}
 		domain.WriteHTTPError(w, sessionErr)
 		return
 	}
@@ -573,19 +564,9 @@ func (s *GatewayServer) handleChatCompletionsStream(
 		if chunk == nil {
 			return nil
 		}
-		if checkErr := streamSession.CheckBeforeFirstEmit(r.Context()); checkErr != nil {
-			return checkErr
-		}
 		c := cloneSingleStreamChunk(*chunk)
 		if len(c.Choices) > 0 {
 			delta := &c.Choices[0].Delta
-			if len(delta.ToolCalls) > 0 {
-				filteredTC, tcErr := streamSession.ProcessToolCalls(r.Context(), delta.ToolCalls)
-				if tcErr != nil {
-					return tcErr
-				}
-				delta.ToolCalls = filteredTC
-			}
 			if delta.Content != "" {
 				processed, procErr := streamSession.ProcessText(r.Context(), delta.Content)
 				if procErr != nil {
@@ -613,20 +594,12 @@ func (s *GatewayServer) handleChatCompletionsStream(
 		setPreStreamSelectedHeaders(w, dep, sseWriter.Started())
 	}
 
-	upstreamCtx = attachStreamDroppedParamsObserver(upstreamCtx, w, sseWriter.Started)
+	upstreamCtx := attachStreamDroppedParamsObserver(r.Context(), w, sseWriter.Started)
 	upstreamCtx = quotaSettlement.trackDispatch(upstreamCtx)
 	if s.orchestrator != nil && len(chatReq.Tools) > 0 {
 		usage, meta, err = s.orchestrator.ExecuteStreamLoop(upstreamCtx, idCtx, chatReq, writeChunk, onSelected)
 	} else {
 		usage, meta, err = s.reliability.ExecuteStream(upstreamCtx, idCtx, chatReq, writeChunk, onSelected)
-	}
-	if !sseWriter.Started() {
-		if duringOut, duringErr := streamSession.WaitDuring(r.Context()); duringErr != nil {
-			s.recordDuringCallBlock(r.Context(), w, prc, duringOut, duringErr, "chat_completion")
-			err = duringErr
-		}
-	} else if duringErr := duringHandle.Blocked(); duringErr != nil && err == nil {
-		err = duringErr
 	}
 	streamFlushRem, flushErr := streamSession.Flush(r.Context(), err)
 	if err == nil && flushErr != nil {
@@ -827,7 +800,6 @@ func (s *GatewayServer) finalizeChatStreamSuccess(
 			return
 		}
 	}
-	s.GuardrailPipeline().EvaluateLoggingOnly(r.Context(), prc, chatReq, nil)
 	_ = sseWriter.WriteDone()
 	logger.InfoContext(r.Context(), "Streaming inference completed",
 		slog.String("component", "inference"),
@@ -859,20 +831,11 @@ func (s *GatewayServer) handleChatCompletionsSync(
 	quotaSettlement *postDispatchSettlement,
 	guardrailRedacted bool,
 ) {
-	upstreamCtx, duringHandle, duringInitErr := s.startDuringCallGuardrails(r.Context(), prc, chatReq)
-	if duringInitErr != nil {
-		domain.WriteHTTPError(w, duringInitErr)
-		return
-	}
-	if duringHandle != nil {
-		defer duringHandle.Close()
-	}
-
 	var resp *domain.CanonicalChatResponse
 	var meta *router.ExecutionMeta
 	var err error
 
-	upstreamCtx = quotaSettlement.trackDispatch(upstreamCtx)
+	upstreamCtx := quotaSettlement.trackDispatch(r.Context())
 	if s.orchestrator != nil && len(chatReq.Tools) > 0 {
 		resp, meta, err = s.orchestrator.ExecuteLoop(upstreamCtx, idCtx, chatReq)
 	} else {
@@ -880,14 +843,6 @@ func (s *GatewayServer) handleChatCompletionsSync(
 	}
 	quotaSettlement.meta = meta
 	quotaSettlement.dispatchErr = err
-	if duringOut, duringErr := duringHandle.Wait(r.Context()); duringErr != nil {
-		if quotaSettlement.dispatchErr == nil {
-			quotaSettlement.dispatchErr = duringErr
-		}
-		s.recordDuringCallBlock(r.Context(), w, prc, duringOut, duringErr, "chat_completion")
-		domain.WriteHTTPError(w, duringErr)
-		return
-	}
 	if err != nil {
 		statusCode := http.StatusBadGateway
 		if gwErr, ok := err.(*domain.GatewayError); ok && gwErr.StatusCode > 0 {
@@ -1027,7 +982,6 @@ func (s *GatewayServer) handleChatCompletionsSync(
 		domain.WriteHTTPError(w, guardrailOutputErr)
 		return
 	}
-	s.GuardrailPipeline().EvaluateLoggingOnly(r.Context(), prc, chatReq, resp)
 	_ = json.NewEncoder(w).Encode(resp)
 	logger.InfoContext(r.Context(), "Inference completed",
 		slog.String("component", "inference"),

@@ -15,7 +15,6 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/goroute-ai/ai-gateway-go/internal/config"
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
-	"github.com/goroute-ai/ai-gateway-go/internal/guardrails"
 	"github.com/goroute-ai/ai-gateway-go/internal/mcp"
 	"github.com/goroute-ai/ai-gateway-go/internal/server"
 	"github.com/goroute-ai/ai-gateway-go/internal/storage"
@@ -397,18 +396,12 @@ func (l *guardrailLab) clearUpstreamCalls() {
 	l.capturedReq = nil
 }
 
-// scannerFunc adapts an ordinary Go function into guardrails.Scanner for quick test cases.
-type scannerFunc func(ctx context.Context, req guardrails.ScanRequest) (guardrails.ScanResult, error)
-
-func (f scannerFunc) Scan(ctx context.Context, req guardrails.ScanRequest) (guardrails.ScanResult, error) {
-	return f(ctx, req)
-}
-
-// webhookScanRecord captures what HTTPGuardrailScanner sends on the wire.
+// webhookScanRecord captures what the generic_http driver sends on the wire.
 type webhookScanRecord struct {
 	OrgID     string            `json:"org_id"`
-	Direction string            `json:"direction"`
-	Content   string            `json:"content"`
+	InputType string            `json:"input_type"`
+	Hook      string            `json:"hook"`
+	Texts     []string          `json:"texts"`
 	Headers   map[string]string `json:"-"`
 }
 

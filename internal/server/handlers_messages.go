@@ -220,7 +220,6 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 				domain.WriteAnthropicHTTPError(w, sanitizeErr)
 				return
 			}
-			s.GuardrailPipeline().EvaluateLoggingOnly(r.Context(), prc, &chatReq, cachedResp)
 			quotaSettlement.actualTokensReconciled = true
 			releaseQuota(0, -2)
 			s.collector.Record(observability.RequestObservation{
@@ -251,27 +250,10 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 		w.Header().Set("X-Gateway-Cache", "MISS")
 	}
 
-	upstreamCtx, duringHandle, duringInitErr := s.startDuringCallGuardrails(r.Context(), prc, &chatReq)
-	if duringInitErr != nil {
-		domain.WriteAnthropicHTTPError(w, duringInitErr)
-		return
-	}
-	if duringHandle != nil {
-		defer duringHandle.Close()
-	}
-
-	upstreamCtx = quotaSettlement.trackDispatch(upstreamCtx)
+	upstreamCtx := quotaSettlement.trackDispatch(r.Context())
 	resp, meta, err := s.reliability.ExecuteChat(upstreamCtx, idCtx, &chatReq)
 	quotaSettlement.meta = meta
 	quotaSettlement.dispatchErr = err
-	if duringOut, duringErr := duringHandle.Wait(r.Context()); duringErr != nil {
-		if quotaSettlement.dispatchErr == nil {
-			quotaSettlement.dispatchErr = duringErr
-		}
-		s.recordDuringCallBlock(r.Context(), w, prc, duringOut, duringErr, "messages")
-		domain.WriteAnthropicHTTPError(w, duringErr)
-		return
-	}
 	if err != nil {
 		s.collector.Record(observability.RequestObservation{StatusCode: http.StatusBadGateway})
 		s.emitRoutingTelemetryAndDebugHeaders(w, r, meta)
@@ -303,7 +285,6 @@ func (s *GatewayServer) handleAnthropicMessages(w http.ResponseWriter, r *http.R
 		domain.WriteAnthropicHTTPError(w, sanitizeErr)
 		return
 	}
-	s.GuardrailPipeline().EvaluateLoggingOnly(r.Context(), prc, &chatReq, resp)
 	if cacheLookup.Eligible {
 		s.respCache.StoreChat(r.Context(), cacheLookup, idCtx.OrgID, resp)
 	}
@@ -408,16 +389,8 @@ func (s *GatewayServer) streamAnthropicMessages(
 	}
 	defer s.settleQuotaOnReturn(quotaSettlement)
 
-	upstreamCtx, duringHandle, duringInitErr := s.startDuringCallGuardrails(r.Context(), prc, chatReq)
-	if duringInitErr != nil {
-		domain.WriteAnthropicHTTPError(w, duringInitErr)
-		return
-	}
-	streamSession, sessionErr := s.newStreamGuardrailSession(r.Context(), prc, duringHandle)
+	streamSession, sessionErr := s.newStreamGuardrailSession(r.Context(), prc)
 	if sessionErr != nil {
-		if duringHandle != nil {
-			duringHandle.Close()
-		}
 		domain.WriteAnthropicHTTPError(w, sessionErr)
 		return
 	}
@@ -451,9 +424,7 @@ func (s *GatewayServer) streamAnthropicMessages(
 		fmt.Fprintf(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n")
 		flusher.Flush()
 	}
-	if !streamSession.HasDuringCall() {
-		startSSE()
-	}
+	startSSE()
 
 	var outputTokens int
 	var winningDep *domain.Deployment
@@ -479,19 +450,9 @@ func (s *GatewayServer) streamAnthropicMessages(
 		if chunk == nil {
 			return nil
 		}
-		if checkErr := streamSession.CheckBeforeFirstEmit(r.Context()); checkErr != nil {
-			return checkErr
-		}
 		startSSE()
 		c := cloneSingleStreamChunk(*chunk)
 		for i := range c.Choices {
-			if len(c.Choices[i].Delta.ToolCalls) > 0 {
-				filteredTC, tcErr := streamSession.ProcessToolCalls(r.Context(), c.Choices[i].Delta.ToolCalls)
-				if tcErr != nil {
-					return tcErr
-				}
-				c.Choices[i].Delta.ToolCalls = filteredTC
-			}
 			if c.Choices[i].Delta.Content != "" {
 				txt, procErr := streamSession.ProcessText(r.Context(), c.Choices[i].Delta.Content)
 				if procErr != nil {
@@ -507,21 +468,13 @@ func (s *GatewayServer) streamAnthropicMessages(
 	}
 
 	streamStarted := time.Now()
-	upstreamCtx = attachStreamDroppedParamsObserver(upstreamCtx, w, streamSession.SSEStarted)
+	upstreamCtx := attachStreamDroppedParamsObserver(r.Context(), w, streamSession.SSEStarted)
 	upstreamCtx = quotaSettlement.trackDispatch(upstreamCtx)
 	usage, meta, err := s.reliability.ExecuteStream(upstreamCtx, idCtx, chatReq, onChunk, func(dep *domain.Deployment) {
 		winningDep = dep
 		quotaSettlement.selectedDep = dep
 		setPreStreamSelectedHeaders(w, dep, streamSession.SSEStarted())
 	})
-	if !streamSession.SSEStarted() {
-		if duringOut, duringErr := streamSession.WaitDuring(r.Context()); duringErr != nil {
-			s.recordDuringCallBlock(r.Context(), w, prc, duringOut, duringErr, "messages")
-			err = duringErr
-		}
-	} else if duringErr := duringHandle.Blocked(); duringErr != nil && err == nil {
-		err = duringErr
-	}
 	flushDelta, flushErr := streamSession.Flush(r.Context(), err)
 	if err == nil && flushErr != nil {
 		err = flushErr
@@ -575,7 +528,6 @@ func (s *GatewayServer) streamAnthropicMessages(
 		return
 	}
 	startSSE()
-	s.GuardrailPipeline().EvaluateLoggingOnly(r.Context(), prc, chatReq, nil)
 	if flushDelta != "" {
 		emitDelta(flushDelta)
 	}

@@ -24,18 +24,10 @@ import type {
   AuditLog,
   AuditLogFilter,
   GuardrailPolicy,
-  GuardrailStatus,
   GuardrailDefinition,
   GuardrailDefinitionWriteRequest,
-  GuardrailBinding,
-  GuardrailBindingCreateRequest,
-  ToolPolicy,
-  ToolPolicyUpsertRequest,
-  GuardrailUsageSummary,
   GuardrailSimulateRequest,
   GuardrailSimulateResponse,
-  GuardrailApplyRequest,
-  GuardrailApplyResponse,
   MCPServer,
   MCPTool,
   MCPToolset,
@@ -281,21 +273,17 @@ export const adminApi = {
       },
       key
     ),
-  applyGuardrails: (dataPlaneToken: string, data: GuardrailApplyRequest) =>
-    apiFetch<GuardrailApplyResponse>(
-      '/v1/guardrails/apply',
-      { method: 'POST', body: JSON.stringify(data) },
-      dataPlaneToken
-    ),
 
-  // Named Guardrail Definitions & Lifecycle
+  // External Guardrail Definitions
   listGuardrailDefinitions: (
     key: string,
     orgId: string,
-    params?: { status?: string; name?: string }
+    params?: { enabled?: boolean }
   ) =>
     apiFetch<{ data: GuardrailDefinition[] }>(
-      `/admin/v1/organizations/${enc(orgId)}/guardrail-definitions${qs(params || {})}`,
+      `/admin/v1/organizations/${enc(orgId)}/guardrail-definitions${qs(
+        params?.enabled ? { enabled: 'true' } : {}
+      )}`,
       {},
       key
     ),
@@ -321,101 +309,10 @@ export const adminApi = {
       { method: 'PUT', body: JSON.stringify(data) },
       key
     ),
-  patchGuardrailDefinition: (
-    key: string,
-    guardrailId: string,
-    data: Partial<GuardrailDefinitionWriteRequest>
-  ) =>
-    apiFetch<GuardrailDefinition>(
-      `/admin/v1/guardrail-definitions/${enc(guardrailId)}`,
-      { method: 'PATCH', body: JSON.stringify(data) },
-      key
-    ),
   deleteGuardrailDefinition: (key: string, guardrailId: string) =>
-    apiFetch<{ status: string; deleted: boolean; id: string }>(
+    apiFetch<{ deleted: boolean; id: string }>(
       `/admin/v1/guardrail-definitions/${enc(guardrailId)}`,
       { method: 'DELETE' },
-      key
-    ),
-  setGuardrailDefinitionStatus: (key: string, guardrailId: string, status: GuardrailStatus) =>
-    apiFetch<GuardrailDefinition>(
-      `/admin/v1/guardrail-definitions/${enc(guardrailId)}/status`,
-      { method: 'POST', body: JSON.stringify({ status }) },
-      key
-    ),
-
-  // Guardrail Bindings
-  listGuardrailBindings: (
-    key: string,
-    orgId: string,
-    params?: {
-      guardrail_id?: string;
-      guardrail_name?: string;
-      team_id?: string;
-      virtual_key_id?: string;
-      end_user_id?: string;
-      model_group_id?: string;
-      tag?: string;
-    }
-  ) =>
-    apiFetch<{ data: GuardrailBinding[] }>(
-      `/admin/v1/organizations/${enc(orgId)}/guardrail-bindings${qs(params || {})}`,
-      {},
-      key
-    ),
-  createGuardrailBinding: (key: string, data: GuardrailBindingCreateRequest) =>
-    apiFetch<GuardrailBinding>(
-      '/admin/v1/guardrail-bindings',
-      { method: 'POST', body: JSON.stringify(data) },
-      key
-    ),
-  deleteGuardrailBinding: (key: string, bindingId: string) =>
-    apiFetch<{ status: string; deleted: boolean; id: string }>(
-      `/admin/v1/guardrail-bindings/${enc(bindingId)}`,
-      { method: 'DELETE' },
-      key
-    ),
-
-  // Tool Trust Policies
-  listToolPolicies: (
-    key: string,
-    orgId: string,
-    params?: { team_id?: string; virtual_key_id?: string; tool_name?: string }
-  ) =>
-    apiFetch<{ data: ToolPolicy[] }>(
-      `/admin/v1/organizations/${enc(orgId)}/tool-policies${qs(params || {})}`,
-      {},
-      key
-    ),
-  upsertToolPolicy: (key: string, orgId: string, data: ToolPolicyUpsertRequest) =>
-    apiFetch<ToolPolicy>(
-      `/admin/v1/organizations/${enc(orgId)}/tool-policies`,
-      { method: 'POST', body: JSON.stringify(data) },
-      key
-    ),
-  deleteToolPolicy: (key: string, orgId: string, policyId: string) =>
-    apiFetch<{ status: string; deleted: boolean; id: string }>(
-      `/admin/v1/organizations/${enc(orgId)}/tool-policies/${enc(policyId)}`,
-      { method: 'DELETE' },
-      key
-    ),
-
-  // Guardrail Usage & Micro-Dollar Metrics
-  getGuardrailUsage: (
-    key: string,
-    orgId: string,
-    params?: {
-      guardrail_id?: string;
-      team_id?: string;
-      virtual_key_id?: string;
-      start_date?: string;
-      end_date?: string;
-      top_limit?: number;
-    }
-  ) =>
-    apiFetch<GuardrailUsageSummary>(
-      `/admin/v1/organizations/${enc(orgId)}/guardrail-usage${qs(params || {})}`,
-      {},
       key
     ),
 

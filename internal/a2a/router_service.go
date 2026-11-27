@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -689,9 +688,6 @@ func buildA2APipelineContext(
 		prc.TeamID = idCtx.TeamID
 		prc.VirtualKeyID = idCtx.VirtualKeyID
 		prc.EndUserID = idCtx.UserID
-		if role := strings.TrimSpace(string(idCtx.Role)); role != "" {
-			prc.CallerRoles = []string{role}
-		}
 	}
 	prc.TraceID = observability.TraceFromContext(ctx).TraceID
 	return prc
@@ -726,8 +722,7 @@ func (s *RouterService) evaluateInboundMessage(
 		}},
 	}
 	if s.pipeline != nil {
-		out, err := s.pipeline.EvaluatePreCall(ctx, prc, chatReq)
-		if err != nil {
+		if _, err := s.pipeline.EvaluatePreCall(ctx, prc, chatReq); err != nil {
 			var gwErr *domain.GatewayError
 			if errors.As(err, &gwErr) {
 				if gwErr.StatusCode >= 500 {
@@ -741,12 +736,6 @@ func (s *RouterService) evaluateInboundMessage(
 			return &A2AError{
 				Code:    CodeInvalidTaskPayload,
 				Message: err.Error(),
-			}
-		}
-		if out != nil && strings.TrimSpace(out.RouteTarget) != "" {
-			return &A2AError{
-				Code:    CodeInvalidTaskPayload,
-				Message: fmt.Sprintf("agent %q invocation blocked by sensitive routing guardrail policy", agentSlug),
 			}
 		}
 	} else if s.guardrails != nil {
@@ -844,7 +833,6 @@ func (s *RouterService) sanitizeParts(
 		if _, err := s.pipeline.EvaluatePostCall(ctx, prc, chatResp); err != nil {
 			return err
 		}
-		s.pipeline.EvaluateLoggingOnly(ctx, prc, &domain.CanonicalChatRequest{Model: prc.Model}, chatResp)
 		for i, tp := range textRefs {
 			if i < len(chatResp.Choices) {
 				tp.Text = chatResp.Choices[i].Message.Content

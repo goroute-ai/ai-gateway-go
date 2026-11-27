@@ -1,5 +1,3 @@
-// Package drivers implements pluggable guardrail evaluation drivers including
-// Starlark custom code, regex/PII/secret/prompt-injection detectors, LLM judge,
-// tool-permission policy, OpenAI Moderation, and external scanners (Presidio, Lakera, Pangea,
-// Guardrails AI).
+// Package drivers provides GoRoute's standard external guardrail driver registry
+// (generic_http webhook and openai_moderation) backed by SSRF-enforced HTTP egress.
 package drivers

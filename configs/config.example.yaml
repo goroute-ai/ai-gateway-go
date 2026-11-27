@@ -337,41 +337,18 @@ cache:
   #   max_input_chars: 8000
 
 guardrails:
-  scanners: []
+  definitions: []
   #  - name: "dlp-webhook"
-  #    url: "https://guardrails.internal.corp/v1/scan"
+  #    provider: "generic_http" # or "openai_moderation"
+  #    event_hooks: ["pre_call", "post_call"]
+  #    enabled: true
   #    timeout_ms: 2000
   #    fail_open: false
-  #    headers:
-  #      Authorization: "os.environ/GUARDRAIL_SCANNER_TOKEN"
-  definitions: []
-  #  - name: "pii-shield"
-  #    provider: "local_content_filter"
-  #    event_hooks: ["pre_call", "post_call"]
-  #    stream_scope: "both"
-  #    default_on: true
-  #    timeout_ms: 1500
-  #    fail_open: false
   #    precedence: 10
-  #    status: "active"
   #    config:
-  #      action: "modify"
-  #      redact_mode: "mask"
-  #    guardrail_info:
-  #      usage_unit: "request"
-  #      cost_per_call_micros: 25
+  #      url: "https://guardrails.internal.corp/v1/evaluate"
   #    # secrets:
-  #    #   api_key: "os.environ/GUARDRAIL_PROVIDER_KEY" # encrypted at rest via Vault
-  #    bindings:
-  #      - team_id: "team_security"
-  #        is_locked: true
-  tool_policies: []
-  #  - tool_name: "shell_exec"
-  #    input_policy: "blocked"
-  #    output_policy: "untrusted"
-  #  - tool_name: "crm_lookup"
-  #    input_policy: "untrusted"
-  #    output_policy: "untrusted"
+  #    #   bearer_token: "os.environ/GUARDRAIL_WEBHOOK_TOKEN" # encrypted at rest via Vault
 
 # ------------------------------------------------------------------------------
 # Security & Network Egress (SSRF Hardening)

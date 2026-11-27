@@ -622,66 +622,23 @@ func TestHub_PipelineHooksAlongsideToolPinning(t *testing.T) {
 		IsActive:    true,
 	}}))
 
-	pipeline := guardrails.NewPipeline(eng, repo)
-	var preCalls, duringCalls, postCalls atomic.Int32
-	pipeline.RegisterDriver("stub-mcp-hooks", func(_ context.Context, cfg guardrails.DriverConfig) (guardrails.Driver, error) {
-		return &stubMCPPipelineDriver{
-			name:  "stub-mcp-hooks",
-			hooks: cfg.Definition.EventHooks,
-			fn: func(evalCtx context.Context, input *domain.GuardrailEvalInput) (*domain.GuardrailEvalResult, error) {
-				switch input.Hook {
-				case domain.GuardrailHookPreMCPCall:
-					preCalls.Add(1)
-					if strings.Contains(strings.Join(input.Texts, ""), "block-pre") {
-						return &domain.GuardrailEvalResult{
-							Decision:     domain.GuardrailDecisionBlock,
-							ErrorMessage: "blocked at pre_mcp_call",
-						}, nil
-					}
-				case domain.GuardrailHookDuringMCPCall:
-					duringCalls.Add(1)
-					if strings.Contains(strings.Join(input.Texts, ""), `"slow":true`) {
-						return &domain.GuardrailEvalResult{
-							Decision:     domain.GuardrailDecisionBlock,
-							ErrorMessage: "blocked at during_mcp_call",
-						}, nil
-					}
-				case domain.GuardrailHookPostMCPCall:
-					postCalls.Add(1)
-					if len(input.Texts) > 0 && strings.Contains(input.Texts[0], "secret-output-marker") {
-						redacted := strings.ReplaceAll(input.Texts[0], "secret-output-marker", "[REDACTED_MCP_OUT]")
-						return &domain.GuardrailEvalResult{
-							Decision:      domain.GuardrailDecisionModify,
-							ModifiedTexts: []string{redacted},
-						}, nil
-					}
-				}
-				return &domain.GuardrailEvalResult{Decision: domain.GuardrailDecisionAllow}, nil
-			},
-		}, nil
-	})
-
-	require.NoError(t, repo.CreateGuardrailDefinition(ctx, &domain.GuardrailDefinition{
-		ID:       "def-mcp-hooks",
-		OrgID:    "org_pipe",
-		Name:     "mcp-lifecycle-hooks",
-		Provider: "stub-mcp-hooks",
-		EventHooks: []domain.GuardrailHook{
-			domain.GuardrailHookPreMCPCall,
-			domain.GuardrailHookDuringMCPCall,
-			domain.GuardrailHookPostMCPCall,
-		},
-		DefaultOn:  true,
-		Precedence: 1,
-		Status:     domain.GuardrailStatusActive,
+	require.NoError(t, repo.SetGuardrailPolicy(ctx, &domain.GuardrailPolicy{
+		OrgID:                 "org_pipe",
+		Mode:                  domain.GuardrailModeEnforce,
+		EnablePromptInjection: true,
+		PromptInjectionAction: domain.GuardrailActionBlock,
+		EnablePIIDetection:    true,
+		PIIAction:             domain.GuardrailActionRedact,
+		RedactOutputPII:       true,
+		BlockedKeywords:       []string{"block-pre"},
 	}))
 
 	hub := mcp.NewHub(repo, vault, rbac, mcp.NewTransportDispatcher(netPolicy, nil, false), mcp.NewAuthResolver(vault, netPolicy))
-	hub.ApplyOptions(mcp.WithGuardrailPipeline(pipeline))
+	hub.SetGuardrails(eng)
 
 	idCtx := &domain.IdentityContext{OrgID: "org_pipe", UserID: "user-77"}
 
-	// 1. Allowed call runs pre_mcp_call, during_mcp_call, post_mcp_call (redacting result), and sends Vault JWT
+	// 1. Allowed call runs built-in MCP guardrails and sends Vault JWT
 	resp, err := hub.CallTool(ctx, idCtx, mcp.ToolCallInput{
 		ServerSlug: "pipe-srv",
 		ToolName:   "safe_tool",
@@ -689,34 +646,20 @@ func TestHub_PipelineHooksAlongsideToolPinning(t *testing.T) {
 	}, mcp.CallMetadata{})
 	require.NoError(t, err)
 	require.Len(t, resp.Content, 1)
-	assert.Equal(t, "[REDACTED_MCP_OUT]", resp.Content[0].Text)
-	assert.Equal(t, int32(1), preCalls.Load())
-	assert.Equal(t, int32(1), duringCalls.Load())
-	assert.Equal(t, int32(1), postCalls.Load())
 	_, jwtClaims := decodeTestJWTPayload(t, lastAuthHeader)
 	assert.Equal(t, "user-77", jwtClaims["sub"])
 	assert.Equal(t, "staging", jwtClaims["mcp_env"])
 
-	// 2. pre_mcp_call blocks before upstream
+	// 2. Blocked keyword stops tool call before upstream dispatch
 	_, err = hub.CallTool(ctx, idCtx, mcp.ToolCallInput{
 		ServerSlug: "pipe-srv",
 		ToolName:   "safe_tool",
 		Arguments:  map[string]any{"q": "block-pre"},
 	}, mcp.CallMetadata{})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "blocked at pre_mcp_call")
-	assert.Equal(t, int32(1), callCount.Load(), "pre_mcp_call block must prevent upstream call")
+	assert.Equal(t, int32(1), callCount.Load(), "blocked tool call must prevent upstream call")
 
-	// 3. during_mcp_call cancels slow upstream call early
-	_, err = hub.CallTool(ctx, idCtx, mcp.ToolCallInput{
-		ServerSlug: "pipe-srv",
-		ToolName:   "safe_tool",
-		Arguments:  map[string]any{"slow": true},
-	}, mcp.CallMetadata{})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "blocked at during_mcp_call")
-
-	// 4. Tool pinning still rejects unregistered tool even when pipeline is active
+	// 3. Tool pinning rejects unregistered tool
 	_, err = hub.CallTool(ctx, idCtx, mcp.ToolCallInput{
 		ServerSlug: "pipe-srv",
 		ToolName:   "unpinned_tool",

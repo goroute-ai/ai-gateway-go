@@ -80,12 +80,6 @@ func TestGenericHTTPDriver_RichPayloadAndHeaderSanitization(t *testing.T) {
 			{Role: "user", Content: "hello world"},
 		},
 		Images: []domain.ImageURL{{URL: "https://example.com/img.png", Detail: "low"}},
-		Tools: []domain.CanonicalTool{
-			{Type: "function", Function: domain.CanonicalFunction{Name: "lookup_user", Description: "Look up user"}},
-		},
-		ToolCalls: []domain.CanonicalToolCall{
-			{ID: "tc-1", Type: "function", Function: domain.CanonicalFunctionCall{Name: "lookup_user", Arguments: `{"id":1}`}},
-		},
 		RequestHeaders: map[string]string{
 			"Content-Type":        "application/json",
 			"User-Agent":          "goroute-sdk/1.0",
@@ -120,8 +114,6 @@ func TestGenericHTTPDriver_RichPayloadAndHeaderSanitization(t *testing.T) {
 	assert.Equal(t, []any{"hello world"}, gotBody["texts"])
 	assert.Len(t, gotBody["structured_messages"], 1)
 	assert.Len(t, gotBody["images"], 1)
-	assert.Len(t, gotBody["tools"], 1)
-	assert.Len(t, gotBody["tool_calls"], 1)
 	assert.Equal(t, map[string]any{"task_id": "task-99"}, gotBody["metadata"])
 
 	// Allowlisted & redacted request_headers (no raw secrets!)
@@ -169,7 +161,7 @@ func TestGenericHTTPDriver_DefaultDoesNotExposeAuthHeaders(t *testing.T) {
 	assert.NotContains(t, reqHeaders, "x-api-key")
 }
 
-func TestGenericHTTPDriver_DecisionsModifyAndLegacyCompat(t *testing.T) {
+func TestGenericHTTPDriver_DecisionsModifyActionAliasesAndLegacyCompat(t *testing.T) {
 	var respPayload string
 	var statusCode int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -189,42 +181,47 @@ func TestGenericHTTPDriver_DecisionsModifyAndLegacyCompat(t *testing.T) {
 	}, allowLocalClient(t))
 	require.NoError(t, err)
 
-	// 1. Modify with modified_texts + modified_tool_calls + structured violations + usage_units
+	// 1. Modify with modified_texts + structured violations
 	statusCode = http.StatusOK
 	respPayload = `{
 		"decision": "modify",
 		"modified_texts": ["sanitized prompt"],
-		"modified_tool_calls": [{"id":"tc-1","type":"function","function":{"name":"safe_tool","arguments":"{\"ok\":true}"}}],
-		"violations": [{"category":"pii","rule":"email","severity":"medium","message":"redacted email"}],
-		"usage_units": 42
+		"violations": [{"category":"pii","rule":"email","severity":"medium","message":"redacted email"}]
 	}`
 	res, err := drv.Evaluate(context.Background(), &domain.GuardrailEvalInput{Texts: []string{"raw"}})
 	require.NoError(t, err)
 	assert.Equal(t, domain.GuardrailDecisionModify, res.Decision)
 	assert.Equal(t, []string{"sanitized prompt"}, res.ModifiedTexts)
-	require.Len(t, res.ModifiedToolCalls, 1)
-	assert.Equal(t, "safe_tool", res.ModifiedToolCalls[0].Function.Name)
-	assert.Equal(t, int64(42), res.UsageUnits)
 	require.Len(t, res.Violations, 1)
 	assert.Equal(t, "pii", res.Violations[0].Category)
 
 	// 2. Flag decision with string violations
-	respPayload = `{"decision":"flag","violations":["soft_warning"],"reason":"needs review","usage_units":5}`
+	respPayload = `{"decision":"flag","violations":["soft_warning"],"reason":"needs review"}`
 	res, err = drv.Evaluate(context.Background(), &domain.GuardrailEvalInput{Texts: []string{"hi"}})
 	require.NoError(t, err)
 	assert.Equal(t, domain.GuardrailDecisionFlag, res.Decision)
 	assert.Equal(t, "needs review", res.ErrorMessage)
-	assert.Equal(t, int64(5), res.UsageUnits)
 	require.Len(t, res.Violations, 1)
 	assert.Equal(t, "soft_warning", res.Violations[0].Rule)
 
-	// 3. Block decision
-	respPayload = `{"decision":"block","reason":"policy violation"}`
+	// 3. Standard webhook action aliases: NONE, BLOCKED, GUARDRAIL_INTERVENED
+	respPayload = `{"action":"NONE"}`
+	res, err = drv.Evaluate(context.Background(), &domain.GuardrailEvalInput{Texts: []string{"ok"}})
+	require.NoError(t, err)
+	assert.Equal(t, domain.GuardrailDecisionAllow, res.Decision)
+
+	respPayload = `{"action":"BLOCKED","blocked_reason":"policy violation"}`
 	res, err = drv.Evaluate(context.Background(), &domain.GuardrailEvalInput{Texts: []string{"bad"}})
 	require.NoError(t, err)
 	assert.Equal(t, domain.GuardrailDecisionBlock, res.Decision)
 	assert.Equal(t, "policy violation", res.ErrorMessage)
 	require.Len(t, res.Violations, 1)
+
+	respPayload = `{"action":"GUARDRAIL_INTERVENED","texts":["masked text"]}`
+	res, err = drv.Evaluate(context.Background(), &domain.GuardrailEvalInput{Texts: []string{"raw"}})
+	require.NoError(t, err)
+	assert.Equal(t, domain.GuardrailDecisionModify, res.Decision)
+	assert.Equal(t, []string{"masked text"}, res.ModifiedTexts)
 
 	// 4. Legacy {blocked, sanitized_text, violations}
 	respPayload = `{"blocked":true,"violations":["legacy_rule"]}`
@@ -278,7 +275,7 @@ func TestGenericHTTPDriver_SSRFBlockingDefaultClient(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestGenericHTTPDriver_PipelineToolCallModifyAndPerScannerPolicies(t *testing.T) {
+func TestGenericHTTPDriver_PipelineModifyAndFailOpenPolicies(t *testing.T) {
 	ctx := context.Background()
 	repo := storage.NewMemoryRepository()
 	require.NoError(t, repo.CreateOrganization(ctx, &domain.Organization{ID: "org-1", Name: "Org 1"}))
@@ -298,8 +295,7 @@ func TestGenericHTTPDriver_PipelineToolCallModifyAndPerScannerPolicies(t *testin
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
 			"decision": "modify",
-			"modified_texts": ["scrubbed response"],
-			"modified_tool_calls": [{"id":"tc-1","type":"function","function":{"name":"search_docs","arguments":"{\"query\":\"safe\"}"}}]
+			"modified_texts": ["scrubbed response"]
 		}`))
 	}))
 	defer modSrv.Close()
@@ -311,12 +307,11 @@ func TestGenericHTTPDriver_PipelineToolCallModifyAndPerScannerPolicies(t *testin
 		Name:       "slow-open",
 		Provider:   drivers.DriverNameGenericHTTP,
 		EventHooks: []domain.GuardrailHook{domain.GuardrailHookPostCall},
-		DefaultOn:  true,
 		TimeoutMs:  35,
 		FailOpen:   true,
 		Precedence: 1,
 		Config:     map[string]any{"url": slowSrv.URL},
-		Status:     domain.GuardrailStatusActive,
+		Enabled:    true,
 	}))
 	// Guardrail 2: fast + fail_open=false + TimeoutMs=250 (succeeds & rewrites output)
 	require.NoError(t, repo.CreateGuardrailDefinition(ctx, &domain.GuardrailDefinition{
@@ -325,12 +320,11 @@ func TestGenericHTTPDriver_PipelineToolCallModifyAndPerScannerPolicies(t *testin
 		Name:       "fast-mod",
 		Provider:   drivers.DriverNameGenericHTTP,
 		EventHooks: []domain.GuardrailHook{domain.GuardrailHookPostCall},
-		DefaultOn:  true,
 		TimeoutMs:  250,
 		FailOpen:   false,
 		Precedence: 2,
 		Config:     map[string]any{"url": modSrv.URL},
-		Status:     domain.GuardrailStatusActive,
+		Enabled:    true,
 	}))
 
 	client := allowLocalClient(t)
@@ -346,11 +340,6 @@ func TestGenericHTTPDriver_PipelineToolCallModifyAndPerScannerPolicies(t *testin
 			Message: domain.CanonicalMessage{
 				Role:    "assistant",
 				Content: "original unsafe response",
-				ToolCalls: []domain.CanonicalToolCall{{
-					ID:       "tc-1",
-					Type:     "function",
-					Function: domain.CanonicalFunctionCall{Name: "search_docs", Arguments: `{"query":"secret"}`},
-				}},
 			},
 		}},
 	}
@@ -362,6 +351,4 @@ func TestGenericHTTPDriver_PipelineToolCallModifyAndPerScannerPolicies(t *testin
 	require.NoError(t, err)
 	assert.True(t, out.Redacted)
 	assert.Equal(t, "scrubbed response", resp.Choices[0].Message.Content)
-	require.Len(t, resp.Choices[0].Message.ToolCalls, 1)
-	assert.Equal(t, `{"query":"safe"}`, resp.Choices[0].Message.ToolCalls[0].Function.Arguments)
 }

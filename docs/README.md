@@ -33,24 +33,24 @@ docs/
 ## Core Guides & Specifications
 
 1. **[Codebase Map (`CODEBASE_MAP.md`)](./CODEBASE_MAP.md)**  
-   *Implementation paths, tests, SQL migrations (`0001`–`0042`), change workflows, and authoritative source locations.*
+   *Implementation paths, tests, SQL migrations (`0001`–`0044`), change workflows, and authoritative source locations.*
 
 2. **[Authorization & Access Control Guide (`AUTHORIZATION_AND_ACCESS_CONTROL.md`)](./AUTHORIZATION_AND_ACCESS_CONTROL.md)**  
-   *Single authoritative reference for all 19 enterprise authorization & governance capabilities, 7-role RBAC hierarchy (with LiteLLM role mapping), tri-state allowlist truth table (`null` vs `[]` vs `[...]`), Unified Access Groups & dynamic ABAC rules, OIDC/JWT/SSO role mapping, `ExternalAuthorizer` (Webhook/OPA) & SDK hooks, multi-window micro-dollar budgets, Redis Lua rate/concurrency limits, full audit action catalog (including MCP/A2A mutations), and Dockerized production testing runbooks.*
+   *Single authoritative reference for all 19 enterprise authorization & governance capabilities, 7-role RBAC hierarchy, tri-state allowlist truth table (`null` vs `[]` vs `[...]`), Unified Access Groups & dynamic ABAC rules, OIDC/JWT/SSO role mapping, `ExternalAuthorizer` (Webhook/OPA) & SDK hooks, multi-window micro-dollar budgets, Redis Lua rate/concurrency limits, full audit action catalog (including MCP/A2A mutations), and Dockerized production testing runbooks.*
 
 3. **[API Reference (`API_REFERENCE.md`)](./API_REFERENCE.md)**  
-   *Authoritative endpoint and protocol guide for data plane, auth/SSO, SCIM v2, admin control plane, and web interfaces (`127` OpenAPI paths: `27` `/v1`, `88` `/admin/v1`, `8` `/auth`, and `4` provider aliases):*
-   - Unified Multi-Modal Data Plane (`27` `/v1` OpenAPI paths, self-service key APIs, virtual router aliases `auto` / `router/semantic` / `router/quality` / `router/adaptive`, routing hints & telemetry headers, chat, embeddings, audio, images, files, batches, responses, and realtime).
+   *Authoritative endpoint and protocol guide for data plane, auth/SSO, SCIM v2, admin control plane, and web interfaces (`119` OpenAPI paths: `26` `/v1`, `81` `/admin/v1`, `8` `/auth`, and `4` provider aliases):*
+   - Unified Multi-Modal Data Plane (`26` `/v1` OpenAPI paths, self-service key APIs, virtual router aliases `auto` / `router/semantic` / `router/quality` / `router/adaptive`, routing hints & telemetry headers, chat, embeddings, audio, images, files, batches, responses, and realtime).
    - Embedded Operator Web UI (`GET /ui/*`) with streaming SSE & cacheable JSON chat playground, cache controls & rich Response Cache telemetry, OIDC SSO / break-glass master key login, virtual key rotation & temp budgets, multi-window quotas, KEK rotation, and Agentic Hub Gateway MCP spec switcher.
    - Model Context Protocol (Spec-Generated Multi-Release `2024-11-05`–`2026-07-28` Virtual Hub, Scoped Servers, and Curated Toolsets).
    - Agent-to-Agent Protocol (A2A v1.0 JWS Agent Cards, Dual-Binding dispatch, Subscribe-First SSE).
-   - Control Plane & Provisioning (`/auth/*`, `/scim/v2/*`, `/admin/v1/*`), including federated OIDC binding, SCIM 2.0 Users & Groups, multi-dimensional quotas, multi-window budgets (`rolling_24h`), PTU shares & priority classes, preflight credential validation, specialized fallback & budget fields on model groups/deployments, named guardrail registry, tool trust policies, guardrail simulation, OpenTelemetry OTLP/HTTP export, and Admin UI telemetry snapshot (`/admin/v1/observability/metrics`).
+   - Control Plane & Provisioning (`/auth/*`, `/scim/v2/*`, `/admin/v1/*`), including federated OIDC binding, SCIM 2.0 Users & Groups, multi-dimensional quotas, multi-window budgets (`rolling_24h`), PTU shares & priority classes, preflight credential validation, specialized fallback & budget fields on model groups/deployments, built-in & external guardrail policies (`generic_http` and `openai_moderation`), guardrail simulation, OpenTelemetry OTLP/HTTP export, and Admin UI telemetry snapshot (`/admin/v1/observability/metrics`).
 
 4. **[Subsystem Internals & Engineering Guide (`INTERNALS.md`)](./INTERNALS.md)**  
    *Deep-dive code tour and mathematical specifications for core contributors and platform architects:*
    - Synchronous and Real-Time SSE Streaming Data Plane lifecycles with sequence diagrams, including `StreamContinuationManager` mid-stream SSE continuation.
    - Embedded Operator Web UI serving mechanics, memory footprint, cache header policy, and HTML5 History fallback.
-   - Two-layer Guardrails Pipeline (`Engine`, 15-driver registry, Starlark `custom_code` sandbox, tool trust taint tracking, `StreamWindowEvaluator`), `/v1/guardrails/apply`, and preflight credential validation mechanics.
+   - Guardrails Pipeline (zero-latency built-in `Engine` for prompt injection, PII/secret masking, toxicity packs, regex `blocked_patterns`, and `StreamRedactor` + SSRF-enforced `generic_http` and `openai_moderation` external drivers with Vault-encrypted secrets) and preflight credential validation mechanics.
    - Stage 0 `PreRouterRegistry` (heuristic complexity, semantic embedding centroids, quality tiering, Thompson-sampling adaptive bandit), `DeploymentFilterChain` (`RoutingPlugin`, region, `&`/`!` tags, staleness, capacity/budget caps, session & prompt-cache affinity), `Deployment.Priority` tier walk, 7-strategy Load Balancer (including `fastest-response` hedged racing), PTU priority capacity sharing, and `PriorityScheduler`.
    - Adaptive `RetryPolicy` & failure-rate `CooldownPolicy` (with lone-deployment safety net) and specialized fallback chains (`context_window_fallbacks`, `content_policy_fallbacks`, `fallback_targets`).
    - AES-256-GCM Envelope Encryption (DEK/KEK), `(org_id, oidc_issuer, oidc_subject)` federation, OIDC PKCE `S256` & RP-Initiated Logout, key rotation grace windows, `CustomAuthenticator`, and Cloud IAM `DistributedTokenCache`.
@@ -75,7 +75,7 @@ docs/
    - Complete configuration parameters table with default values and security notes.
 
 7. **[Upgrade & Rollback Guide (`UPGRADING.md`)](./UPGRADING.md)**  
-   *Upgrade guidance for `v0.2.0`+, migrations `0001`–`0043`, `0034` rollback duplicate-subject preflight checks, and `rolling_24h` cold recovery boundaries.*
+   *Upgrade guidance for `v0.2.0`+, migrations `0001`–`0044`, `0034` rollback duplicate-subject preflight checks, and `rolling_24h` cold recovery boundaries.*
 
 8. **[Testing & Verification Guide (`TESTING.md`)](./TESTING.md)**  
    *Complete 3-tier testing workflow covering static/contract parity, unit/race checks, live PostgreSQL 16 & Redis 8 E2E suites, Playwright headless Chromium Web UI tests, and production Docker OIDC, Caching & OTLP Observability HA suites.*

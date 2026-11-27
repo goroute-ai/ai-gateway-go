@@ -342,13 +342,15 @@ server:
   port: 8080
   environment: "test"
 guardrails:
-  scanners:
+  definitions:
     - name: "dlp-webhook"
-      url: "https://guardrails.example.com/scan"
+      provider: "generic_http"
+      event_hooks: ["pre_call", "post_call"]
+      enabled: true
       timeout_ms: 1500
       fail_open: true
-      headers:
-        Authorization: "Bearer test-token"
+      config:
+        url: "https://guardrails.example.com/scan"
 `
 	tmpFile := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(tmpFile, []byte(yamlContent), 0600); err != nil {
@@ -359,7 +361,7 @@ guardrails:
 	if err != nil {
 		t.Fatalf("config.Load failed: %v", err)
 	}
-	if len(cfg.Guardrails.Scanners) != 1 || cfg.Guardrails.Scanners[0].Name != "dlp-webhook" || !cfg.Guardrails.Scanners[0].FailOpen || cfg.Guardrails.Scanners[0].TimeoutMs != 1500 {
+	if len(cfg.Guardrails.Definitions) != 1 || cfg.Guardrails.Definitions[0].Name != "dlp-webhook" || !cfg.Guardrails.Definitions[0].FailOpen || cfg.Guardrails.Definitions[0].TimeoutMs != 1500 {
 		t.Fatalf("unexpected guardrails config: %+v", cfg.Guardrails)
 	}
 
@@ -393,24 +395,17 @@ rate_limit:
 	// Negative cases for GuardrailsConfig
 	badCfg := config.Default()
 	badCfg.Server.Environment = "test"
-	badCfg.Guardrails.Scanners = []config.GuardrailScannerConfig{{Name: "", URL: "https://example.com"}}
+	badCfg.Guardrails.Definitions = []config.GuardrailDefinitionConfig{{Name: "", Provider: "generic_http"}}
 	if err := badCfg.Validate(); err == nil {
-		t.Fatalf("expected error for empty scanner name")
+		t.Fatalf("expected error for empty definition name")
 	}
-	badCfg.Guardrails.Scanners = []config.GuardrailScannerConfig{{Name: "a", URL: "ftp://example.com"}}
+	badCfg.Guardrails.Definitions = []config.GuardrailDefinitionConfig{{Name: "a", Provider: ""}}
 	if err := badCfg.Validate(); err == nil {
-		t.Fatalf("expected error for invalid scanner URL scheme")
+		t.Fatalf("expected error for empty provider")
 	}
-	badCfg.Guardrails.Scanners = []config.GuardrailScannerConfig{{Name: "a", URL: "https://example.com", TimeoutMs: -1}}
+	badCfg.Guardrails.Definitions = []config.GuardrailDefinitionConfig{{Name: "a", Provider: "generic_http", TimeoutMs: -1}}
 	if err := badCfg.Validate(); err == nil {
 		t.Fatalf("expected error for negative timeout_ms")
-	}
-	badCfg.Guardrails.Scanners = []config.GuardrailScannerConfig{
-		{Name: "dup", URL: "https://example.com/1"},
-		{Name: "dup", URL: "https://example.com/2"},
-	}
-	if err := badCfg.Validate(); err == nil {
-		t.Fatalf("expected error for duplicate scanner name")
 	}
 }
 

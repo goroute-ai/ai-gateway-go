@@ -1214,7 +1214,7 @@ func (s *GatewayServer) handleAdminRotateKEK(w http.ResponseWriter, r *http.Requ
 				}
 				rotSummary.A2AAgentsRewrapped++
 			}
-			grDefs, _ := s.repo.ListGuardrailDefinitions(r.Context(), org.ID, "", "")
+			grDefs, _ := s.repo.ListGuardrailDefinitions(r.Context(), org.ID, false)
 			for _, gd := range grDefs {
 				if gd == nil || strings.TrimSpace(gd.EncryptedDEK) == "" {
 					continue

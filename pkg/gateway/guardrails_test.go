@@ -321,20 +321,17 @@ func TestWithGuardrailScanner_TimeoutAndFailOpen(t *testing.T) {
 	assert.Equal(t, int32(1), calls.Load(), "fail-closed error must block upstream call")
 }
 
-func TestWithGuardrailScanner_PrecedenceDefaultOnAndTools(t *testing.T) {
+func TestWithGuardrailScanner_PrecedenceOrder(t *testing.T) {
 	t.Parallel()
 
 	srv, _, _ := newMockOpenAIServer(t, "ok")
 
 	var mu sync.Mutex
 	var order []string
-	var sawTools []gateway.GuardrailToolSpec
-	var optInCalled atomic.Bool
 
 	first := gateway.GuardrailScannerFunc(func(ctx context.Context, req gateway.GuardrailScanRequest) (gateway.GuardrailScanResult, error) {
 		mu.Lock()
 		order = append(order, "first")
-		sawTools = append(sawTools, req.Tools...)
 		mu.Unlock()
 		return gateway.GuardrailScanResult{Decision: gateway.GuardrailDecisionAllow}, nil
 	})
@@ -343,13 +340,6 @@ func TestWithGuardrailScanner_PrecedenceDefaultOnAndTools(t *testing.T) {
 		order = append(order, "second")
 		mu.Unlock()
 		return gateway.GuardrailScanResult{Decision: gateway.GuardrailDecisionAllow}, nil
-	})
-	optIn := gateway.GuardrailScannerFunc(func(ctx context.Context, req gateway.GuardrailScanRequest) (gateway.GuardrailScanResult, error) {
-		optInCalled.Store(true)
-		return gateway.GuardrailScanResult{
-			Decision: gateway.GuardrailDecisionBlock,
-			Reason:   "opt-in scanner fired",
-		}, nil
 	})
 
 	client, err := gateway.New(
@@ -368,54 +358,19 @@ func TestWithGuardrailScanner_PrecedenceDefaultOnAndTools(t *testing.T) {
 			gateway.WithGuardrailHooks(gateway.GuardrailHookPreCall),
 			gateway.WithGuardrailPrecedence(5),
 		),
-		gateway.WithGuardrailScanner("opt-in-scanner", optIn,
-			gateway.WithGuardrailHooks(gateway.GuardrailHookPreCall),
-			gateway.WithGuardrailDefaultOn(false),
-		),
 	)
 	require.NoError(t, err)
 	defer client.Close()
 
-	// Request without opting into "opt-in-scanner" runs only default-on scanners in precedence order.
 	_, err = client.ChatMessages(context.Background(), domain.CanonicalChatRequest{
 		Model: "test-model",
 		Messages: []domain.CanonicalMessage{
 			{Role: "user", Content: "check weather"},
-		},
-		Tools: []domain.CanonicalTool{
-			{
-				Type: "function",
-				Function: domain.CanonicalFunction{
-					Name:        "get_weather",
-					Description: "Fetch current weather",
-				},
-			},
 		},
 	})
 	require.NoError(t, err)
-	assert.False(t, optInCalled.Load(), "defaultOn=false scanner must not run unless opted in")
 
 	mu.Lock()
 	assert.Equal(t, []string{"first", "second"}, order)
-	require.Len(t, sawTools, 1)
-	assert.Equal(t, "get_weather", sawTools[0].Name)
 	mu.Unlock()
-
-	// Opting into "opt-in-scanner" via GoRouteExtensions executes it.
-	enableOptIn := true
-	_, err = client.ChatMessages(context.Background(), domain.CanonicalChatRequest{
-		Model: "test-model",
-		Messages: []domain.CanonicalMessage{
-			{Role: "user", Content: "check weather"},
-		},
-		GoRouteExtensions: &domain.GoRouteExtensions{
-			Guardrails: []domain.GuardrailRequestOverride{{
-				Name:    "opt-in-scanner",
-				Enabled: &enableOptIn,
-			}},
-		},
-	})
-	require.Error(t, err)
-	assert.True(t, optInCalled.Load())
-	assert.Contains(t, err.Error(), "opt-in scanner fired")
 }

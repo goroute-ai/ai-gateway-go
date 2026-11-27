@@ -415,24 +415,6 @@ Stateless translation bridge conforming to the OpenAI Responses API schema (`inp
 
 Full-duplex bidirectional WebSocket session handler supporting real-time speech and text streaming over WebSockets. Authenticates via standard Bearer or `x-api-key` headers. Browser WebSocket clients can use `Sec-WebSocket-Protocol` (`openai-insecure-api-key.<key>`) or query parameters (`?api_key=` or `?token=`) on a valid WebSocket upgrade to a realtime route. Query and subprotocol credentials are ignored on ordinary HTTP routes. Prefer headers where the client supports them because URLs can be recorded by proxies and browser history.
 
-### 2.16 Standalone Guardrail Evaluation
-`POST /v1/guardrails/apply`
-
-Evaluates a specific active named guardrail (`guardrail_name`) or the caller's effective hierarchical tenant guardrails against arbitrary `text`, `texts`, `messages`, `tools`, or `tool_calls` without dispatching upstream inference. Requires a valid Virtual API Key authorized for `/v1/guardrails/apply`.
-
-#### Request Schema
-```json
-{
-  "guardrail_name": "prod-pii-shield",
-  "input_type": "request",
-  "texts": ["Customer SSN 000-11-2222 email alice@example.com"],
-  "tags": ["prod"],
-  "model": "fast"
-}
-```
-- `input_type`: `"request"` / `"input"` (`pre_call`) or `"response"` / `"output"` (`post_call`).
-- Returns `blocked`, `decision` (`"allow"`, `"block"`, `"flag"`, `"modify"`), `action`, `violations`, `texts` / `modified_texts`, `modified_messages`, `modified_tool_calls`, `applied_guardrails`, `usage_units`, and `latency_ms`.
-
 ---
 
 ## 3. Model Context Protocol (MCP) APIs
@@ -902,25 +884,16 @@ Admin APIs authenticate via `Authorization: Bearer <MASTER_ADMIN_KEY>`, an organ
 - `GET /admin/v1/organizations/{orgID}/models`: Lists Layer 3 model policies and overrides.
 - `POST /admin/v1/organizations/{orgID}/models`: Configures model access and token overrides for an organization.
 
-### 5.9 Security Guardrails, Registry, Tool Policies & Simulator
+### 5.9 Security Guardrails & Simulator
 - **Org Baseline Policy (`guardrail_policies`):**
-  - `GET /admin/v1/organizations/{orgID}/guardrails`: Retrieves active baseline guardrail policies (prompt injection, PII, secrets, blocked keywords, output redaction, `mode`, `scan_all_roles`, plus PostgreSQL-persisted toxicity fields: `enable_toxicity_filter`, `toxicity_action`, `toxicity_threshold`, `enabled_content_categories`, `content_exceptions`).
-  - `POST /admin/v1/organizations/{orgID}/guardrails`: Configures or updates the organization's baseline policy.
-- **Named Guardrails & Provider Registry (`guardrail_definitions`):**
-  - `POST /admin/v1/organizations/{orgID}/guardrail-definitions`: Creates a named guardrail backed by any of the 15 built-in drivers (`local_content_filter`, `custom_code`, `llm_as_a_judge`, `decision_model`, `openai_moderation`, `presidio`, `lakera_v2`, `guardrails_ai`, `pangea`, `generic_http`, `tool_permission`, `tool_policy`, `block_code_execution`, `mcp_security`, `mcp_end_user_permission`) with Vault-encrypted secrets, `event_hooks`, `stream_scope`, `mode_rule`, and load-balancing `weight`.
-  - `GET /admin/v1/organizations/{orgID}/guardrail-definitions`: Lists guardrail definitions (optional query filters: `status`, `name`; secrets remain redacted).
-  - `GET /admin/v1/guardrail-definitions/{guardrailID}`, `PUT /admin/v1/guardrail-definitions/{guardrailID}`, `PATCH /admin/v1/guardrail-definitions/{guardrailID}`, `DELETE /admin/v1/guardrail-definitions/{guardrailID}`: Inspects, replaces, patches, or deletes a definition.
-  - `POST /admin/v1/guardrail-definitions/{guardrailID}/status`: Transitions approval status (`active`, `pending_review`, `rejected`).
-- **Hierarchical Scope Bindings (`guardrail_bindings`):**
-  - `POST /admin/v1/guardrail-bindings`: Scopes a named guardrail to a `team_id`, `virtual_key_id`, `end_user_id`, `model_group_id`, and/or `tag` with optional `param_overrides` and anti-bypass `is_locked` enforcement.
-  - `GET /admin/v1/organizations/{orgID}/guardrail-bindings`: Lists bindings for an organization.
-  - `DELETE /admin/v1/guardrail-bindings/{bindingID}`: Removes a binding.
-- **Tool Trust Policies (`tool_policies`):**
-  - `POST /admin/v1/organizations/{orgID}/tool-policies`: Creates or updates cross-turn tool trust rules (`input_policy`: `"blocked" | "untrusted" | "trusted"`, `output_policy`: `"untrusted" | "trusted"`) scoped per org, team, or virtual key.
-  - `GET /admin/v1/organizations/{orgID}/tool-policies`: Lists tool trust policies.
-  - `DELETE /admin/v1/organizations/{orgID}/tool-policies/{policyID}`: Deletes a tool trust policy.
-- **Guardrail Simulator & Usage Telemetry:**
-  - `POST /admin/v1/organizations/{orgID}/guardrails/simulate`: Stateless pipeline evaluator supporting both baseline draft policies and named definitions across `prompt` / `texts` / `messages` / `tools` / `tool_calls`, `direction` (`"input"` or `"output"`), `tags`, and simulated `stream_chunk_size` windowing without modifying records or incurring upstream LLM token costs.
+  - `GET /admin/v1/organizations/{orgID}/guardrails`: Retrieves active built-in guardrail policies (prompt injection, PII including email/SSN/card/phone/IPv4, secrets, blocked keywords, regex `blocked_patterns`, output redaction, `mode`, `scan_all_roles`, plus PostgreSQL-persisted toxicity fields: `enable_toxicity_filter`, `toxicity_action`, `toxicity_threshold`, `enabled_content_categories`, `content_exceptions`).
+  - `POST /admin/v1/organizations/{orgID}/guardrails`: Configures or updates the organization's baseline policy (validating regex patterns).
+- **External Guardrail Definitions (`guardrail_definitions`):**
+  - `POST /admin/v1/organizations/{orgID}/guardrail-definitions`: Creates an external guardrail backed by `generic_http` (standard JSON webhook) or `openai_moderation` with Vault-encrypted secrets, `event_hooks` (`pre_call`, `post_call`, `logging_only`), `enabled`, `timeout_ms`, `fail_open`, and `precedence`.
+  - `GET /admin/v1/organizations/{orgID}/guardrail-definitions`: Lists guardrail definitions for an organization (optional `only_enabled=true`; secrets remain redacted).
+  - `GET /admin/v1/guardrail-definitions/{guardrailID}`, `PUT /admin/v1/guardrail-definitions/{guardrailID}`, `DELETE /admin/v1/guardrail-definitions/{guardrailID}`: Inspects, updates, or deletes a definition.
+- **Guardrail Policy Simulator:**
+  - `POST /admin/v1/organizations/{orgID}/guardrails/simulate`: Stateless policy evaluator supporting saved or draft organization policies across `prompt` / `text` and `direction` (`"input"` or `"output"`) without modifying records or incurring upstream LLM token costs.
   ```bash
   curl -X POST http://localhost:8080/admin/v1/organizations/org_default/guardrails/simulate \
     -H "Authorization: Bearer $MASTER_ADMIN_KEY" \
@@ -935,7 +908,6 @@ Admin APIs authenticate via `Authorization: Bearer <MASTER_ADMIN_KEY>`, an organ
       }
     }'
   ```
-  - `GET /admin/v1/organizations/{orgID}/guardrail-usage`: Returns daily guardrail metrics, top triggered guardrails, usage units, and integer micro-dollar (`cost_micros`) attribution rollups (optional filters: `start_date`, `end_date`, `guardrail_id`, `team_id`, `virtual_key_id`, `top_limit`).
 
 ### 5.10 Quotas, Multi-Window Budgets, PTU Sharing, Config, Security & Audit Ledgers
 - `PUT /admin/v1/quotas`, `GET /admin/v1/quotas`, `DELETE /admin/v1/quotas/{policyID}`: Configure multi-dimensional per-model and scope quota policies (`scope_type`: `org`, `team`, `team_member`, `project`, `user`, `key` — alias `virtual_key` also accepted, `model_per_key` — alias `model_per_virtual_key`, `end_user`, `tag`, `model_access_group`, `agent_session`; `model_pattern`, `rpm_limit`, `tpm_limit`, `itpm_limit`, `otpm_limit`, `tpd_limit`, `max_concurrent`, `max_budget_micros`, `max_iterations`).
@@ -1085,7 +1057,7 @@ The Operator UI (`LoginView`) supports two authentication mechanisms:
 | Sidebar: Models & Routing | `ModelsView` | Model catalogue (context window, capabilities, pricing), model groups, deployments, PTU shares, and priority classes. |
 | Sidebar: Virtual Keys | `KeysView` + `TempBudgetModal` | Virtual key creation (project/team/user scope, `allowed_deployments`, `allowed_mcp_tools`/`toolsets`, `can_impersonate`, session/batch/MCP limits, soft/hard budgets), rotation, temporary budget increases, and revocation. |
 | Sidebar: FinOps & Spend | `FinOpsView` + `QuotasTab` | Spend summaries (by provider, model, team, virtual key), spend logs, filtered cursor-paginated audit trail with `before_value`/`after_value` JSON Diff Viewer, multi-window budgets, end-users, tags, and model-access-group quotas. |
-| Sidebar: Guardrails | `GuardrailsView` (`RegistryTab`, `ToolPoliciesTab`, `SimulatorUsageTab`) | Guardrail policy configuration, 15-driver registry & bindings, tool trust policies, stateless simulation, and usage rollups. |
+| Sidebar: Guardrails | `GuardrailsView` | Organization content-safety policy (`blocked_patterns`, PII, secrets, prompt injection, toxicity), external guardrail definitions (`generic_http`, `openai_moderation`), and stateless policy simulation. |
 | Sidebar: Credentials Vault | `CredentialsView` | Provider credentials, preflight validation, and key rotation. |
 | Sidebar: Agentic Hub | `AgenticView` | MCP servers, toolsets, synchronized tools, and A2A agent management. |
 | Sidebar: Configuration | `ConfigView` | Read-only sanitized runtime configuration inspection (`/admin/v1/config`) and `platform_admin` Master KEK rotation (`POST /admin/v1/security/rotate-kek`). |

@@ -17,18 +17,11 @@ import (
 	"github.com/goroute-ai/ai-gateway-go/internal/domain"
 	"github.com/goroute-ai/ai-gateway-go/internal/guardrails"
 	"github.com/goroute-ai/ai-gateway-go/internal/security/network"
-	"github.com/goroute-ai/ai-gateway-go/internal/storage"
 )
 
 const (
-	ProviderOpenAIModeration   = "openai_moderation"
-	ProviderPresidio           = "presidio"
-	ProviderLakeraV2           = "lakera_v2"
-	ProviderGuardrailsAI       = "guardrails_ai"
-	ProviderPangea             = "pangea"
-	ProviderLocalContentFilter = "local_content_filter"
-	ProviderGenericHTTP        = DriverNameGenericHTTP
-	ProviderCustomCode         = CustomCodeProvider
+	ProviderGenericHTTP      = DriverNameGenericHTTP
+	ProviderOpenAIModeration = "openai_moderation"
 )
 
 const defaultMaxGuardrailResponseBytes int64 = 4 << 20 // 4 MiB
@@ -40,7 +33,6 @@ type Constructor func(cfg guardrails.DriverConfig, httpClient *http.Client) (gua
 type RegistryOption func(*Registry)
 
 // WithHTTPClient overrides the default SSRF-enforced HTTP client used by network-backed drivers.
-// Primarily useful for unit tests targeting httptest servers.
 func WithHTTPClient(client *http.Client) RegistryOption {
 	return func(r *Registry) {
 		r.httpClient = client
@@ -55,52 +47,25 @@ func WithNetworkPolicy(policy *network.Policy) RegistryOption {
 	}
 }
 
-// WithSSRFPolicy is an alias for WithNetworkPolicy configuring the outbound SSRF policy for
-// network-backed and custom_code drivers.
+// WithSSRFPolicy is an alias for WithNetworkPolicy.
 func WithSSRFPolicy(policy *network.Policy) RegistryOption {
 	return WithNetworkPolicy(policy)
 }
 
-// WithChatExecutor configures the internal ChatExecutor used by llm_as_a_judge and decision_model.
-func WithChatExecutor(executor ChatExecutor) RegistryOption {
-	return func(r *Registry) {
-		r.chatExecutor = executor
-	}
-}
-
-// WithToolPolicyRepository configures the persistent ToolPolicyRepository used by tool_policy.
-func WithToolPolicyRepository(repo storage.ToolPolicyRepository) RegistryOption {
-	return func(r *Registry) {
-		r.toolPolicyRepo = repo
-	}
-}
-
-// WithMCPServerRegistry configures the repository used by mcp_security to resolve registered
-// tenant MCPServer entries.
-func WithMCPServerRegistry(repo storage.Repository) RegistryOption {
-	return func(r *Registry) {
-		r.mcpServerRepo = repo
-	}
-}
-
 // Registry is a thread-safe catalog mapping guardrail provider names to driver constructors.
-// Its Build method satisfies guardrails.DriverLookup and guardrails.DriverFactory directly.
+// Its Build method satisfies guardrails.DriverLookup directly.
 type Registry struct {
-	mu             sync.RWMutex
-	constructors   map[string]Constructor
-	httpClient     *http.Client
-	networkPolicy  *network.Policy
-	chatExecutor   ChatExecutor
-	toolPolicyRepo storage.ToolPolicyRepository
-	mcpServerRepo  storage.Repository
+	mu            sync.RWMutex
+	constructors  map[string]Constructor
+	httpClient    *http.Client
+	networkPolicy *network.Policy
 }
 
-// NewRegistry creates a Registry pre-populated with all built-in cloud, OSS, local, governance,
-// MCP, and model-based guardrail drivers.
-// By default, network-backed drivers use network.NewHTTPClient enforcing strict outbound SSRF policy.
+// NewRegistry creates a Registry pre-populated with GoRoute's standard external guardrail drivers
+// (generic_http and openai_moderation) backed by an SSRF-enforced HTTP client.
 func NewRegistry(opts ...RegistryOption) *Registry {
 	r := &Registry{
-		constructors: make(map[string]Constructor, 19),
+		constructors: make(map[string]Constructor, 4),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -111,49 +76,14 @@ func NewRegistry(opts ...RegistryOption) *Registry {
 		r.httpClient = network.NewHTTPClient(r.networkPolicy)
 	}
 
-	// Wave 1: OpenAI moderation, OSS, and local content filters.
-	r.Register(ProviderOpenAIModeration, NewOpenAIModerationDriver)
-	r.Register(ProviderPresidio, NewPresidioDriver)
-	r.Register(ProviderLakeraV2, NewLakeraV2Driver)
-	r.Register(ProviderGuardrailsAI, NewGuardrailsAIDriver)
-	r.Register(ProviderPangea, NewPangeaDriver)
-	r.Register(ProviderLocalContentFilter, NewLocalContentFilterDriver)
-
-	// Wave 2+3: Webhook, Starlark sandbox, tool governance, MCP security, and LLM judge/decision drivers.
-	r.Register(DriverNameGenericHTTP, func(cfg guardrails.DriverConfig, httpClient *http.Client) (guardrails.Driver, error) {
+	r.Register(ProviderGenericHTTP, func(cfg guardrails.DriverConfig, httpClient *http.Client) (guardrails.Driver, error) {
 		return NewGenericHTTPDriver(cfg, httpClient)
 	})
-	r.Register(CustomCodeProvider, func(cfg guardrails.DriverConfig, httpClient *http.Client) (guardrails.Driver, error) {
-		return NewCustomCodeDriverWithPolicy(cfg, r.networkPolicy, httpClient)
-	})
-	r.Register(ProviderToolPermission, func(cfg guardrails.DriverConfig, _ *http.Client) (guardrails.Driver, error) {
-		return NewToolPermissionDriver(cfg)
-	})
-	r.Register(ProviderToolPolicy, func(cfg guardrails.DriverConfig, _ *http.Client) (guardrails.Driver, error) {
-		return NewToolPolicyDriver(cfg, r.toolPolicyRepo)
-	})
-	r.Register(ProviderCodeExecution, func(cfg guardrails.DriverConfig, _ *http.Client) (guardrails.Driver, error) {
-		return NewCodeExecutionDriver(cfg)
-	})
-	r.Register(ProviderMCPSecurity, func(cfg guardrails.DriverConfig, _ *http.Client) (guardrails.Driver, error) {
-		if r.mcpServerRepo != nil {
-			return NewMCPSecurityDriver(cfg, r.mcpServerRepo)
-		}
-		return NewMCPSecurityDriver(cfg)
-	})
-	r.Register(ProviderMCPEndUserPermission, func(cfg guardrails.DriverConfig, _ *http.Client) (guardrails.Driver, error) {
-		return NewMCPEndUserPermissionDriver(cfg)
-	})
-	r.Register(ProviderLLMJudge, func(cfg guardrails.DriverConfig, _ *http.Client) (guardrails.Driver, error) {
-		return NewLLMJudgeDriver(cfg, r.chatExecutor)
-	})
-	r.Register(ProviderDecisionModel, func(cfg guardrails.DriverConfig, _ *http.Client) (guardrails.Driver, error) {
-		return NewDecisionModelDriver(cfg, r.chatExecutor)
-	})
+	r.Register(ProviderOpenAIModeration, NewOpenAIModerationDriver)
 	return r
 }
 
-// Register adds or replaces a Constructor for the given provider identifier (case-insensitive).
+// Register adds or replaces a Constructor for provider (case-insensitive).
 func (r *Registry) Register(provider string, ctor Constructor) {
 	if r == nil || ctor == nil {
 		return
@@ -195,7 +125,6 @@ func (r *Registry) Providers() []string {
 }
 
 // Build instantiates a guardrails.Driver for cfg.Definition.Provider.
-// Its signature matches guardrails.DriverLookup and guardrails.DriverFactory.
 func (r *Registry) Build(ctx context.Context, cfg guardrails.DriverConfig) (guardrails.Driver, error) {
 	if r == nil {
 		return nil, fmt.Errorf("guardrail driver registry is nil")
@@ -232,8 +161,6 @@ func resolveHTTPClient(httpClient *http.Client) *http.Client {
 	return network.NewHTTPClient(nil)
 }
 
-// resolveSecretOrConfig inspects DecryptedSecrets first, then EffectiveConfig (and Definition.Config),
-// returning the first non-empty trimmed string value matching any of keys.
 func resolveSecretOrConfig(cfg guardrails.DriverConfig, keys ...string) string {
 	for _, key := range keys {
 		if v, ok := lookupStringCaseInsensitive(cfg.DecryptedSecrets, key); ok && v != "" {
@@ -299,30 +226,6 @@ func configString(cfg guardrails.DriverConfig, keys ...string) string {
 	return ""
 }
 
-func configBool(cfg guardrails.DriverConfig, defaultVal bool, keys ...string) bool {
-	cm := configMap(cfg)
-	for _, key := range keys {
-		if raw, ok := lookupAnyCaseInsensitive(cm, key); ok {
-			if b, ok := boolFromAny(raw); ok {
-				return b
-			}
-		}
-	}
-	return defaultVal
-}
-
-func configInt(cfg guardrails.DriverConfig, defaultVal int, keys ...string) int {
-	cm := configMap(cfg)
-	for _, key := range keys {
-		if raw, ok := lookupAnyCaseInsensitive(cm, key); ok {
-			if n, ok := intFromAny(raw); ok {
-				return n
-			}
-		}
-	}
-	return defaultVal
-}
-
 func configFloat(cfg guardrails.DriverConfig, defaultVal float64, keys ...string) float64 {
 	cm := configMap(cfg)
 	for _, key := range keys {
@@ -376,20 +279,6 @@ func configFloatMap(cfg guardrails.DriverConfig, keys ...string) map[string]floa
 	return nil
 }
 
-func configAnyMap(cfg guardrails.DriverConfig, keys ...string) map[string]any {
-	cm := configMap(cfg)
-	for _, key := range keys {
-		if raw, ok := lookupAnyCaseInsensitive(cm, key); ok {
-			if m, ok := raw.(map[string]any); ok {
-				out := make(map[string]any, len(m))
-				maps.Copy(out, m)
-				return out
-			}
-		}
-	}
-	return nil
-}
-
 func stringFromAny(v any) string {
 	switch x := v.(type) {
 	case string:
@@ -398,41 +287,6 @@ func stringFromAny(v any) string {
 		return strings.TrimSpace(string(x))
 	default:
 		return ""
-	}
-}
-
-func boolFromAny(v any) (bool, bool) {
-	switch x := v.(type) {
-	case bool:
-		return x, true
-	case string:
-		b, err := strconv.ParseBool(strings.TrimSpace(x))
-		return b, err == nil
-	default:
-		return false, false
-	}
-}
-
-func intFromAny(v any) (int, bool) {
-	switch x := v.(type) {
-	case int:
-		return x, true
-	case int32:
-		return int(x), true
-	case int64:
-		return int(x), true
-	case float64:
-		return int(x), true
-	case float32:
-		return int(x), true
-	case json.Number:
-		i, err := x.Int64()
-		return int(i), err == nil
-	case string:
-		i, err := strconv.Atoi(strings.TrimSpace(x))
-		return i, err == nil
-	default:
-		return 0, false
 	}
 }
 
@@ -503,9 +357,6 @@ func normalizeActionString(raw string) domain.GuardrailAction {
 }
 
 func effectiveAction(cfg guardrails.DriverConfig, fallback domain.GuardrailAction) domain.GuardrailAction {
-	if act := normalizeActionString(string(cfg.EffectiveAction)); act != "" {
-		return act
-	}
 	if raw := configString(cfg, "action", "default_action"); raw != "" {
 		if act := normalizeActionString(raw); act != "" {
 			return act
@@ -534,7 +385,6 @@ func guardrailID(cfg guardrails.DriverConfig) string {
 func defaultTextHooks() []domain.GuardrailHook {
 	return []domain.GuardrailHook{
 		domain.GuardrailHookPreCall,
-		domain.GuardrailHookDuringCall,
 		domain.GuardrailHookPostCall,
 		domain.GuardrailHookLoggingOnly,
 	}
@@ -576,31 +426,6 @@ func hasNonEmptyText(texts []string) bool {
 		}
 	}
 	return false
-}
-
-func joinedNonEmptyText(texts []string) string {
-	var parts []string
-	for _, t := range texts {
-		if t != "" {
-			parts = append(parts, t)
-		}
-	}
-	return strings.Join(parts, "\n")
-}
-
-func isOutputDirection(input *domain.GuardrailEvalInput) bool {
-	if input == nil {
-		return false
-	}
-	if strings.EqualFold(strings.TrimSpace(input.Direction), domain.GuardrailDirectionOutput) {
-		return true
-	}
-	switch input.Hook {
-	case domain.GuardrailHookPostCall, domain.GuardrailHookPostMCPCall:
-		return true
-	default:
-		return false
-	}
 }
 
 func doJSONRequest(

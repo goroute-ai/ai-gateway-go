@@ -393,13 +393,7 @@ func TestDataPlane_OpenAPIContract(t *testing.T) {
 	callJSON(http.MethodPost, "/v1/batches/"+batchID+"/cancel", nil)
 	callJSON(http.MethodDelete, "/v1/files/"+fileID, nil)
 
-	// Guardrails standalone evaluation + virtual key self-info & self-service keys
-	st, _ = callJSON(http.MethodPost, "/v1/guardrails/apply", map[string]any{
-		"input_type": "request",
-		"text":       "hello world",
-	})
-	require.Equal(t, http.StatusOK, st)
-
+	// Virtual key self-info & self-service keys
 	st, _ = callJSON(http.MethodGet, "/v1/key/info", nil)
 	require.Equal(t, http.StatusOK, st)
 

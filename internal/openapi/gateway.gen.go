@@ -1190,87 +1190,78 @@ func (e FileListResponseObject) Valid() bool {
 	}
 }
 
-// Defines values for GuardrailApplyRequestInputType.
+// Defines values for GuardrailDefinitionEventHooks.
 const (
-	GuardrailApplyRequestInputTypeInput    GuardrailApplyRequestInputType = "input"
-	GuardrailApplyRequestInputTypeOutput   GuardrailApplyRequestInputType = "output"
-	GuardrailApplyRequestInputTypeRequest  GuardrailApplyRequestInputType = "request"
-	GuardrailApplyRequestInputTypeResponse GuardrailApplyRequestInputType = "response"
+	GuardrailDefinitionEventHooksLoggingOnly GuardrailDefinitionEventHooks = "logging_only"
+	GuardrailDefinitionEventHooksPostCall    GuardrailDefinitionEventHooks = "post_call"
+	GuardrailDefinitionEventHooksPreCall     GuardrailDefinitionEventHooks = "pre_call"
 )
 
-// Valid indicates whether the value is a known member of the GuardrailApplyRequestInputType enum.
-func (e GuardrailApplyRequestInputType) Valid() bool {
+// Valid indicates whether the value is a known member of the GuardrailDefinitionEventHooks enum.
+func (e GuardrailDefinitionEventHooks) Valid() bool {
 	switch e {
-	case GuardrailApplyRequestInputTypeInput:
+	case GuardrailDefinitionEventHooksLoggingOnly:
 		return true
-	case GuardrailApplyRequestInputTypeOutput:
+	case GuardrailDefinitionEventHooksPostCall:
 		return true
-	case GuardrailApplyRequestInputTypeRequest:
-		return true
-	case GuardrailApplyRequestInputTypeResponse:
+	case GuardrailDefinitionEventHooksPreCall:
 		return true
 	default:
 		return false
 	}
 }
 
-// Defines values for GuardrailDefinitionStatus.
+// Defines values for GuardrailDefinitionProvider.
 const (
-	GuardrailDefinitionStatusActive        GuardrailDefinitionStatus = "active"
-	GuardrailDefinitionStatusPendingReview GuardrailDefinitionStatus = "pending_review"
-	GuardrailDefinitionStatusRejected      GuardrailDefinitionStatus = "rejected"
+	GuardrailDefinitionProviderGenericHttp      GuardrailDefinitionProvider = "generic_http"
+	GuardrailDefinitionProviderOpenaiModeration GuardrailDefinitionProvider = "openai_moderation"
 )
 
-// Valid indicates whether the value is a known member of the GuardrailDefinitionStatus enum.
-func (e GuardrailDefinitionStatus) Valid() bool {
+// Valid indicates whether the value is a known member of the GuardrailDefinitionProvider enum.
+func (e GuardrailDefinitionProvider) Valid() bool {
 	switch e {
-	case GuardrailDefinitionStatusActive:
+	case GuardrailDefinitionProviderGenericHttp:
 		return true
-	case GuardrailDefinitionStatusPendingReview:
-		return true
-	case GuardrailDefinitionStatusRejected:
+	case GuardrailDefinitionProviderOpenaiModeration:
 		return true
 	default:
 		return false
 	}
 }
 
-// Defines values for GuardrailDefinitionPatchRequestStatus.
+// Defines values for GuardrailDefinitionWriteRequestEventHooks.
 const (
-	GuardrailDefinitionPatchRequestStatusActive        GuardrailDefinitionPatchRequestStatus = "active"
-	GuardrailDefinitionPatchRequestStatusPendingReview GuardrailDefinitionPatchRequestStatus = "pending_review"
-	GuardrailDefinitionPatchRequestStatusRejected      GuardrailDefinitionPatchRequestStatus = "rejected"
+	GuardrailDefinitionWriteRequestEventHooksLoggingOnly GuardrailDefinitionWriteRequestEventHooks = "logging_only"
+	GuardrailDefinitionWriteRequestEventHooksPostCall    GuardrailDefinitionWriteRequestEventHooks = "post_call"
+	GuardrailDefinitionWriteRequestEventHooksPreCall     GuardrailDefinitionWriteRequestEventHooks = "pre_call"
 )
 
-// Valid indicates whether the value is a known member of the GuardrailDefinitionPatchRequestStatus enum.
-func (e GuardrailDefinitionPatchRequestStatus) Valid() bool {
+// Valid indicates whether the value is a known member of the GuardrailDefinitionWriteRequestEventHooks enum.
+func (e GuardrailDefinitionWriteRequestEventHooks) Valid() bool {
 	switch e {
-	case GuardrailDefinitionPatchRequestStatusActive:
+	case GuardrailDefinitionWriteRequestEventHooksLoggingOnly:
 		return true
-	case GuardrailDefinitionPatchRequestStatusPendingReview:
+	case GuardrailDefinitionWriteRequestEventHooksPostCall:
 		return true
-	case GuardrailDefinitionPatchRequestStatusRejected:
+	case GuardrailDefinitionWriteRequestEventHooksPreCall:
 		return true
 	default:
 		return false
 	}
 }
 
-// Defines values for GuardrailDefinitionWriteRequestStatus.
+// Defines values for GuardrailDefinitionWriteRequestProvider.
 const (
-	GuardrailDefinitionWriteRequestStatusActive        GuardrailDefinitionWriteRequestStatus = "active"
-	GuardrailDefinitionWriteRequestStatusPendingReview GuardrailDefinitionWriteRequestStatus = "pending_review"
-	GuardrailDefinitionWriteRequestStatusRejected      GuardrailDefinitionWriteRequestStatus = "rejected"
+	GuardrailDefinitionWriteRequestProviderGenericHttp      GuardrailDefinitionWriteRequestProvider = "generic_http"
+	GuardrailDefinitionWriteRequestProviderOpenaiModeration GuardrailDefinitionWriteRequestProvider = "openai_moderation"
 )
 
-// Valid indicates whether the value is a known member of the GuardrailDefinitionWriteRequestStatus enum.
-func (e GuardrailDefinitionWriteRequestStatus) Valid() bool {
+// Valid indicates whether the value is a known member of the GuardrailDefinitionWriteRequestProvider enum.
+func (e GuardrailDefinitionWriteRequestProvider) Valid() bool {
 	switch e {
-	case GuardrailDefinitionWriteRequestStatusActive:
+	case GuardrailDefinitionWriteRequestProviderGenericHttp:
 		return true
-	case GuardrailDefinitionWriteRequestStatusPendingReview:
-		return true
-	case GuardrailDefinitionWriteRequestStatusRejected:
+	case GuardrailDefinitionWriteRequestProviderOpenaiModeration:
 		return true
 	default:
 		return false
@@ -1279,16 +1270,16 @@ func (e GuardrailDefinitionWriteRequestStatus) Valid() bool {
 
 // Defines values for GuardrailPolicyMode.
 const (
-	Enforce     GuardrailPolicyMode = "enforce"
-	LoggingOnly GuardrailPolicyMode = "logging_only"
+	GuardrailPolicyModeEnforce     GuardrailPolicyMode = "enforce"
+	GuardrailPolicyModeLoggingOnly GuardrailPolicyMode = "logging_only"
 )
 
 // Valid indicates whether the value is a known member of the GuardrailPolicyMode enum.
 func (e GuardrailPolicyMode) Valid() bool {
 	switch e {
-	case Enforce:
+	case GuardrailPolicyModeEnforce:
 		return true
-	case LoggingOnly:
+	case GuardrailPolicyModeLoggingOnly:
 		return true
 	default:
 		return false
@@ -1300,7 +1291,6 @@ const (
 	GuardrailPolicyPiiActionAudit  GuardrailPolicyPiiAction = "audit"
 	GuardrailPolicyPiiActionBlock  GuardrailPolicyPiiAction = "block"
 	GuardrailPolicyPiiActionRedact GuardrailPolicyPiiAction = "redact"
-	GuardrailPolicyPiiActionRoute  GuardrailPolicyPiiAction = "route"
 )
 
 // Valid indicates whether the value is a known member of the GuardrailPolicyPiiAction enum.
@@ -1312,8 +1302,6 @@ func (e GuardrailPolicyPiiAction) Valid() bool {
 		return true
 	case GuardrailPolicyPiiActionRedact:
 		return true
-	case GuardrailPolicyPiiActionRoute:
-		return true
 	default:
 		return false
 	}
@@ -1324,7 +1312,6 @@ const (
 	GuardrailPolicyPromptInjectionActionAudit  GuardrailPolicyPromptInjectionAction = "audit"
 	GuardrailPolicyPromptInjectionActionBlock  GuardrailPolicyPromptInjectionAction = "block"
 	GuardrailPolicyPromptInjectionActionRedact GuardrailPolicyPromptInjectionAction = "redact"
-	GuardrailPolicyPromptInjectionActionRoute  GuardrailPolicyPromptInjectionAction = "route"
 )
 
 // Valid indicates whether the value is a known member of the GuardrailPolicyPromptInjectionAction enum.
@@ -1336,8 +1323,6 @@ func (e GuardrailPolicyPromptInjectionAction) Valid() bool {
 		return true
 	case GuardrailPolicyPromptInjectionActionRedact:
 		return true
-	case GuardrailPolicyPromptInjectionActionRoute:
-		return true
 	default:
 		return false
 	}
@@ -1348,7 +1333,6 @@ const (
 	GuardrailPolicySecretActionAudit  GuardrailPolicySecretAction = "audit"
 	GuardrailPolicySecretActionBlock  GuardrailPolicySecretAction = "block"
 	GuardrailPolicySecretActionRedact GuardrailPolicySecretAction = "redact"
-	GuardrailPolicySecretActionRoute  GuardrailPolicySecretAction = "route"
 )
 
 // Valid indicates whether the value is a known member of the GuardrailPolicySecretAction enum.
@@ -1360,8 +1344,6 @@ func (e GuardrailPolicySecretAction) Valid() bool {
 		return true
 	case GuardrailPolicySecretActionRedact:
 		return true
-	case GuardrailPolicySecretActionRoute:
-		return true
 	default:
 		return false
 	}
@@ -1372,7 +1354,6 @@ const (
 	GuardrailPolicyToxicityActionAudit  GuardrailPolicyToxicityAction = "audit"
 	GuardrailPolicyToxicityActionBlock  GuardrailPolicyToxicityAction = "block"
 	GuardrailPolicyToxicityActionRedact GuardrailPolicyToxicityAction = "redact"
-	GuardrailPolicyToxicityActionRoute  GuardrailPolicyToxicityAction = "route"
 )
 
 // Valid indicates whether the value is a known member of the GuardrailPolicyToxicityAction enum.
@@ -1383,8 +1364,6 @@ func (e GuardrailPolicyToxicityAction) Valid() bool {
 	case GuardrailPolicyToxicityActionBlock:
 		return true
 	case GuardrailPolicyToxicityActionRedact:
-		return true
-	case GuardrailPolicyToxicityActionRoute:
 		return true
 	default:
 		return false
@@ -1412,63 +1391,18 @@ func (e GuardrailPolicyToxicityThreshold) Valid() bool {
 	}
 }
 
-// Defines values for GuardrailRequestOverrideAction.
-const (
-	GuardrailRequestOverrideActionAudit  GuardrailRequestOverrideAction = "audit"
-	GuardrailRequestOverrideActionBlock  GuardrailRequestOverrideAction = "block"
-	GuardrailRequestOverrideActionRedact GuardrailRequestOverrideAction = "redact"
-	GuardrailRequestOverrideActionRoute  GuardrailRequestOverrideAction = "route"
-)
-
-// Valid indicates whether the value is a known member of the GuardrailRequestOverrideAction enum.
-func (e GuardrailRequestOverrideAction) Valid() bool {
-	switch e {
-	case GuardrailRequestOverrideActionAudit:
-		return true
-	case GuardrailRequestOverrideActionBlock:
-		return true
-	case GuardrailRequestOverrideActionRedact:
-		return true
-	case GuardrailRequestOverrideActionRoute:
-		return true
-	default:
-		return false
-	}
-}
-
 // Defines values for GuardrailSimulateRequestDirection.
 const (
-	GuardrailSimulateRequestDirectionInput  GuardrailSimulateRequestDirection = "input"
-	GuardrailSimulateRequestDirectionOutput GuardrailSimulateRequestDirection = "output"
+	Input  GuardrailSimulateRequestDirection = "input"
+	Output GuardrailSimulateRequestDirection = "output"
 )
 
 // Valid indicates whether the value is a known member of the GuardrailSimulateRequestDirection enum.
 func (e GuardrailSimulateRequestDirection) Valid() bool {
 	switch e {
-	case GuardrailSimulateRequestDirectionInput:
+	case Input:
 		return true
-	case GuardrailSimulateRequestDirectionOutput:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for GuardrailStatusUpdateRequestStatus.
-const (
-	GuardrailStatusUpdateRequestStatusActive        GuardrailStatusUpdateRequestStatus = "active"
-	GuardrailStatusUpdateRequestStatusPendingReview GuardrailStatusUpdateRequestStatus = "pending_review"
-	GuardrailStatusUpdateRequestStatusRejected      GuardrailStatusUpdateRequestStatus = "rejected"
-)
-
-// Valid indicates whether the value is a known member of the GuardrailStatusUpdateRequestStatus enum.
-func (e GuardrailStatusUpdateRequestStatus) Valid() bool {
-	switch e {
-	case GuardrailStatusUpdateRequestStatusActive:
-		return true
-	case GuardrailStatusUpdateRequestStatusPendingReview:
-		return true
-	case GuardrailStatusUpdateRequestStatusRejected:
+	case Output:
 		return true
 	default:
 		return false
@@ -1609,13 +1543,13 @@ func (e ResponsesAPIRequestTextFormatType) Valid() bool {
 
 // Defines values for ResponsesAPIResponseObject.
 const (
-	ResponsesAPIResponseObjectResponse ResponsesAPIResponseObject = "response"
+	Response ResponsesAPIResponseObject = "response"
 )
 
 // Valid indicates whether the value is a known member of the ResponsesAPIResponseObject enum.
 func (e ResponsesAPIResponseObject) Valid() bool {
 	switch e {
-	case ResponsesAPIResponseObjectResponse:
+	case Response:
 		return true
 	default:
 		return false
@@ -1718,84 +1652,6 @@ const (
 func (e ToolCallType) Valid() bool {
 	switch e {
 	case ToolCallTypeFunction:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for ToolPolicyInputPolicy.
-const (
-	ToolPolicyInputPolicyBlocked   ToolPolicyInputPolicy = "blocked"
-	ToolPolicyInputPolicyTrusted   ToolPolicyInputPolicy = "trusted"
-	ToolPolicyInputPolicyUntrusted ToolPolicyInputPolicy = "untrusted"
-)
-
-// Valid indicates whether the value is a known member of the ToolPolicyInputPolicy enum.
-func (e ToolPolicyInputPolicy) Valid() bool {
-	switch e {
-	case ToolPolicyInputPolicyBlocked:
-		return true
-	case ToolPolicyInputPolicyTrusted:
-		return true
-	case ToolPolicyInputPolicyUntrusted:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for ToolPolicyOutputPolicy.
-const (
-	ToolPolicyOutputPolicyTrusted   ToolPolicyOutputPolicy = "trusted"
-	ToolPolicyOutputPolicyUntrusted ToolPolicyOutputPolicy = "untrusted"
-)
-
-// Valid indicates whether the value is a known member of the ToolPolicyOutputPolicy enum.
-func (e ToolPolicyOutputPolicy) Valid() bool {
-	switch e {
-	case ToolPolicyOutputPolicyTrusted:
-		return true
-	case ToolPolicyOutputPolicyUntrusted:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for ToolPolicyUpsertRequestInputPolicy.
-const (
-	ToolPolicyUpsertRequestInputPolicyBlocked   ToolPolicyUpsertRequestInputPolicy = "blocked"
-	ToolPolicyUpsertRequestInputPolicyTrusted   ToolPolicyUpsertRequestInputPolicy = "trusted"
-	ToolPolicyUpsertRequestInputPolicyUntrusted ToolPolicyUpsertRequestInputPolicy = "untrusted"
-)
-
-// Valid indicates whether the value is a known member of the ToolPolicyUpsertRequestInputPolicy enum.
-func (e ToolPolicyUpsertRequestInputPolicy) Valid() bool {
-	switch e {
-	case ToolPolicyUpsertRequestInputPolicyBlocked:
-		return true
-	case ToolPolicyUpsertRequestInputPolicyTrusted:
-		return true
-	case ToolPolicyUpsertRequestInputPolicyUntrusted:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for ToolPolicyUpsertRequestOutputPolicy.
-const (
-	ToolPolicyUpsertRequestOutputPolicyTrusted   ToolPolicyUpsertRequestOutputPolicy = "trusted"
-	ToolPolicyUpsertRequestOutputPolicyUntrusted ToolPolicyUpsertRequestOutputPolicy = "untrusted"
-)
-
-// Valid indicates whether the value is a known member of the ToolPolicyUpsertRequestOutputPolicy enum.
-func (e ToolPolicyUpsertRequestOutputPolicy) Valid() bool {
-	switch e {
-	case ToolPolicyUpsertRequestOutputPolicyTrusted:
-		return true
-	case ToolPolicyUpsertRequestOutputPolicyUntrusted:
 		return true
 	default:
 		return false
@@ -3265,166 +3121,65 @@ type FileObject struct {
 
 // GoRouteExtensions defines model for GoRouteExtensions.
 type GoRouteExtensions struct {
-	AllowedRegion         *string                     `json:"allowed_region,omitempty"`
-	ContextId             *string                     `json:"context_id,omitempty"`
-	DropUnsupportedParams *bool                       `json:"drop_unsupported_params,omitempty"`
-	Guardrails            *[]GuardrailRequestOverride `json:"guardrails,omitempty"`
-	HedgeAfterMs          *int                        `json:"hedge_after_ms,omitempty"`
-	PreferredDeploymentId *string                     `json:"preferred_deployment_id,omitempty"`
-	Priority              *int                        `json:"priority,omitempty"`
-	RoutingStrategy       *string                     `json:"routing_strategy,omitempty"`
-	SessionId             *string                     `json:"session_id,omitempty"`
-	Tags                  *[]string                   `json:"tags,omitempty"`
-	TaskId                *string                     `json:"task_id,omitempty"`
-}
-
-// GuardrailApplyRequest defines model for GuardrailApplyRequest.
-type GuardrailApplyRequest struct {
-	GuardrailName *string                         `json:"guardrail_name,omitempty"`
-	InputType     *GuardrailApplyRequestInputType `json:"input_type,omitempty"`
-	Messages      *[]map[string]interface{}       `json:"messages,omitempty"`
-	Metadata      *map[string]interface{}         `json:"metadata,omitempty"`
-	Model         *string                         `json:"model,omitempty"`
-	Tags          *[]string                       `json:"tags,omitempty"`
-	Text          *string                         `json:"text,omitempty"`
-	Texts         *[]string                       `json:"texts,omitempty"`
-	ToolCalls     *[]map[string]interface{}       `json:"tool_calls,omitempty"`
-	Tools         *[]map[string]interface{}       `json:"tools,omitempty"`
-}
-
-// GuardrailApplyRequestInputType defines model for GuardrailApplyRequest.InputType.
-type GuardrailApplyRequestInputType string
-
-// GuardrailApplyResponse defines model for GuardrailApplyResponse.
-type GuardrailApplyResponse struct {
-	Action            *string                   `json:"action,omitempty"`
-	AppliedGuardrails *[]string                 `json:"applied_guardrails,omitempty"`
-	Blocked           *bool                     `json:"blocked,omitempty"`
-	Decision          *string                   `json:"decision,omitempty"`
-	ErrorMessage      *string                   `json:"error_message,omitempty"`
-	LatencyMs         *int64                    `json:"latency_ms,omitempty"`
-	ModifiedMessages  *[]map[string]interface{} `json:"modified_messages,omitempty"`
-	ModifiedTexts     *[]string                 `json:"modified_texts,omitempty"`
-	ModifiedToolCalls *[]map[string]interface{} `json:"modified_tool_calls,omitempty"`
-	Texts             *[]string                 `json:"texts,omitempty"`
-	UsageUnits        *int64                    `json:"usage_units,omitempty"`
-	Violations        *[]GuardrailViolation     `json:"violations,omitempty"`
-}
-
-// GuardrailBinding defines model for GuardrailBinding.
-type GuardrailBinding struct {
-	CreatedAt      *time.Time              `json:"created_at,omitempty"`
-	EndUserId      *string                 `json:"end_user_id,omitempty"`
-	GuardrailId    *string                 `json:"guardrail_id,omitempty"`
-	GuardrailName  *string                 `json:"guardrail_name,omitempty"`
-	Id             *string                 `json:"id,omitempty"`
-	IsLocked       *bool                   `json:"is_locked,omitempty"`
-	ModelGroupId   *string                 `json:"model_group_id,omitempty"`
-	OrgId          *string                 `json:"org_id,omitempty"`
-	ParamOverrides *map[string]interface{} `json:"param_overrides,omitempty"`
-	Tag            *string                 `json:"tag,omitempty"`
-	TeamId         *string                 `json:"team_id,omitempty"`
-	UpdatedAt      *time.Time              `json:"updated_at,omitempty"`
-	VirtualKeyId   *string                 `json:"virtual_key_id,omitempty"`
-}
-
-// GuardrailBindingCreateRequest defines model for GuardrailBindingCreateRequest.
-type GuardrailBindingCreateRequest struct {
-	EndUserId      *string                 `json:"end_user_id,omitempty"`
-	GuardrailId    *string                 `json:"guardrail_id,omitempty"`
-	GuardrailName  *string                 `json:"guardrail_name,omitempty"`
-	Id             *string                 `json:"id,omitempty"`
-	IsLocked       *bool                   `json:"is_locked,omitempty"`
-	ModelGroupId   *string                 `json:"model_group_id,omitempty"`
-	OrgId          *string                 `json:"org_id,omitempty"`
-	ParamOverrides *map[string]interface{} `json:"param_overrides,omitempty"`
-	Tag            *string                 `json:"tag,omitempty"`
-	TeamId         *string                 `json:"team_id,omitempty"`
-	VirtualKeyId   *string                 `json:"virtual_key_id,omitempty"`
+	AllowedRegion         *string   `json:"allowed_region,omitempty"`
+	ContextId             *string   `json:"context_id,omitempty"`
+	DropUnsupportedParams *bool     `json:"drop_unsupported_params,omitempty"`
+	HedgeAfterMs          *int      `json:"hedge_after_ms,omitempty"`
+	PreferredDeploymentId *string   `json:"preferred_deployment_id,omitempty"`
+	Priority              *int      `json:"priority,omitempty"`
+	RoutingStrategy       *string   `json:"routing_strategy,omitempty"`
+	SessionId             *string   `json:"session_id,omitempty"`
+	Tags                  *[]string `json:"tags,omitempty"`
+	TaskId                *string   `json:"task_id,omitempty"`
 }
 
 // GuardrailDefinition defines model for GuardrailDefinition.
 type GuardrailDefinition struct {
-	Config               *map[string]interface{}    `json:"config,omitempty"`
-	CreatedAt            *time.Time                 `json:"created_at,omitempty"`
-	DefaultOn            *bool                      `json:"default_on,omitempty"`
-	EnabledRoles         *[]string                  `json:"enabled_roles,omitempty"`
-	EventHooks           *[]string                  `json:"event_hooks,omitempty"`
-	FailOpen             *bool                      `json:"fail_open,omitempty"`
-	GuardrailInfo        *map[string]interface{}    `json:"guardrail_info,omitempty"`
-	HasSecrets           *bool                      `json:"has_secrets,omitempty"`
-	Id                   *string                    `json:"id,omitempty"`
-	ModeRule             *map[string]interface{}    `json:"mode_rule,omitempty"`
-	Name                 *string                    `json:"name,omitempty"`
-	OrgId                *string                    `json:"org_id,omitempty"`
-	Precedence           *int                       `json:"precedence,omitempty"`
-	Provider             *string                    `json:"provider,omitempty"`
-	SensitiveRouteTarget *string                    `json:"sensitive_route_target,omitempty"`
-	Status               *GuardrailDefinitionStatus `json:"status,omitempty"`
-	StreamScope          *string                    `json:"stream_scope,omitempty"`
-	StreamScopeByHook    *map[string]string         `json:"stream_scope_by_hook,omitempty"`
-	TimeoutMs            *int                       `json:"timeout_ms,omitempty"`
-	UpdatedAt            *time.Time                 `json:"updated_at,omitempty"`
-	Weight               *int                       `json:"weight,omitempty"`
+	Config     *map[string]interface{}          `json:"config,omitempty"`
+	CreatedAt  *time.Time                       `json:"created_at,omitempty"`
+	Enabled    *bool                            `json:"enabled,omitempty"`
+	EventHooks *[]GuardrailDefinitionEventHooks `json:"event_hooks,omitempty"`
+	FailOpen   *bool                            `json:"fail_open,omitempty"`
+	HasSecrets *bool                            `json:"has_secrets,omitempty"`
+	Id         *string                          `json:"id,omitempty"`
+	Name       *string                          `json:"name,omitempty"`
+	OrgId      *string                          `json:"org_id,omitempty"`
+	Precedence *int                             `json:"precedence,omitempty"`
+	Provider   *GuardrailDefinitionProvider     `json:"provider,omitempty"`
+	TimeoutMs  *int                             `json:"timeout_ms,omitempty"`
+	UpdatedAt  *time.Time                       `json:"updated_at,omitempty"`
 }
 
-// GuardrailDefinitionStatus defines model for GuardrailDefinition.Status.
-type GuardrailDefinitionStatus string
+// GuardrailDefinitionEventHooks defines model for GuardrailDefinition.EventHooks.
+type GuardrailDefinitionEventHooks string
 
-// GuardrailDefinitionPatchRequest defines model for GuardrailDefinitionPatchRequest.
-type GuardrailDefinitionPatchRequest struct {
-	ClearSecrets         *bool                                  `json:"clear_secrets,omitempty"`
-	Config               *map[string]interface{}                `json:"config,omitempty"`
-	DefaultOn            *bool                                  `json:"default_on,omitempty"`
-	EnabledRoles         *[]string                              `json:"enabled_roles,omitempty"`
-	EventHooks           *[]string                              `json:"event_hooks,omitempty"`
-	FailOpen             *bool                                  `json:"fail_open,omitempty"`
-	GuardrailInfo        *map[string]interface{}                `json:"guardrail_info,omitempty"`
-	ModeRule             *map[string]interface{}                `json:"mode_rule,omitempty"`
-	Name                 *string                                `json:"name,omitempty"`
-	Precedence           *int                                   `json:"precedence,omitempty"`
-	Provider             *string                                `json:"provider,omitempty"`
-	Secrets              *map[string]interface{}                `json:"secrets,omitempty"`
-	SensitiveRouteTarget *string                                `json:"sensitive_route_target,omitempty"`
-	Status               *GuardrailDefinitionPatchRequestStatus `json:"status,omitempty"`
-	StreamScope          *string                                `json:"stream_scope,omitempty"`
-	StreamScopeByHook    *map[string]string                     `json:"stream_scope_by_hook,omitempty"`
-	TimeoutMs            *int                                   `json:"timeout_ms,omitempty"`
-	Weight               *int                                   `json:"weight,omitempty"`
-}
-
-// GuardrailDefinitionPatchRequestStatus defines model for GuardrailDefinitionPatchRequest.Status.
-type GuardrailDefinitionPatchRequestStatus string
+// GuardrailDefinitionProvider defines model for GuardrailDefinition.Provider.
+type GuardrailDefinitionProvider string
 
 // GuardrailDefinitionWriteRequest defines model for GuardrailDefinitionWriteRequest.
 type GuardrailDefinitionWriteRequest struct {
-	ClearSecrets         *bool                                  `json:"clear_secrets,omitempty"`
-	Config               *map[string]interface{}                `json:"config,omitempty"`
-	DefaultOn            *bool                                  `json:"default_on,omitempty"`
-	EnabledRoles         *[]string                              `json:"enabled_roles,omitempty"`
-	EventHooks           *[]string                              `json:"event_hooks,omitempty"`
-	FailOpen             *bool                                  `json:"fail_open,omitempty"`
-	GuardrailInfo        *map[string]interface{}                `json:"guardrail_info,omitempty"`
-	Id                   *string                                `json:"id,omitempty"`
-	ModeRule             *map[string]interface{}                `json:"mode_rule,omitempty"`
-	Name                 string                                 `json:"name"`
-	Precedence           *int                                   `json:"precedence,omitempty"`
-	Provider             string                                 `json:"provider"`
-	Secrets              *map[string]interface{}                `json:"secrets,omitempty"`
-	SensitiveRouteTarget *string                                `json:"sensitive_route_target,omitempty"`
-	Status               *GuardrailDefinitionWriteRequestStatus `json:"status,omitempty"`
-	StreamScope          *string                                `json:"stream_scope,omitempty"`
-	StreamScopeByHook    *map[string]string                     `json:"stream_scope_by_hook,omitempty"`
-	TimeoutMs            *int                                   `json:"timeout_ms,omitempty"`
-	Weight               *int                                   `json:"weight,omitempty"`
+	Config     *map[string]interface{}                      `json:"config,omitempty"`
+	Enabled    *bool                                        `json:"enabled,omitempty"`
+	EventHooks *[]GuardrailDefinitionWriteRequestEventHooks `json:"event_hooks,omitempty"`
+	FailOpen   *bool                                        `json:"fail_open,omitempty"`
+	Id         *string                                      `json:"id,omitempty"`
+	Name       string                                       `json:"name"`
+	Precedence *int                                         `json:"precedence,omitempty"`
+	Provider   GuardrailDefinitionWriteRequestProvider      `json:"provider"`
+	Secrets    *map[string]interface{}                      `json:"secrets,omitempty"`
+	TimeoutMs  *int                                         `json:"timeout_ms,omitempty"`
 }
 
-// GuardrailDefinitionWriteRequestStatus defines model for GuardrailDefinitionWriteRequest.Status.
-type GuardrailDefinitionWriteRequestStatus string
+// GuardrailDefinitionWriteRequestEventHooks defines model for GuardrailDefinitionWriteRequest.EventHooks.
+type GuardrailDefinitionWriteRequestEventHooks string
+
+// GuardrailDefinitionWriteRequestProvider defines model for GuardrailDefinitionWriteRequest.Provider.
+type GuardrailDefinitionWriteRequestProvider string
 
 // GuardrailPolicy defines model for GuardrailPolicy.
 type GuardrailPolicy struct {
 	BlockedKeywords          *[]string                             `json:"blocked_keywords,omitempty"`
+	BlockedPatterns          *[]string                             `json:"blocked_patterns,omitempty"`
 	ContentExceptions        *[]string                             `json:"content_exceptions,omitempty"`
 	EnablePiiDetection       *bool                                 `json:"enable_pii_detection,omitempty"`
 	EnablePromptInjection    *bool                                 `json:"enable_prompt_injection,omitempty"`
@@ -3438,7 +3193,6 @@ type GuardrailPolicy struct {
 	RedactOutputPii          *bool                                 `json:"redact_output_pii,omitempty"`
 	ScanAllRoles             *bool                                 `json:"scan_all_roles,omitempty"`
 	SecretAction             *GuardrailPolicySecretAction          `json:"secret_action,omitempty"`
-	SensitiveRouteTarget     *string                               `json:"sensitive_route_target,omitempty"`
 	ToxicityAction           *GuardrailPolicyToxicityAction        `json:"toxicity_action,omitempty"`
 	ToxicityThreshold        *GuardrailPolicyToxicityThreshold     `json:"toxicity_threshold,omitempty"`
 	UpdatedAt                *time.Time                            `json:"updated_at,omitempty"`
@@ -3462,31 +3216,11 @@ type GuardrailPolicyToxicityAction string
 // GuardrailPolicyToxicityThreshold defines model for GuardrailPolicy.ToxicityThreshold.
 type GuardrailPolicyToxicityThreshold string
 
-// GuardrailRequestOverride defines model for GuardrailRequestOverride.
-type GuardrailRequestOverride struct {
-	Action  *GuardrailRequestOverrideAction `json:"action,omitempty"`
-	Config  *map[string]interface{}         `json:"config,omitempty"`
-	Enabled *bool                           `json:"enabled,omitempty"`
-	Name    string                          `json:"name"`
-}
-
-// GuardrailRequestOverrideAction defines model for GuardrailRequestOverride.Action.
-type GuardrailRequestOverrideAction string
-
 // GuardrailSimulateRequest defines model for GuardrailSimulateRequest.
 type GuardrailSimulateRequest struct {
-	Direction       *GuardrailSimulateRequestDirection `json:"direction,omitempty"`
-	GuardrailName   *string                            `json:"guardrail_name,omitempty"`
-	Input           *string                            `json:"input,omitempty"`
-	Messages        *[]map[string]interface{}          `json:"messages,omitempty"`
-	Policy          *GuardrailPolicy                   `json:"policy,omitempty"`
-	Prompt          *string                            `json:"prompt,omitempty"`
-	StreamChunkSize *int                               `json:"stream_chunk_size,omitempty"`
-	Tags            *[]string                          `json:"tags,omitempty"`
-	Text            *string                            `json:"text,omitempty"`
-	Texts           *[]string                          `json:"texts,omitempty"`
-	ToolCalls       *[]map[string]interface{}          `json:"tool_calls,omitempty"`
-	Tools           *[]map[string]interface{}          `json:"tools,omitempty"`
+	Direction *GuardrailSimulateRequestDirection `json:"direction,omitempty"`
+	Policy    *GuardrailPolicy                   `json:"policy,omitempty"`
+	Prompt    *string                            `json:"prompt,omitempty"`
 }
 
 // GuardrailSimulateRequestDirection defines model for GuardrailSimulateRequest.Direction.
@@ -3494,97 +3228,15 @@ type GuardrailSimulateRequestDirection string
 
 // GuardrailSimulateResponse defines model for GuardrailSimulateResponse.
 type GuardrailSimulateResponse struct {
-	Action                *string                   `json:"action,omitempty"`
-	Allowed               *bool                     `json:"allowed,omitempty"`
-	AppliedAction         *string                   `json:"applied_action,omitempty"`
-	AppliedGuardrails     *[]string                 `json:"applied_guardrails,omitempty"`
-	Blocked               *bool                     `json:"blocked,omitempty"`
-	Decision              *string                   `json:"decision,omitempty"`
-	Direction             *string                   `json:"direction,omitempty"`
-	ErrorMessage          *string                   `json:"error_message,omitempty"`
-	ModifiedMessages      *[]map[string]interface{} `json:"modified_messages,omitempty"`
-	ModifiedTexts         *[]string                 `json:"modified_texts,omitempty"`
-	ModifiedToolCalls     *[]map[string]interface{} `json:"modified_tool_calls,omitempty"`
-	Redacted              *bool                     `json:"redacted,omitempty"`
-	RedactedPrompt        *string                   `json:"redacted_prompt,omitempty"`
-	StreamChunksEvaluated *int                      `json:"stream_chunks_evaluated,omitempty"`
-	Texts                 *[]string                 `json:"texts,omitempty"`
-	Violations            *[]interface{}            `json:"violations,omitempty"`
-}
-
-// GuardrailStatusUpdateRequest defines model for GuardrailStatusUpdateRequest.
-type GuardrailStatusUpdateRequest struct {
-	Status GuardrailStatusUpdateRequestStatus `json:"status"`
-}
-
-// GuardrailStatusUpdateRequestStatus defines model for GuardrailStatusUpdateRequest.Status.
-type GuardrailStatusUpdateRequestStatus string
-
-// GuardrailUsageSummary defines model for GuardrailUsageSummary.
-type GuardrailUsageSummary struct {
-	DailySeries *[]struct {
-		Blocks        *int64  `json:"blocks,omitempty"`
-		CostMicros    *int64  `json:"cost_micros,omitempty"`
-		Date          *string `json:"date,omitempty"`
-		Errors        *int64  `json:"errors,omitempty"`
-		Evaluations   *int64  `json:"evaluations,omitempty"`
-		Flags         *int64  `json:"flags,omitempty"`
-		GuardrailId   *string `json:"guardrail_id,omitempty"`
-		GuardrailName *string `json:"guardrail_name,omitempty"`
-		LatencySumMs  *int64  `json:"latency_sum_ms,omitempty"`
-		Redactions    *int64  `json:"redactions,omitempty"`
-		Units         *int64  `json:"units,omitempty"`
-	} `json:"daily_series,omitempty"`
-	EndDate      *string `json:"end_date,omitempty"`
-	OrgId        *string `json:"org_id,omitempty"`
-	StartDate    *string `json:"start_date,omitempty"`
-	TopTriggered *[]struct {
-		Blocks         *int64  `json:"blocks,omitempty"`
-		CostMicros     *int64  `json:"cost_micros,omitempty"`
-		Errors         *int64  `json:"errors,omitempty"`
-		Evaluations    *int64  `json:"evaluations,omitempty"`
-		Flags          *int64  `json:"flags,omitempty"`
-		GuardrailId    *string `json:"guardrail_id,omitempty"`
-		GuardrailName  *string `json:"guardrail_name,omitempty"`
-		Redactions     *int64  `json:"redactions,omitempty"`
-		TriggeredCount *int64  `json:"triggered_count,omitempty"`
-		Units          *int64  `json:"units,omitempty"`
-	} `json:"top_triggered,omitempty"`
-	TotalCostMicros *int64 `json:"total_cost_micros,omitempty"`
-	Totals          *struct {
-		Blocks          *int64 `json:"blocks,omitempty"`
-		Errors          *int64 `json:"errors,omitempty"`
-		Evaluations     *int64 `json:"evaluations,omitempty"`
-		Flags           *int64 `json:"flags,omitempty"`
-		LatencySumMs    *int64 `json:"latency_sum_ms,omitempty"`
-		Redactions      *int64 `json:"redactions,omitempty"`
-		TotalCostMicros *int64 `json:"total_cost_micros,omitempty"`
-		TotalUnits      *int64 `json:"total_units,omitempty"`
-	} `json:"totals,omitempty"`
-	UsageUnits *[]struct {
-		CostMicros   *int64  `json:"cost_micros,omitempty"`
-		Date         *string `json:"date,omitempty"`
-		GuardrailId  *string `json:"guardrail_id,omitempty"`
-		TeamId       *string `json:"team_id,omitempty"`
-		Units        *int64  `json:"units,omitempty"`
-		UsageUnit    *string `json:"usage_unit,omitempty"`
-		VirtualKeyId *string `json:"virtual_key_id,omitempty"`
-	} `json:"usage_units,omitempty"`
-}
-
-// GuardrailViolation defines model for GuardrailViolation.
-type GuardrailViolation struct {
-	Action        *string                 `json:"action,omitempty"`
-	Category      *string                 `json:"category,omitempty"`
-	Decision      *string                 `json:"decision,omitempty"`
-	Details       *map[string]interface{} `json:"details,omitempty"`
-	GuardrailId   *string                 `json:"guardrail_id,omitempty"`
-	GuardrailName *string                 `json:"guardrail_name,omitempty"`
-	Message       *string                 `json:"message,omitempty"`
-	Provider      *string                 `json:"provider,omitempty"`
-	Rule          *string                 `json:"rule,omitempty"`
-	Score         *float32                `json:"score,omitempty"`
-	Severity      *string                 `json:"severity,omitempty"`
+	Action        *string   `json:"action,omitempty"`
+	Allowed       *bool     `json:"allowed,omitempty"`
+	Blocked       *bool     `json:"blocked,omitempty"`
+	Decision      *string   `json:"decision,omitempty"`
+	EffectiveMode *string   `json:"effective_mode,omitempty"`
+	ErrorMessage  *string   `json:"error_message,omitempty"`
+	Redacted      *bool     `json:"redacted,omitempty"`
+	RedactedText  *string   `json:"redacted_text,omitempty"`
+	Violations    *[]string `json:"violations,omitempty"`
 }
 
 // ImageGenerationRequest defines model for ImageGenerationRequest.
@@ -3976,41 +3628,6 @@ type ToolCall struct {
 // ToolCallType defines model for ToolCall.Type.
 type ToolCallType string
 
-// ToolPolicy defines model for ToolPolicy.
-type ToolPolicy struct {
-	CreatedAt    *time.Time              `json:"created_at,omitempty"`
-	Id           *string                 `json:"id,omitempty"`
-	InputPolicy  *ToolPolicyInputPolicy  `json:"input_policy,omitempty"`
-	OrgId        *string                 `json:"org_id,omitempty"`
-	OutputPolicy *ToolPolicyOutputPolicy `json:"output_policy,omitempty"`
-	TeamId       *string                 `json:"team_id,omitempty"`
-	ToolName     *string                 `json:"tool_name,omitempty"`
-	UpdatedAt    *time.Time              `json:"updated_at,omitempty"`
-	VirtualKeyId *string                 `json:"virtual_key_id,omitempty"`
-}
-
-// ToolPolicyInputPolicy defines model for ToolPolicy.InputPolicy.
-type ToolPolicyInputPolicy string
-
-// ToolPolicyOutputPolicy defines model for ToolPolicy.OutputPolicy.
-type ToolPolicyOutputPolicy string
-
-// ToolPolicyUpsertRequest defines model for ToolPolicyUpsertRequest.
-type ToolPolicyUpsertRequest struct {
-	Id           *string                              `json:"id,omitempty"`
-	InputPolicy  *ToolPolicyUpsertRequestInputPolicy  `json:"input_policy,omitempty"`
-	OutputPolicy *ToolPolicyUpsertRequestOutputPolicy `json:"output_policy,omitempty"`
-	TeamId       *string                              `json:"team_id,omitempty"`
-	ToolName     string                               `json:"tool_name"`
-	VirtualKeyId *string                              `json:"virtual_key_id,omitempty"`
-}
-
-// ToolPolicyUpsertRequestInputPolicy defines model for ToolPolicyUpsertRequest.InputPolicy.
-type ToolPolicyUpsertRequestInputPolicy string
-
-// ToolPolicyUpsertRequestOutputPolicy defines model for ToolPolicyUpsertRequest.OutputPolicy.
-type ToolPolicyUpsertRequestOutputPolicy string
-
 // BatchID defines model for BatchID.
 type BatchID = string
 
@@ -4291,35 +3908,9 @@ type GetObservabilityMetrics200JSONResponseBody struct {
 	AdditionalProperties       map[string]interface{} `json:"-"`
 }
 
-// ListGuardrailBindingsParams defines parameters for ListGuardrailBindings.
-type ListGuardrailBindingsParams struct {
-	GuardrailId   *string `form:"guardrail_id,omitempty" json:"guardrail_id,omitempty"`
-	GuardrailName *string `form:"guardrail_name,omitempty" json:"guardrail_name,omitempty"`
-	TeamId        *string `form:"team_id,omitempty" json:"team_id,omitempty"`
-	VirtualKeyId  *string `form:"virtual_key_id,omitempty" json:"virtual_key_id,omitempty"`
-}
-
 // ListGuardrailDefinitionsParams defines parameters for ListGuardrailDefinitions.
 type ListGuardrailDefinitionsParams struct {
-	Status *string `form:"status,omitempty" json:"status,omitempty"`
-	Name   *string `form:"name,omitempty" json:"name,omitempty"`
-}
-
-// GetGuardrailUsageSummaryParams defines parameters for GetGuardrailUsageSummary.
-type GetGuardrailUsageSummaryParams struct {
-	StartDate    *string `form:"start_date,omitempty" json:"start_date,omitempty"`
-	EndDate      *string `form:"end_date,omitempty" json:"end_date,omitempty"`
-	GuardrailId  *string `form:"guardrail_id,omitempty" json:"guardrail_id,omitempty"`
-	TeamId       *string `form:"team_id,omitempty" json:"team_id,omitempty"`
-	VirtualKeyId *string `form:"virtual_key_id,omitempty" json:"virtual_key_id,omitempty"`
-	TopLimit     *int    `form:"top_limit,omitempty" json:"top_limit,omitempty"`
-}
-
-// ListToolPoliciesParams defines parameters for ListToolPolicies.
-type ListToolPoliciesParams struct {
-	TeamId       *string `form:"team_id,omitempty" json:"team_id,omitempty"`
-	VirtualKeyId *string `form:"virtual_key_id,omitempty" json:"virtual_key_id,omitempty"`
-	ToolName     *string `form:"tool_name,omitempty" json:"tool_name,omitempty"`
+	Enabled *bool `form:"enabled,omitempty" json:"enabled,omitempty"`
 }
 
 // ListPriorityClassesParams defines parameters for ListPriorityClasses.
@@ -4531,17 +4122,8 @@ type CreateEndUserJSONRequestBody = AdminEndUserUpsertRequest
 // UpsertEndUserJSONRequestBody defines body for UpsertEndUser for application/json ContentType.
 type UpsertEndUserJSONRequestBody = AdminEndUserUpsertRequest
 
-// CreateGuardrailBindingJSONRequestBody defines body for CreateGuardrailBinding for application/json ContentType.
-type CreateGuardrailBindingJSONRequestBody = GuardrailBindingCreateRequest
-
-// PatchGuardrailDefinitionJSONRequestBody defines body for PatchGuardrailDefinition for application/json ContentType.
-type PatchGuardrailDefinitionJSONRequestBody = GuardrailDefinitionPatchRequest
-
 // UpdateGuardrailDefinitionJSONRequestBody defines body for UpdateGuardrailDefinition for application/json ContentType.
 type UpdateGuardrailDefinitionJSONRequestBody = GuardrailDefinitionWriteRequest
-
-// SetGuardrailDefinitionStatusJSONRequestBody defines body for SetGuardrailDefinitionStatus for application/json ContentType.
-type SetGuardrailDefinitionStatusJSONRequestBody = GuardrailStatusUpdateRequest
 
 // CreateJWTKeyMappingJSONRequestBody defines body for CreateJWTKeyMapping for application/json ContentType.
 type CreateJWTKeyMappingJSONRequestBody = AdminJWTKeyMappingCreateRequest
@@ -4615,9 +4197,6 @@ type SetOrgModelPolicyJSONRequestBody = OrgModelPolicy
 // SetOrgSubscriptionJSONRequestBody defines body for SetOrgSubscription for application/json ContentType.
 type SetOrgSubscriptionJSONRequestBody = OrgProviderSubscription
 
-// UpsertToolPolicyJSONRequestBody defines body for UpsertToolPolicy for application/json ContentType.
-type UpsertToolPolicyJSONRequestBody = ToolPolicyUpsertRequest
-
 // UpsertPriorityClassJSONRequestBody defines body for UpsertPriorityClass for application/json ContentType.
 type UpsertPriorityClassJSONRequestBody = AdminPriorityClassUpsertRequest
 
@@ -4689,9 +4268,6 @@ type CreateEmbeddingJSONRequestBody = EmbeddingRequest
 
 // UploadFileMultipartRequestBody defines body for UploadFile for multipart/form-data ContentType.
 type UploadFileMultipartRequestBody UploadFileMultipartBody
-
-// ApplyGuardrailsJSONRequestBody defines body for ApplyGuardrails for application/json ContentType.
-type ApplyGuardrailsJSONRequestBody = GuardrailApplyRequest
 
 // CreateImageEditMultipartRequestBody defines body for CreateImageEdit for multipart/form-data ContentType.
 type CreateImageEditMultipartRequestBody CreateImageEditMultipartBody
@@ -6201,27 +5777,15 @@ type ServerInterface interface {
 	// GetEndUser Retrieve an end user quota profile by ID or external end_user_id
 	// (GET /admin/v1/end-users/{id})
 	GetEndUser(w http.ResponseWriter, r *http.Request, id string, params GetEndUserParams)
-	// CreateGuardrailBinding Create a hierarchical scope binding for a guardrail definition
-	// (POST /admin/v1/guardrail-bindings)
-	CreateGuardrailBinding(w http.ResponseWriter, r *http.Request)
-	// DeleteGuardrailBinding Delete a guardrail binding
-	// (DELETE /admin/v1/guardrail-bindings/{bindingID})
-	DeleteGuardrailBinding(w http.ResponseWriter, r *http.Request, bindingID string)
 	// DeleteGuardrailDefinition Delete a guardrail definition
 	// (DELETE /admin/v1/guardrail-definitions/{guardrailID})
 	DeleteGuardrailDefinition(w http.ResponseWriter, r *http.Request, guardrailID string)
 	// GetGuardrailDefinition Retrieve a single guardrail definition with secret redaction
 	// (GET /admin/v1/guardrail-definitions/{guardrailID})
 	GetGuardrailDefinition(w http.ResponseWriter, r *http.Request, guardrailID string)
-	// PatchGuardrailDefinition Partially update an existing guardrail definition
-	// (PATCH /admin/v1/guardrail-definitions/{guardrailID})
-	PatchGuardrailDefinition(w http.ResponseWriter, r *http.Request, guardrailID string)
-	// UpdateGuardrailDefinition Replace mutable fields on an existing guardrail definition
+	// UpdateGuardrailDefinition Update an existing guardrail definition
 	// (PUT /admin/v1/guardrail-definitions/{guardrailID})
 	UpdateGuardrailDefinition(w http.ResponseWriter, r *http.Request, guardrailID string)
-	// SetGuardrailDefinitionStatus Transition the approval status of a guardrail definition
-	// (POST /admin/v1/guardrail-definitions/{guardrailID}/status)
-	SetGuardrailDefinitionStatus(w http.ResponseWriter, r *http.Request, guardrailID string)
 	// ListDeploymentHealth List health status of active deployments
 	// (GET /admin/v1/health/deployments)
 	ListDeploymentHealth(w http.ResponseWriter, r *http.Request)
@@ -6354,18 +5918,12 @@ type ServerInterface interface {
 	// UpdateOrganization Update organization governance, throughput guarantees, self-service, and webhook settings
 	// (PUT /admin/v1/organizations/{orgID})
 	UpdateOrganization(w http.ResponseWriter, r *http.Request, orgID string)
-	// ListGuardrailBindings List guardrail bindings for an organization
-	// (GET /admin/v1/organizations/{orgID}/guardrail-bindings)
-	ListGuardrailBindings(w http.ResponseWriter, r *http.Request, orgID string, params ListGuardrailBindingsParams)
-	// ListGuardrailDefinitions List guardrail definitions for an organization
+	// ListGuardrailDefinitions List external guardrail definitions for an organization
 	// (GET /admin/v1/organizations/{orgID}/guardrail-definitions)
 	ListGuardrailDefinitions(w http.ResponseWriter, r *http.Request, orgID string, params ListGuardrailDefinitionsParams)
-	// CreateGuardrailDefinition Create a tenant-scoped guardrail definition with optional Vault-encrypted secrets
+	// CreateGuardrailDefinition Create a tenant-scoped external guardrail definition with optional Vault-encrypted secrets
 	// (POST /admin/v1/organizations/{orgID}/guardrail-definitions)
 	CreateGuardrailDefinition(w http.ResponseWriter, r *http.Request, orgID string)
-	// GetGuardrailUsageSummary Retrieve daily guardrail metrics, top triggered guardrails, usage units, and micro-dollar cost rollups
-	// (GET /admin/v1/organizations/{orgID}/guardrail-usage)
-	GetGuardrailUsageSummary(w http.ResponseWriter, r *http.Request, orgID string, params GetGuardrailUsageSummaryParams)
 	// GetGuardrailPolicy Get an organization guardrail policy
 	// (GET /admin/v1/organizations/{orgID}/guardrails)
 	GetGuardrailPolicy(w http.ResponseWriter, r *http.Request, orgID string)
@@ -6387,15 +5945,6 @@ type ServerInterface interface {
 	// SetOrgSubscription Create or update an organization provider subscription
 	// (POST /admin/v1/organizations/{orgID}/subscriptions)
 	SetOrgSubscription(w http.ResponseWriter, r *http.Request, orgID string)
-	// ListToolPolicies List tool trust policies for an organization
-	// (GET /admin/v1/organizations/{orgID}/tool-policies)
-	ListToolPolicies(w http.ResponseWriter, r *http.Request, orgID string, params ListToolPoliciesParams)
-	// UpsertToolPolicy Create or update a tenant-scoped tool trust policy
-	// (POST /admin/v1/organizations/{orgID}/tool-policies)
-	UpsertToolPolicy(w http.ResponseWriter, r *http.Request, orgID string)
-	// DeleteToolPolicy Delete a tool trust policy
-	// (DELETE /admin/v1/organizations/{orgID}/tool-policies/{policyID})
-	DeleteToolPolicy(w http.ResponseWriter, r *http.Request, orgID string, policyID string)
 	// ListPriorityClasses List priority classes configured for an organization
 	// (GET /admin/v1/priority-classes)
 	ListPriorityClasses(w http.ResponseWriter, r *http.Request, params ListPriorityClassesParams)
@@ -6567,9 +6116,6 @@ type ServerInterface interface {
 	// GetFileContent Stream file raw content bytes
 	// (GET /v1/files/{file_id}/content)
 	GetFileContent(w http.ResponseWriter, r *http.Request, fileId FileID)
-	// ApplyGuardrails Evaluate named or effective tenant guardrails against structured inputs, messages, or tool calls
-	// (POST /v1/guardrails/apply)
-	ApplyGuardrails(w http.ResponseWriter, r *http.Request)
 	// CreateImageEdit Edit a PNG image with a prompt
 	// (POST /v1/images/edits)
 	CreateImageEdit(w http.ResponseWriter, r *http.Request)
@@ -8015,46 +7561,6 @@ func (siw *ServerInterfaceWrapper) GetEndUser(w http.ResponseWriter, r *http.Req
 	handler.ServeHTTP(w, r)
 }
 
-// CreateGuardrailBinding operation middleware
-func (siw *ServerInterfaceWrapper) CreateGuardrailBinding(w http.ResponseWriter, r *http.Request) {
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.CreateGuardrailBinding(w, r)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// DeleteGuardrailBinding operation middleware
-func (siw *ServerInterfaceWrapper) DeleteGuardrailBinding(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "bindingID" -------------
-	var bindingID string
-
-	err = runtime.BindStyledParameterWithOptions("simple", "bindingID", r.PathValue("bindingID"), &bindingID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "bindingID", Err: err})
-		return
-	}
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.DeleteGuardrailBinding(w, r, bindingID)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
 // DeleteGuardrailDefinition operation middleware
 func (siw *ServerInterfaceWrapper) DeleteGuardrailDefinition(w http.ResponseWriter, r *http.Request) {
 
@@ -8107,32 +7613,6 @@ func (siw *ServerInterfaceWrapper) GetGuardrailDefinition(w http.ResponseWriter,
 	handler.ServeHTTP(w, r)
 }
 
-// PatchGuardrailDefinition operation middleware
-func (siw *ServerInterfaceWrapper) PatchGuardrailDefinition(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "guardrailID" -------------
-	var guardrailID string
-
-	err = runtime.BindStyledParameterWithOptions("simple", "guardrailID", r.PathValue("guardrailID"), &guardrailID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "guardrailID", Err: err})
-		return
-	}
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.PatchGuardrailDefinition(w, r, guardrailID)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
 // UpdateGuardrailDefinition operation middleware
 func (siw *ServerInterfaceWrapper) UpdateGuardrailDefinition(w http.ResponseWriter, r *http.Request) {
 
@@ -8150,32 +7630,6 @@ func (siw *ServerInterfaceWrapper) UpdateGuardrailDefinition(w http.ResponseWrit
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.UpdateGuardrailDefinition(w, r, guardrailID)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// SetGuardrailDefinitionStatus operation middleware
-func (siw *ServerInterfaceWrapper) SetGuardrailDefinitionStatus(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "guardrailID" -------------
-	var guardrailID string
-
-	err = runtime.BindStyledParameterWithOptions("simple", "guardrailID", r.PathValue("guardrailID"), &guardrailID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "guardrailID", Err: err})
-		return
-	}
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.SetGuardrailDefinitionStatus(w, r, guardrailID)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -9402,87 +8856,6 @@ func (siw *ServerInterfaceWrapper) UpdateOrganization(w http.ResponseWriter, r *
 	handler.ServeHTTP(w, r)
 }
 
-// ListGuardrailBindings operation middleware
-func (siw *ServerInterfaceWrapper) ListGuardrailBindings(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "orgID" -------------
-	var orgID string
-
-	err = runtime.BindStyledParameterWithOptions("simple", "orgID", r.PathValue("orgID"), &orgID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "orgID", Err: err})
-		return
-	}
-
-	// Parameter object where we will unmarshal all parameters from the context
-	var params ListGuardrailBindingsParams
-
-	// ------------- Optional query parameter "guardrail_id" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "guardrail_id", r.URL.Query(), &params.GuardrailId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "guardrail_id"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "guardrail_id", Err: err})
-		}
-		return
-	}
-
-	// ------------- Optional query parameter "guardrail_name" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "guardrail_name", r.URL.Query(), &params.GuardrailName, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "guardrail_name"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "guardrail_name", Err: err})
-		}
-		return
-	}
-
-	// ------------- Optional query parameter "team_id" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "team_id", r.URL.Query(), &params.TeamId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "team_id"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "team_id", Err: err})
-		}
-		return
-	}
-
-	// ------------- Optional query parameter "virtual_key_id" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "virtual_key_id", r.URL.Query(), &params.VirtualKeyId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "virtual_key_id"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "virtual_key_id", Err: err})
-		}
-		return
-	}
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.ListGuardrailBindings(w, r, orgID, params)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
 // ListGuardrailDefinitions operation middleware
 func (siw *ServerInterfaceWrapper) ListGuardrailDefinitions(w http.ResponseWriter, r *http.Request) {
 
@@ -9501,28 +8874,15 @@ func (siw *ServerInterfaceWrapper) ListGuardrailDefinitions(w http.ResponseWrite
 	// Parameter object where we will unmarshal all parameters from the context
 	var params ListGuardrailDefinitionsParams
 
-	// ------------- Optional query parameter "status" -------------
+	// ------------- Optional query parameter "enabled" -------------
 
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "status", r.URL.Query(), &params.Status, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "enabled", r.URL.Query(), &params.Enabled, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
 	if err != nil {
 		var requiredError *runtime.RequiredParameterError
 		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "status"})
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "enabled"})
 		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "status", Err: err})
-		}
-		return
-	}
-
-	// ------------- Optional query parameter "name" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "name", r.URL.Query(), &params.Name, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "name"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "enabled", Err: err})
 		}
 		return
 	}
@@ -9555,113 +8915,6 @@ func (siw *ServerInterfaceWrapper) CreateGuardrailDefinition(w http.ResponseWrit
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CreateGuardrailDefinition(w, r, orgID)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// GetGuardrailUsageSummary operation middleware
-func (siw *ServerInterfaceWrapper) GetGuardrailUsageSummary(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "orgID" -------------
-	var orgID string
-
-	err = runtime.BindStyledParameterWithOptions("simple", "orgID", r.PathValue("orgID"), &orgID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "orgID", Err: err})
-		return
-	}
-
-	// Parameter object where we will unmarshal all parameters from the context
-	var params GetGuardrailUsageSummaryParams
-
-	// ------------- Optional query parameter "start_date" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "start_date", r.URL.Query(), &params.StartDate, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "start_date"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "start_date", Err: err})
-		}
-		return
-	}
-
-	// ------------- Optional query parameter "end_date" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "end_date", r.URL.Query(), &params.EndDate, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "end_date"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "end_date", Err: err})
-		}
-		return
-	}
-
-	// ------------- Optional query parameter "guardrail_id" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "guardrail_id", r.URL.Query(), &params.GuardrailId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "guardrail_id"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "guardrail_id", Err: err})
-		}
-		return
-	}
-
-	// ------------- Optional query parameter "team_id" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "team_id", r.URL.Query(), &params.TeamId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "team_id"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "team_id", Err: err})
-		}
-		return
-	}
-
-	// ------------- Optional query parameter "virtual_key_id" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "virtual_key_id", r.URL.Query(), &params.VirtualKeyId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "virtual_key_id"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "virtual_key_id", Err: err})
-		}
-		return
-	}
-
-	// ------------- Optional query parameter "top_limit" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "top_limit", r.URL.Query(), &params.TopLimit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "top_limit"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "top_limit", Err: err})
-		}
-		return
-	}
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.GetGuardrailUsageSummary(w, r, orgID, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -9844,135 +9097,6 @@ func (siw *ServerInterfaceWrapper) SetOrgSubscription(w http.ResponseWriter, r *
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.SetOrgSubscription(w, r, orgID)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// ListToolPolicies operation middleware
-func (siw *ServerInterfaceWrapper) ListToolPolicies(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "orgID" -------------
-	var orgID string
-
-	err = runtime.BindStyledParameterWithOptions("simple", "orgID", r.PathValue("orgID"), &orgID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "orgID", Err: err})
-		return
-	}
-
-	// Parameter object where we will unmarshal all parameters from the context
-	var params ListToolPoliciesParams
-
-	// ------------- Optional query parameter "team_id" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "team_id", r.URL.Query(), &params.TeamId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "team_id"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "team_id", Err: err})
-		}
-		return
-	}
-
-	// ------------- Optional query parameter "virtual_key_id" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "virtual_key_id", r.URL.Query(), &params.VirtualKeyId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "virtual_key_id"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "virtual_key_id", Err: err})
-		}
-		return
-	}
-
-	// ------------- Optional query parameter "tool_name" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "tool_name", r.URL.Query(), &params.ToolName, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "tool_name"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "tool_name", Err: err})
-		}
-		return
-	}
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.ListToolPolicies(w, r, orgID, params)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// UpsertToolPolicy operation middleware
-func (siw *ServerInterfaceWrapper) UpsertToolPolicy(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "orgID" -------------
-	var orgID string
-
-	err = runtime.BindStyledParameterWithOptions("simple", "orgID", r.PathValue("orgID"), &orgID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "orgID", Err: err})
-		return
-	}
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.UpsertToolPolicy(w, r, orgID)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// DeleteToolPolicy operation middleware
-func (siw *ServerInterfaceWrapper) DeleteToolPolicy(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "orgID" -------------
-	var orgID string
-
-	err = runtime.BindStyledParameterWithOptions("simple", "orgID", r.PathValue("orgID"), &orgID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "orgID", Err: err})
-		return
-	}
-
-	// ------------- Path parameter "policyID" -------------
-	var policyID string
-
-	err = runtime.BindStyledParameterWithOptions("simple", "policyID", r.PathValue("policyID"), &policyID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "policyID", Err: err})
-		return
-	}
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.DeleteToolPolicy(w, r, orgID, policyID)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -11474,20 +10598,6 @@ func (siw *ServerInterfaceWrapper) GetFileContent(w http.ResponseWriter, r *http
 	handler.ServeHTTP(w, r)
 }
 
-// ApplyGuardrails operation middleware
-func (siw *ServerInterfaceWrapper) ApplyGuardrails(w http.ResponseWriter, r *http.Request) {
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.ApplyGuardrails(w, r)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
 // CreateImageEdit operation middleware
 func (siw *ServerInterfaceWrapper) CreateImageEdit(w http.ResponseWriter, r *http.Request) {
 
@@ -11996,21 +11106,11 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/a2a/agents/{id}", wrapper.GetA2AAgent)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/a2a/agents/{id}/kill-switch", wrapper.SetA2AKillSwitch)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/a2a/push-configs", wrapper.SetA2APushConfig)
-	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/guardrails/apply", wrapper.ApplyGuardrails)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/organizations/{orgID}/guardrail-definitions", wrapper.ListGuardrailDefinitions)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/organizations/{orgID}/guardrail-definitions", wrapper.CreateGuardrailDefinition)
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/admin/v1/guardrail-definitions/{guardrailID}", wrapper.DeleteGuardrailDefinition)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/guardrail-definitions/{guardrailID}", wrapper.GetGuardrailDefinition)
-	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/admin/v1/guardrail-definitions/{guardrailID}", wrapper.PatchGuardrailDefinition)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/admin/v1/guardrail-definitions/{guardrailID}", wrapper.UpdateGuardrailDefinition)
-	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/guardrail-definitions/{guardrailID}/status", wrapper.SetGuardrailDefinitionStatus)
-	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/guardrail-bindings", wrapper.CreateGuardrailBinding)
-	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/organizations/{orgID}/guardrail-bindings", wrapper.ListGuardrailBindings)
-	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/admin/v1/guardrail-bindings/{bindingID}", wrapper.DeleteGuardrailBinding)
-	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/organizations/{orgID}/tool-policies", wrapper.ListToolPolicies)
-	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/v1/organizations/{orgID}/tool-policies", wrapper.UpsertToolPolicy)
-	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/admin/v1/organizations/{orgID}/tool-policies/{policyID}", wrapper.DeleteToolPolicy)
-	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/v1/organizations/{orgID}/guardrail-usage", wrapper.GetGuardrailUsageSummary)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/key/info", wrapper.GetVirtualKeySelfInfo)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/self/keys", wrapper.ListSelfServiceKeys)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/self/keys", wrapper.CreateSelfServiceKey)
@@ -13299,50 +12399,6 @@ func (response GetEndUser404Response) VisitGetEndUserResponse(w http.ResponseWri
 	return nil
 }
 
-type CreateGuardrailBindingRequestObject struct {
-	Body *CreateGuardrailBindingJSONRequestBody
-}
-
-type CreateGuardrailBindingResponseObject interface {
-	VisitCreateGuardrailBindingResponse(w http.ResponseWriter) error
-}
-
-type CreateGuardrailBinding201JSONResponse GuardrailBinding
-
-func (response CreateGuardrailBinding201JSONResponse) VisitCreateGuardrailBindingResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(201)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type DeleteGuardrailBindingRequestObject struct {
-	BindingID string `json:"bindingID"`
-}
-
-type DeleteGuardrailBindingResponseObject interface {
-	VisitDeleteGuardrailBindingResponse(w http.ResponseWriter) error
-}
-
-type DeleteGuardrailBinding200JSONResponse AdminDeleteStatusResponse
-
-func (response DeleteGuardrailBinding200JSONResponse) VisitDeleteGuardrailBindingResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(200)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
 type DeleteGuardrailDefinitionRequestObject struct {
 	GuardrailID string `json:"guardrailID"`
 }
@@ -13387,29 +12443,6 @@ func (response GetGuardrailDefinition200JSONResponse) VisitGetGuardrailDefinitio
 	return err
 }
 
-type PatchGuardrailDefinitionRequestObject struct {
-	GuardrailID string `json:"guardrailID"`
-	Body        *PatchGuardrailDefinitionJSONRequestBody
-}
-
-type PatchGuardrailDefinitionResponseObject interface {
-	VisitPatchGuardrailDefinitionResponse(w http.ResponseWriter) error
-}
-
-type PatchGuardrailDefinition200JSONResponse GuardrailDefinition
-
-func (response PatchGuardrailDefinition200JSONResponse) VisitPatchGuardrailDefinitionResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(200)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
 type UpdateGuardrailDefinitionRequestObject struct {
 	GuardrailID string `json:"guardrailID"`
 	Body        *UpdateGuardrailDefinitionJSONRequestBody
@@ -13422,29 +12455,6 @@ type UpdateGuardrailDefinitionResponseObject interface {
 type UpdateGuardrailDefinition200JSONResponse GuardrailDefinition
 
 func (response UpdateGuardrailDefinition200JSONResponse) VisitUpdateGuardrailDefinitionResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(200)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type SetGuardrailDefinitionStatusRequestObject struct {
-	GuardrailID string `json:"guardrailID"`
-	Body        *SetGuardrailDefinitionStatusJSONRequestBody
-}
-
-type SetGuardrailDefinitionStatusResponseObject interface {
-	VisitSetGuardrailDefinitionStatusResponse(w http.ResponseWriter) error
-}
-
-type SetGuardrailDefinitionStatus200JSONResponse GuardrailDefinition
-
-func (response SetGuardrailDefinitionStatus200JSONResponse) VisitSetGuardrailDefinitionStatusResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -14625,31 +13635,6 @@ func (response UpdateOrganization200JSONResponse) VisitUpdateOrganizationRespons
 	return err
 }
 
-type ListGuardrailBindingsRequestObject struct {
-	OrgID  string `json:"orgID"`
-	Params ListGuardrailBindingsParams
-}
-
-type ListGuardrailBindingsResponseObject interface {
-	VisitListGuardrailBindingsResponse(w http.ResponseWriter) error
-}
-
-type ListGuardrailBindings200JSONResponse struct {
-	Data *[]GuardrailBinding `json:"data,omitempty"`
-}
-
-func (response ListGuardrailBindings200JSONResponse) VisitListGuardrailBindingsResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(200)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
 type ListGuardrailDefinitionsRequestObject struct {
 	OrgID  string `json:"orgID"`
 	Params ListGuardrailDefinitionsParams
@@ -14694,29 +13679,6 @@ func (response CreateGuardrailDefinition201JSONResponse) VisitCreateGuardrailDef
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(201)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type GetGuardrailUsageSummaryRequestObject struct {
-	OrgID  string `json:"orgID"`
-	Params GetGuardrailUsageSummaryParams
-}
-
-type GetGuardrailUsageSummaryResponseObject interface {
-	VisitGetGuardrailUsageSummaryResponse(w http.ResponseWriter) error
-}
-
-type GetGuardrailUsageSummary200JSONResponse GuardrailUsageSummary
-
-func (response GetGuardrailUsageSummary200JSONResponse) VisitGetGuardrailUsageSummaryResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(200)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -14872,77 +13834,6 @@ type SetOrgSubscriptionResponseObject interface {
 type SetOrgSubscription200JSONResponse OrgProviderSubscription
 
 func (response SetOrgSubscription200JSONResponse) VisitSetOrgSubscriptionResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(200)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type ListToolPoliciesRequestObject struct {
-	OrgID  string `json:"orgID"`
-	Params ListToolPoliciesParams
-}
-
-type ListToolPoliciesResponseObject interface {
-	VisitListToolPoliciesResponse(w http.ResponseWriter) error
-}
-
-type ListToolPolicies200JSONResponse struct {
-	Data *[]ToolPolicy `json:"data,omitempty"`
-}
-
-func (response ListToolPolicies200JSONResponse) VisitListToolPoliciesResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(200)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type UpsertToolPolicyRequestObject struct {
-	OrgID string `json:"orgID"`
-	Body  *UpsertToolPolicyJSONRequestBody
-}
-
-type UpsertToolPolicyResponseObject interface {
-	VisitUpsertToolPolicyResponse(w http.ResponseWriter) error
-}
-
-type UpsertToolPolicy200JSONResponse ToolPolicy
-
-func (response UpsertToolPolicy200JSONResponse) VisitUpsertToolPolicyResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(200)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type DeleteToolPolicyRequestObject struct {
-	OrgID    string `json:"orgID"`
-	PolicyID string `json:"policyID"`
-}
-
-type DeleteToolPolicyResponseObject interface {
-	VisitDeleteToolPolicyResponse(w http.ResponseWriter) error
-}
-
-type DeleteToolPolicy200JSONResponse AdminDeleteStatusResponse
-
-func (response DeleteToolPolicy200JSONResponse) VisitDeleteToolPolicyResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -16666,28 +15557,6 @@ func (response GetFileContent200ApplicationoctetStreamResponse) VisitGetFileCont
 	return err
 }
 
-type ApplyGuardrailsRequestObject struct {
-	Body *ApplyGuardrailsJSONRequestBody
-}
-
-type ApplyGuardrailsResponseObject interface {
-	VisitApplyGuardrailsResponse(w http.ResponseWriter) error
-}
-
-type ApplyGuardrails200JSONResponse GuardrailApplyResponse
-
-func (response ApplyGuardrails200JSONResponse) VisitApplyGuardrailsResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(200)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
 type CreateImageEditRequestObject struct {
 	Body *multipart.Reader
 }
@@ -17233,27 +16102,15 @@ type StrictServerInterface interface {
 	// GetEndUser Retrieve an end user quota profile by ID or external end_user_id
 	// (GET /admin/v1/end-users/{id})
 	GetEndUser(ctx context.Context, request GetEndUserRequestObject) (GetEndUserResponseObject, error)
-	// CreateGuardrailBinding Create a hierarchical scope binding for a guardrail definition
-	// (POST /admin/v1/guardrail-bindings)
-	CreateGuardrailBinding(ctx context.Context, request CreateGuardrailBindingRequestObject) (CreateGuardrailBindingResponseObject, error)
-	// DeleteGuardrailBinding Delete a guardrail binding
-	// (DELETE /admin/v1/guardrail-bindings/{bindingID})
-	DeleteGuardrailBinding(ctx context.Context, request DeleteGuardrailBindingRequestObject) (DeleteGuardrailBindingResponseObject, error)
 	// DeleteGuardrailDefinition Delete a guardrail definition
 	// (DELETE /admin/v1/guardrail-definitions/{guardrailID})
 	DeleteGuardrailDefinition(ctx context.Context, request DeleteGuardrailDefinitionRequestObject) (DeleteGuardrailDefinitionResponseObject, error)
 	// GetGuardrailDefinition Retrieve a single guardrail definition with secret redaction
 	// (GET /admin/v1/guardrail-definitions/{guardrailID})
 	GetGuardrailDefinition(ctx context.Context, request GetGuardrailDefinitionRequestObject) (GetGuardrailDefinitionResponseObject, error)
-	// PatchGuardrailDefinition Partially update an existing guardrail definition
-	// (PATCH /admin/v1/guardrail-definitions/{guardrailID})
-	PatchGuardrailDefinition(ctx context.Context, request PatchGuardrailDefinitionRequestObject) (PatchGuardrailDefinitionResponseObject, error)
-	// UpdateGuardrailDefinition Replace mutable fields on an existing guardrail definition
+	// UpdateGuardrailDefinition Update an existing guardrail definition
 	// (PUT /admin/v1/guardrail-definitions/{guardrailID})
 	UpdateGuardrailDefinition(ctx context.Context, request UpdateGuardrailDefinitionRequestObject) (UpdateGuardrailDefinitionResponseObject, error)
-	// SetGuardrailDefinitionStatus Transition the approval status of a guardrail definition
-	// (POST /admin/v1/guardrail-definitions/{guardrailID}/status)
-	SetGuardrailDefinitionStatus(ctx context.Context, request SetGuardrailDefinitionStatusRequestObject) (SetGuardrailDefinitionStatusResponseObject, error)
 	// ListDeploymentHealth List health status of active deployments
 	// (GET /admin/v1/health/deployments)
 	ListDeploymentHealth(ctx context.Context, request ListDeploymentHealthRequestObject) (ListDeploymentHealthResponseObject, error)
@@ -17386,18 +16243,12 @@ type StrictServerInterface interface {
 	// UpdateOrganization Update organization governance, throughput guarantees, self-service, and webhook settings
 	// (PUT /admin/v1/organizations/{orgID})
 	UpdateOrganization(ctx context.Context, request UpdateOrganizationRequestObject) (UpdateOrganizationResponseObject, error)
-	// ListGuardrailBindings List guardrail bindings for an organization
-	// (GET /admin/v1/organizations/{orgID}/guardrail-bindings)
-	ListGuardrailBindings(ctx context.Context, request ListGuardrailBindingsRequestObject) (ListGuardrailBindingsResponseObject, error)
-	// ListGuardrailDefinitions List guardrail definitions for an organization
+	// ListGuardrailDefinitions List external guardrail definitions for an organization
 	// (GET /admin/v1/organizations/{orgID}/guardrail-definitions)
 	ListGuardrailDefinitions(ctx context.Context, request ListGuardrailDefinitionsRequestObject) (ListGuardrailDefinitionsResponseObject, error)
-	// CreateGuardrailDefinition Create a tenant-scoped guardrail definition with optional Vault-encrypted secrets
+	// CreateGuardrailDefinition Create a tenant-scoped external guardrail definition with optional Vault-encrypted secrets
 	// (POST /admin/v1/organizations/{orgID}/guardrail-definitions)
 	CreateGuardrailDefinition(ctx context.Context, request CreateGuardrailDefinitionRequestObject) (CreateGuardrailDefinitionResponseObject, error)
-	// GetGuardrailUsageSummary Retrieve daily guardrail metrics, top triggered guardrails, usage units, and micro-dollar cost rollups
-	// (GET /admin/v1/organizations/{orgID}/guardrail-usage)
-	GetGuardrailUsageSummary(ctx context.Context, request GetGuardrailUsageSummaryRequestObject) (GetGuardrailUsageSummaryResponseObject, error)
 	// GetGuardrailPolicy Get an organization guardrail policy
 	// (GET /admin/v1/organizations/{orgID}/guardrails)
 	GetGuardrailPolicy(ctx context.Context, request GetGuardrailPolicyRequestObject) (GetGuardrailPolicyResponseObject, error)
@@ -17419,15 +16270,6 @@ type StrictServerInterface interface {
 	// SetOrgSubscription Create or update an organization provider subscription
 	// (POST /admin/v1/organizations/{orgID}/subscriptions)
 	SetOrgSubscription(ctx context.Context, request SetOrgSubscriptionRequestObject) (SetOrgSubscriptionResponseObject, error)
-	// ListToolPolicies List tool trust policies for an organization
-	// (GET /admin/v1/organizations/{orgID}/tool-policies)
-	ListToolPolicies(ctx context.Context, request ListToolPoliciesRequestObject) (ListToolPoliciesResponseObject, error)
-	// UpsertToolPolicy Create or update a tenant-scoped tool trust policy
-	// (POST /admin/v1/organizations/{orgID}/tool-policies)
-	UpsertToolPolicy(ctx context.Context, request UpsertToolPolicyRequestObject) (UpsertToolPolicyResponseObject, error)
-	// DeleteToolPolicy Delete a tool trust policy
-	// (DELETE /admin/v1/organizations/{orgID}/tool-policies/{policyID})
-	DeleteToolPolicy(ctx context.Context, request DeleteToolPolicyRequestObject) (DeleteToolPolicyResponseObject, error)
 	// ListPriorityClasses List priority classes configured for an organization
 	// (GET /admin/v1/priority-classes)
 	ListPriorityClasses(ctx context.Context, request ListPriorityClassesRequestObject) (ListPriorityClassesResponseObject, error)
@@ -17599,9 +16441,6 @@ type StrictServerInterface interface {
 	// GetFileContent Stream file raw content bytes
 	// (GET /v1/files/{file_id}/content)
 	GetFileContent(ctx context.Context, request GetFileContentRequestObject) (GetFileContentResponseObject, error)
-	// ApplyGuardrails Evaluate named or effective tenant guardrails against structured inputs, messages, or tool calls
-	// (POST /v1/guardrails/apply)
-	ApplyGuardrails(ctx context.Context, request ApplyGuardrailsRequestObject) (ApplyGuardrailsResponseObject, error)
 	// CreateImageEdit Edit a PNG image with a prompt
 	// (POST /v1/images/edits)
 	CreateImageEdit(ctx context.Context, request CreateImageEditRequestObject) (CreateImageEditResponseObject, error)
@@ -18939,63 +17778,6 @@ func (sh *strictHandler) GetEndUser(w http.ResponseWriter, r *http.Request, id s
 	}
 }
 
-// CreateGuardrailBinding operation middleware
-func (sh *strictHandler) CreateGuardrailBinding(w http.ResponseWriter, r *http.Request) {
-	var request CreateGuardrailBindingRequestObject
-
-	var body CreateGuardrailBindingJSONRequestBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
-		return
-	}
-	request.Body = &body
-
-	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
-		return sh.ssi.CreateGuardrailBinding(ctx, request.(CreateGuardrailBindingRequestObject))
-	}
-	for _, middleware := range sh.middlewares {
-		handler = middleware(handler, "CreateGuardrailBinding")
-	}
-
-	response, err := handler(r.Context(), w, r, request)
-
-	if err != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, err)
-	} else if validResponse, ok := response.(CreateGuardrailBindingResponseObject); ok {
-		if err := validResponse.VisitCreateGuardrailBindingResponse(w); err != nil {
-			sh.options.ResponseErrorHandlerFunc(w, r, err)
-		}
-	} else if response != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
-	}
-}
-
-// DeleteGuardrailBinding operation middleware
-func (sh *strictHandler) DeleteGuardrailBinding(w http.ResponseWriter, r *http.Request, bindingID string) {
-	var request DeleteGuardrailBindingRequestObject
-
-	request.BindingID = bindingID
-
-	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
-		return sh.ssi.DeleteGuardrailBinding(ctx, request.(DeleteGuardrailBindingRequestObject))
-	}
-	for _, middleware := range sh.middlewares {
-		handler = middleware(handler, "DeleteGuardrailBinding")
-	}
-
-	response, err := handler(r.Context(), w, r, request)
-
-	if err != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, err)
-	} else if validResponse, ok := response.(DeleteGuardrailBindingResponseObject); ok {
-		if err := validResponse.VisitDeleteGuardrailBindingResponse(w); err != nil {
-			sh.options.ResponseErrorHandlerFunc(w, r, err)
-		}
-	} else if response != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
-	}
-}
-
 // DeleteGuardrailDefinition operation middleware
 func (sh *strictHandler) DeleteGuardrailDefinition(w http.ResponseWriter, r *http.Request, guardrailID string) {
 	var request DeleteGuardrailDefinitionRequestObject
@@ -19048,39 +17830,6 @@ func (sh *strictHandler) GetGuardrailDefinition(w http.ResponseWriter, r *http.R
 	}
 }
 
-// PatchGuardrailDefinition operation middleware
-func (sh *strictHandler) PatchGuardrailDefinition(w http.ResponseWriter, r *http.Request, guardrailID string) {
-	var request PatchGuardrailDefinitionRequestObject
-
-	request.GuardrailID = guardrailID
-
-	var body PatchGuardrailDefinitionJSONRequestBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
-		return
-	}
-	request.Body = &body
-
-	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
-		return sh.ssi.PatchGuardrailDefinition(ctx, request.(PatchGuardrailDefinitionRequestObject))
-	}
-	for _, middleware := range sh.middlewares {
-		handler = middleware(handler, "PatchGuardrailDefinition")
-	}
-
-	response, err := handler(r.Context(), w, r, request)
-
-	if err != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, err)
-	} else if validResponse, ok := response.(PatchGuardrailDefinitionResponseObject); ok {
-		if err := validResponse.VisitPatchGuardrailDefinitionResponse(w); err != nil {
-			sh.options.ResponseErrorHandlerFunc(w, r, err)
-		}
-	} else if response != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
-	}
-}
-
 // UpdateGuardrailDefinition operation middleware
 func (sh *strictHandler) UpdateGuardrailDefinition(w http.ResponseWriter, r *http.Request, guardrailID string) {
 	var request UpdateGuardrailDefinitionRequestObject
@@ -19107,39 +17856,6 @@ func (sh *strictHandler) UpdateGuardrailDefinition(w http.ResponseWriter, r *htt
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(UpdateGuardrailDefinitionResponseObject); ok {
 		if err := validResponse.VisitUpdateGuardrailDefinitionResponse(w); err != nil {
-			sh.options.ResponseErrorHandlerFunc(w, r, err)
-		}
-	} else if response != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
-	}
-}
-
-// SetGuardrailDefinitionStatus operation middleware
-func (sh *strictHandler) SetGuardrailDefinitionStatus(w http.ResponseWriter, r *http.Request, guardrailID string) {
-	var request SetGuardrailDefinitionStatusRequestObject
-
-	request.GuardrailID = guardrailID
-
-	var body SetGuardrailDefinitionStatusJSONRequestBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
-		return
-	}
-	request.Body = &body
-
-	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
-		return sh.ssi.SetGuardrailDefinitionStatus(ctx, request.(SetGuardrailDefinitionStatusRequestObject))
-	}
-	for _, middleware := range sh.middlewares {
-		handler = middleware(handler, "SetGuardrailDefinitionStatus")
-	}
-
-	response, err := handler(r.Context(), w, r, request)
-
-	if err != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, err)
-	} else if validResponse, ok := response.(SetGuardrailDefinitionStatusResponseObject); ok {
-		if err := validResponse.VisitSetGuardrailDefinitionStatusResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -20403,33 +19119,6 @@ func (sh *strictHandler) UpdateOrganization(w http.ResponseWriter, r *http.Reque
 	}
 }
 
-// ListGuardrailBindings operation middleware
-func (sh *strictHandler) ListGuardrailBindings(w http.ResponseWriter, r *http.Request, orgID string, params ListGuardrailBindingsParams) {
-	var request ListGuardrailBindingsRequestObject
-
-	request.OrgID = orgID
-	request.Params = params
-
-	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
-		return sh.ssi.ListGuardrailBindings(ctx, request.(ListGuardrailBindingsRequestObject))
-	}
-	for _, middleware := range sh.middlewares {
-		handler = middleware(handler, "ListGuardrailBindings")
-	}
-
-	response, err := handler(r.Context(), w, r, request)
-
-	if err != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, err)
-	} else if validResponse, ok := response.(ListGuardrailBindingsResponseObject); ok {
-		if err := validResponse.VisitListGuardrailBindingsResponse(w); err != nil {
-			sh.options.ResponseErrorHandlerFunc(w, r, err)
-		}
-	} else if response != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
-	}
-}
-
 // ListGuardrailDefinitions operation middleware
 func (sh *strictHandler) ListGuardrailDefinitions(w http.ResponseWriter, r *http.Request, orgID string, params ListGuardrailDefinitionsParams) {
 	var request ListGuardrailDefinitionsRequestObject
@@ -20483,33 +19172,6 @@ func (sh *strictHandler) CreateGuardrailDefinition(w http.ResponseWriter, r *htt
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(CreateGuardrailDefinitionResponseObject); ok {
 		if err := validResponse.VisitCreateGuardrailDefinitionResponse(w); err != nil {
-			sh.options.ResponseErrorHandlerFunc(w, r, err)
-		}
-	} else if response != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
-	}
-}
-
-// GetGuardrailUsageSummary operation middleware
-func (sh *strictHandler) GetGuardrailUsageSummary(w http.ResponseWriter, r *http.Request, orgID string, params GetGuardrailUsageSummaryParams) {
-	var request GetGuardrailUsageSummaryRequestObject
-
-	request.OrgID = orgID
-	request.Params = params
-
-	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
-		return sh.ssi.GetGuardrailUsageSummary(ctx, request.(GetGuardrailUsageSummaryRequestObject))
-	}
-	for _, middleware := range sh.middlewares {
-		handler = middleware(handler, "GetGuardrailUsageSummary")
-	}
-
-	response, err := handler(r.Context(), w, r, request)
-
-	if err != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, err)
-	} else if validResponse, ok := response.(GetGuardrailUsageSummaryResponseObject); ok {
-		if err := validResponse.VisitGetGuardrailUsageSummaryResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -20720,93 +19382,6 @@ func (sh *strictHandler) SetOrgSubscription(w http.ResponseWriter, r *http.Reque
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(SetOrgSubscriptionResponseObject); ok {
 		if err := validResponse.VisitSetOrgSubscriptionResponse(w); err != nil {
-			sh.options.ResponseErrorHandlerFunc(w, r, err)
-		}
-	} else if response != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
-	}
-}
-
-// ListToolPolicies operation middleware
-func (sh *strictHandler) ListToolPolicies(w http.ResponseWriter, r *http.Request, orgID string, params ListToolPoliciesParams) {
-	var request ListToolPoliciesRequestObject
-
-	request.OrgID = orgID
-	request.Params = params
-
-	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
-		return sh.ssi.ListToolPolicies(ctx, request.(ListToolPoliciesRequestObject))
-	}
-	for _, middleware := range sh.middlewares {
-		handler = middleware(handler, "ListToolPolicies")
-	}
-
-	response, err := handler(r.Context(), w, r, request)
-
-	if err != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, err)
-	} else if validResponse, ok := response.(ListToolPoliciesResponseObject); ok {
-		if err := validResponse.VisitListToolPoliciesResponse(w); err != nil {
-			sh.options.ResponseErrorHandlerFunc(w, r, err)
-		}
-	} else if response != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
-	}
-}
-
-// UpsertToolPolicy operation middleware
-func (sh *strictHandler) UpsertToolPolicy(w http.ResponseWriter, r *http.Request, orgID string) {
-	var request UpsertToolPolicyRequestObject
-
-	request.OrgID = orgID
-
-	var body UpsertToolPolicyJSONRequestBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
-		return
-	}
-	request.Body = &body
-
-	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
-		return sh.ssi.UpsertToolPolicy(ctx, request.(UpsertToolPolicyRequestObject))
-	}
-	for _, middleware := range sh.middlewares {
-		handler = middleware(handler, "UpsertToolPolicy")
-	}
-
-	response, err := handler(r.Context(), w, r, request)
-
-	if err != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, err)
-	} else if validResponse, ok := response.(UpsertToolPolicyResponseObject); ok {
-		if err := validResponse.VisitUpsertToolPolicyResponse(w); err != nil {
-			sh.options.ResponseErrorHandlerFunc(w, r, err)
-		}
-	} else if response != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
-	}
-}
-
-// DeleteToolPolicy operation middleware
-func (sh *strictHandler) DeleteToolPolicy(w http.ResponseWriter, r *http.Request, orgID string, policyID string) {
-	var request DeleteToolPolicyRequestObject
-
-	request.OrgID = orgID
-	request.PolicyID = policyID
-
-	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
-		return sh.ssi.DeleteToolPolicy(ctx, request.(DeleteToolPolicyRequestObject))
-	}
-	for _, middleware := range sh.middlewares {
-		handler = middleware(handler, "DeleteToolPolicy")
-	}
-
-	response, err := handler(r.Context(), w, r, request)
-
-	if err != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, err)
-	} else if validResponse, ok := response.(DeleteToolPolicyResponseObject); ok {
-		if err := validResponse.VisitDeleteToolPolicyResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -22415,37 +20990,6 @@ func (sh *strictHandler) GetFileContent(w http.ResponseWriter, r *http.Request, 
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetFileContentResponseObject); ok {
 		if err := validResponse.VisitGetFileContentResponse(w); err != nil {
-			sh.options.ResponseErrorHandlerFunc(w, r, err)
-		}
-	} else if response != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
-	}
-}
-
-// ApplyGuardrails operation middleware
-func (sh *strictHandler) ApplyGuardrails(w http.ResponseWriter, r *http.Request) {
-	var request ApplyGuardrailsRequestObject
-
-	var body ApplyGuardrailsJSONRequestBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
-		return
-	}
-	request.Body = &body
-
-	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
-		return sh.ssi.ApplyGuardrails(ctx, request.(ApplyGuardrailsRequestObject))
-	}
-	for _, middleware := range sh.middlewares {
-		handler = middleware(handler, "ApplyGuardrails")
-	}
-
-	response, err := handler(r.Context(), w, r, request)
-
-	if err != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, err)
-	} else if validResponse, ok := response.(ApplyGuardrailsResponseObject); ok {
-		if err := validResponse.VisitApplyGuardrailsResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

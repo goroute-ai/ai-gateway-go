@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Guardrails Core Surface Simplification (Migration `0044`)
+
+#### Changed
+- **Consolidated Guardrails Core Engine, Drivers & UI (`internal/guardrails/`, `migrations/0044_simplify_guardrails.{up,down}.sql`, `web/src/views/GuardrailsView.tsx`)**:
+  - Standardized Guardrails around the built-in organization policy (`guardrail_policies`, adding `blocked_patterns TEXT[]` for regex/keyword blocking) and Vault-encrypted external guardrail definitions (`guardrail_definitions`, migrating `status` to `enabled BOOLEAN`) supporting `generic_http` webhooks and `openai_moderation` across `pre_call`, `post_call`, and `logging_only` hooks.
+  - Preserved rolling-overlap SSE `StreamRedactor`, MCP tool-discovery poisoning caps & SHA-256 anti-rug-pull pinning, LLM tool-call argument scanning, A2A inbound/outbound filtering, and stateless `/admin/v1/organizations/{orgID}/guardrails/simulate` parity.
+  - Consolidated the Operator Web UI into a single streamlined `GuardrailsView` (`511.91 KB` / `150.68 KB` gz total UI bundle), updated the Gateway OpenAPI contract (`docs/openapi/gateway.openapi.yaml` + `internal/openapi/gateway.gen.go`), and added production Docker `Suite12_GuardrailsAndSecurityPillars` (`tests/prod-docker/prod_e2e_guardrails_test.go`).
+
+#### Removed
+- **Pruned Legacy Guardrail Drivers, Tables & Sub-Tabs (`0044_simplify_guardrails`)**:
+  - Dropped deprecated PostgreSQL tables (`guardrail_bindings`, `tool_policies`, `daily_guardrail_metrics`, `daily_guardrail_usage_units`, `spend_log_guardrails`) and `sensitive_route_target` columns, with a full reversible down migration (`0044_simplify_guardrails.down.sql`).
+  - Removed 13 legacy/third-party guardrail drivers (`code_execution`, `content_filter`, `custom_code`, `decision_model`, `guardrails_ai`, `lakera_v2`, `llm_judge`, `mcp_security`, `pangea`, `presidio`, `tool_permission`, `tool_policy`, `router_lb`, `scanner`), legacy `internal/server/guardrails_http.go`, `internal/storage/{guardrail_metrics_store,tool_policy_store}.go`, and UI sub-tabs (`RegistryTab`, `SimulatorUsageTab`, `ToolPoliciesTab`).
+
 ### First-Class OpenAPI-First Google Gemini Provider (`gemini`, Migration `0043`)
 
 #### Added
